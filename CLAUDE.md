@@ -37,7 +37,7 @@ Tests are **pytest** under `tests/`. `tests/conftest.py` is hermetic: it synthes
 
 ### `pcss/` package — the analyzer
 
-`analyze_ups.py` is a ~280-line CLI orchestrator: `parse_args()` → `config.load_config()` → load logs → compute → `build_dashboard()` → write/open HTML (+ optional `--json` summary, opt-in alerts). The work lives in:
+`analyze_ups.py` is a ~320-line CLI orchestrator: `parse_args()` → `config.load_config()` → load logs → compute → `build_dashboard()` → write/open HTML (+ optional `--json` summary, opt-in alerts). The work lives in:
 
 - **`pcss/config.py`** — defaults + `load_config(path, agent_dir, output)` which overlays a `config.toml` and CLI overrides onto module-level constants. **Config is module-level state**: consumers read `config.X` at call time, so `load_config()` mutating these before the pipeline runs is how overrides take effect (no Config object threaded through every function). `config.example.toml` documents the keys.
 - **`pcss/common.py`** — shared helpers (`parse_es_number`, `parse_pcss_number`, `ts_2010_to_dt`, `fmt_bytes`, `fmt_crc`, `EPOCH_2010`).
