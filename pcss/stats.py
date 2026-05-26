@@ -70,15 +70,15 @@ def detect_gaps(df: pd.DataFrame, expected_interval_min: float | None = None) ->
         expected_interval_min = config.DATALOG_EXPECTED_INTERVAL_MIN
     if df.empty or len(df) < 2:
         return pd.DataFrame()
-    deltas_min = df["ts"].diff().dt.total_seconds() / 60
-    gap_mask = deltas_min > (expected_interval_min * 2)
-    gaps = []
-    for idx in df.index[gap_mask]:
-        gaps.append({
-            "from": df["ts"].iloc[idx - 1],
-            "to": df["ts"].iloc[idx],
-            "duration_min": float(deltas_min.iloc[idx]),
-        })
+    ts = df["ts"].to_numpy()
+    deltas_min = df["ts"].diff().dt.total_seconds().to_numpy() / 60  # [0] is NaN
+    # Positional indices of the gap rows — robust regardless of the frame's
+    # index (NaN comparisons are False, so position 0 is never selected).
+    gap_pos = np.where(deltas_min > (expected_interval_min * 2))[0]
+    gaps = [
+        {"from": ts[i - 1], "to": ts[i], "duration_min": float(deltas_min[i])}
+        for i in gap_pos
+    ]
     return pd.DataFrame(gaps)
 
 
@@ -110,7 +110,11 @@ def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = N
     for _, group in edf[above].groupby(edges[above]):
         start = group["ts"].iloc[0]
         end = group["ts"].iloc[-1]
-        duration_sec = (end - start).total_seconds()
+        # Each sample covers one sampling interval, so a k-sample run spans
+        # ~k*interval of high load, not the (k-1)*interval between first and
+        # last timestamps. Add one interval so a 2-sample (10-min) run counts.
+        interval = float(group["interval_sec"].iloc[0]) if "interval_sec" in group.columns else 0.0
+        duration_sec = (end - start).total_seconds() + interval
         if duration_sec >= min_duration_sec:
             episodes.append({
                 "start": start, "end": end,

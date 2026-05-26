@@ -185,35 +185,40 @@ def main(argv: list[str] | None = None) -> int:
         if energy_summary["monthly"] is not None and not energy_summary["monthly"].empty:
             say("")
             say("  Monthly breakdown:")
-            for _, r in energy_summary["monthly"].iterrows():
-                say(f"    {r['month']}: {r['kwh']:>9.4f} kWh   "
-                    f"PCSS=CRC {r['cost_pcss']:>10,.2f}   "
-                    f"Tiered=CRC {r['cost_tiered']:>10,.2f}   "
-                    f"CO2={r['co2_kg']:>7.4f} kg")
+            monthly = energy_summary["monthly"]
+            for month, kwh, cost_pcss, cost_tiered, co2_kg in monthly[
+                ["month", "kwh", "cost_pcss", "cost_tiered", "co2_kg"]
+            ].itertuples(index=False, name=None):
+                say(f"    {month}: {kwh:>9.4f} kWh   "
+                    f"PCSS=CRC {cost_pcss:>10,.2f}   "
+                    f"Tiered=CRC {cost_tiered:>10,.2f}   "
+                    f"CO2={co2_kg:>7.4f} kg")
 
     section("ANOMALIES & EVENTS")
     voltage_anomalies = detect_voltage_anomalies(datalog_df)
     say(f"  Voltage out of {config.VOLTAGE_NORMAL_LOW}-{config.VOLTAGE_NORMAL_HIGH}V envelope: "
         f"{len(voltage_anomalies)} samples")
     if not voltage_anomalies.empty:
-        for _, r in voltage_anomalies.head(5).iterrows():
-            say(f"    {r['ts']}  {r['Line Voltage']} V")
+        for ts, volts in voltage_anomalies[["ts", "Line Voltage"]].head(5).itertuples(index=False, name=None):
+            say(f"    {ts}  {volts} V")
         if len(voltage_anomalies) > 5:
             say(f"    ... ({len(voltage_anomalies)-5} more)")
 
     high_load = detect_high_load_episodes(energy_df) if not energy_df.empty else pd.DataFrame()
     say(f"  Sustained high-load episodes (>={config.HIGH_LOAD_PCT}%, >=10min): {len(high_load)}")
     if not high_load.empty:
-        for _, r in high_load.head(5).iterrows():
-            say(f"    {r['start']} -> {r['end']}  {r['duration_min']:.1f}min  peak {r['peak_pct']:.0f}% / {r['peak_w']:.0f}W")
+        for start, end, dmin, ppct, pw in high_load[
+            ["start", "end", "duration_min", "peak_pct", "peak_w"]
+        ].head(5).itertuples(index=False, name=None):
+            say(f"    {start} -> {end}  {dmin:.1f}min  peak {ppct:.0f}% / {pw:.0f}W")
         if len(high_load) > 5:
             say(f"    ... ({len(high_load)-5} more)")
 
     gaps = detect_gaps(datalog_df)
     say(f"  DataLog gaps (>{config.DATALOG_EXPECTED_INTERVAL_MIN*2:.0f} min): {len(gaps)}")
     if not gaps.empty:
-        for _, r in gaps.head(5).iterrows():
-            say(f"    {r['from']} -> {r['to']}  ({r['duration_min']:.1f} min)")
+        for frm, to, dmin in gaps[["from", "to", "duration_min"]].head(5).itertuples(index=False, name=None):
+            say(f"    {frm} -> {to}  ({dmin:.1f} min)")
 
     section("CROSS-VALIDATION (DataLog vs energylog)")
     crossval = cross_validate_load(datalog_df, energy_df) if not energy_df.empty else {}
