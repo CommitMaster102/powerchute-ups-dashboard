@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+
+# Generated output (dashboards, logs, history, pinned cert)
+output/
+
+# Secrets — localhost-only plaintext fallback; never commit
+credentials.txt
+
+# Local source backups
+backup/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editor/OS cruft
+.DS_Store
+Thumbs.db
+
+# Local Claude Code permission overrides (machine-specific)
+.claude/settings.local.json

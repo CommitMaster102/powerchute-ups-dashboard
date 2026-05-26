@@ -1,0 +1,14 @@
+# Runtime deps for analyze_ups.py + tray_status.py.
+# Floors track the major lines the code is written/tested against (pandas 3.x
+# with Copy-on-Write default, numpy 2.x). Verified 2026-05-25 on:
+#   pandas 3.0.3, numpy 2.4.6, plotly 6.7.0, requests 2.34.2,
+#   beautifulsoup4 4.14.3, pystray 0.19.5, Pillow 12.2.0 (urllib3 2.7.0).
+# Playwright (E2E tests only) is intentionally NOT listed here — see tests/.
+pandas>=3.0
+numpy>=2.3
+plotly>=6.0
+requests>=2.32
+beautifulsoup4>=4.13
+pystray>=0.19
+Pillow>=11.0
+keyring>=25

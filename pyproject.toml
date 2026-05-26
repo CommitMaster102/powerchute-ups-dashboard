@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stateofups"
+version = "1.0.0"
+description = "PowerChute Serial Shutdown (PCSS) log analyzer + live tray for the APC BX2000M-LM UPS."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pandas>=3.0",
+    "numpy>=2.3",
+    "plotly>=6.0",
+    "requests>=2.32",
+    "beautifulsoup4>=4.13",
+    "pystray>=0.19",
+    "Pillow>=11.0",
+    "keyring>=25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "playwright>=1.49",
+    "pytest>=8.0",
+    "pytest-xdist>=3.6",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+ups-analyze = "analyze_ups:main"
+
+[tool.setuptools]
+py-modules = ["analyze_ups", "tray_status"]
+packages = ["pcss"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+pcss = ["*.js"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/F pycodestyle+pyflakes, I import-sort, UP pyupgrade, B bugbear, SIM simplify.
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# E501 (line length) is handled by line-length; keep it off so data tables /
+# long hovertemplate strings don't churn.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true   # pystray / bs4 / PIL / keyring ship partial or no stubs
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "e2e: browser-driven Playwright dashboard tests (slow; need a generated dashboard)",
+]
