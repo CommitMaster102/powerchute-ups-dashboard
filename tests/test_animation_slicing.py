@@ -24,9 +24,9 @@ import time
 import numpy as np
 import pandas as pd
 
-# Import analyze_ups from the repo root regardless of the working dir.
+# Import from the repo root regardless of the working dir.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from analyze_ups import _replay_metadata
+from pcss.animation import _replay_metadata
 
 
 def _ms_local(iso: str) -> int:
