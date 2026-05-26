@@ -18,22 +18,23 @@ For autostart, drop a shortcut to run_tray.bat into:
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import re
+import ssl
 import threading
 import time
 import traceback
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
+import keyring
 import requests
-import urllib3
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 from pystray import Icon, Menu, MenuItem
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ----------------------------------------------------------------------
 # Paths
@@ -44,13 +45,22 @@ OUTPUT = SCRIPT_DIR / "output"
 OUTPUT.mkdir(exist_ok=True)
 DEBUG_DUMP_HTML = OUTPUT / "status_raw.html"
 TRAY_LOG = OUTPUT / "tray_status.log"
+# PCSS serves a self-signed cert on localhost. Instead of disabling TLS
+# verification globally, we trust-on-first-use: save the server's cert here and
+# verify against it. Delete this file to force a re-pin (e.g. after a PCSS
+# reinstall changes the cert).
+PCSS_CERT = OUTPUT / "pcss_cert.pem"
+# OS keyring (Windows Credential Manager) service name for the PCSS password.
+KEYRING_SERVICE = "stateOfUPS-PCSS"
 
 CREDENTIALS_TEMPLATE = """\
 # PowerChute Serial Shutdown credentials.
 #
-# Plaintext storage. PCSS only listens on localhost:6547 with a self-signed
-# cert, so this file is read only by you on this machine. Do NOT commit, sync,
-# or share this file.
+# Put your password here ONCE: on the next run it is moved into the Windows
+# Credential Manager (keyring) and this line is blanked automatically. After
+# that, only the username/url/poll live here. PCSS listens on localhost with a
+# self-signed cert which the tray pins on first use (output/pcss_cert.pem).
+# Do NOT commit, sync, or share this file.
 #
 # Lines beginning with '#' are comments. Format: key = value.
 
@@ -82,10 +92,8 @@ def log(msg: str) -> None:
 
 def msgbox(text: str, title: str = "PCSS tray", icon: int = 0x40) -> None:
     """Windows MessageBox (no extra deps). icon: 0x40=info, 0x30=warn, 0x10=err."""
-    try:
+    with contextlib.suppress(Exception):
         ctypes.windll.user32.MessageBoxW(0, text, title, icon)
-    except Exception:
-        pass
 
 
 # ----------------------------------------------------------------------
@@ -180,10 +188,16 @@ def load_credentials() -> dict:
         k, v = line.split("=", 1)
         cfg[k.strip()] = v.strip()
 
+    # Password comes from the OS keyring; the plaintext file is only a
+    # migration source / fallback (see _resolve_password).
+    cfg["password"] = _resolve_password(cfg.get("username", ""), cfg.get("password", ""))
+
     if not cfg["username"] or not cfg["password"]:
         msgbox(
-            f"Credentials incomplete in:\n\n{CREDENTIALS_FILE}\n\n"
-            "Set both username and password, then run again.",
+            f"Credentials incomplete.\n\nSet 'username' in:\n{CREDENTIALS_FILE}\n\n"
+            "and the password either in that file (it will be migrated to the\n"
+            "Windows Credential Manager on next run) or directly in the keyring\n"
+            f"under service '{KEYRING_SERVICE}'. Then run again.",
             "PCSS tray — credentials missing",
         )
         raise SystemExit(1)
@@ -192,21 +206,90 @@ def load_credentials() -> dict:
     return cfg
 
 
+def _resolve_password(username: str, file_pw: str) -> str:
+    """Prefer the OS keyring; migrate a file password into it once, then blank
+    the plaintext copy. Falls back to the file if no keyring backend exists."""
+    if not username:
+        return file_pw
+    try:
+        kr_pw = keyring.get_password(KEYRING_SERVICE, username)
+    except Exception as e:  # no usable backend
+        log(f"keyring unavailable ({e}); using credentials.txt password.")
+        return file_pw
+    if kr_pw:
+        return kr_pw
+    if file_pw:
+        try:
+            keyring.set_password(KEYRING_SERVICE, username, file_pw)
+            _blank_password_in_file(CREDENTIALS_FILE)
+            log("Migrated PCSS password to the OS keyring; blanked credentials.txt.")
+        except Exception as e:
+            log(f"keyring store failed ({e}); keeping the file password.")
+        return file_pw
+    return ""
+
+
+def _blank_password_in_file(path: Path) -> None:
+    """Replace the `password = ...` line with an empty value (post-migration)."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out = [
+        "password =" if (ln.strip().lower().startswith("password") and "=" in ln) else ln
+        for ln in lines
+    ]
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
 # ----------------------------------------------------------------------
 # PCSS client
 # ----------------------------------------------------------------------
+def _pin_cert(host: str, port: int, path: Path = PCSS_CERT) -> Path:
+    """Trust-on-first-use: fetch the server's (self-signed) cert and save it."""
+    pem = ssl.get_server_certificate((host, port))
+    path.write_text(pem, encoding="utf-8")
+    return path
+
+
 class PCSSClient:
     def __init__(self, base_url: str, username: str, password: str):
         self.base = base_url.rstrip("/")
         self.user = username
         self.passwd = password
         self.session = requests.Session()
-        self.session.verify = False
+        parsed = urlparse(self.base)
+        self._host = parsed.hostname or "localhost"
+        self._port = parsed.port or 6547
         self._logged_in = False
+
+    def _ensure_verify(self) -> None:
+        """Pin the cert on first use and verify against it. If the server is
+        unreachable when we try to pin, fall back to no verification for this
+        attempt and retry the pin on the next request."""
+        if not PCSS_CERT.exists():
+            try:
+                _pin_cert(self._host, self._port)
+                log(f"Pinned PCSS cert -> {PCSS_CERT}")
+            except Exception as e:
+                log(f"Cert pin failed ({e}); TLS verification disabled this attempt.")
+                self.session.verify = False
+                return
+        self.session.verify = str(PCSS_CERT)
+
+    def _request(self, method: str, url: str, **kw):
+        """Wraps session.request with cert pinning + one re-pin retry on TLS
+        failure (e.g. PCSS reinstalled with a new self-signed cert)."""
+        self._ensure_verify()
+        try:
+            return self.session.request(method, url, **kw)
+        except requests.exceptions.SSLError:
+            log("TLS verify failed; re-pinning PCSS cert and retrying once.")
+            with contextlib.suppress(FileNotFoundError):
+                PCSS_CERT.unlink()
+            self._ensure_verify()
+            return self.session.request(method, url, **kw)
 
     def login(self) -> None:
         log("Logging in to PCSS...")
-        r = self.session.get(f"{self.base}/logon", allow_redirects=True, timeout=10)
+        r = self._request("GET", f"{self.base}/logon", allow_redirects=True, timeout=10)
         r.raise_for_status()
 
         soup = BeautifulSoup(r.text, "html.parser")
@@ -221,7 +304,8 @@ class PCSSClient:
         if not action.startswith("http"):
             action = f"{self.base}/{action.lstrip('/')}"
 
-        r = self.session.post(
+        r = self._request(
+            "POST",
             action,
             data={
                 "j_username": self.user,
@@ -244,7 +328,7 @@ class PCSSClient:
             raise RuntimeError("Login failed (credentials rejected by PCSS)")
 
         # Belt-and-suspenders: confirm /status is reachable
-        check = self.session.get(f"{self.base}/status", allow_redirects=False, timeout=10)
+        check = self._request("GET", f"{self.base}/status", allow_redirects=False, timeout=10)
         if check.status_code in (302, 303):
             loc = check.headers.get("Location", "?")
             raise RuntimeError(f"Login failed (redirected to {loc} after auth)")
@@ -253,7 +337,7 @@ class PCSSClient:
         log("Login OK.")
 
     def _fetch_status(self) -> str:
-        r = self.session.get(f"{self.base}/status", timeout=10, allow_redirects=True)
+        r = self._request("GET", f"{self.base}/status", timeout=10, allow_redirects=True)
         r.raise_for_status()
         # If the response is the login page, our session expired
         if "loginForm" in r.text or "j_security_check" in r.text:
@@ -269,10 +353,8 @@ class PCSSClient:
             self._logged_in = False
             self.login()
             html = self._fetch_status()
-        try:
+        with contextlib.suppress(Exception):
             DEBUG_DUMP_HTML.write_text(html, encoding="utf-8")
-        except Exception:
-            pass
         return parse_status(html)
 
 
@@ -582,10 +664,8 @@ def main():
             # Rebuild the popup menu so the dynamic status_label() refreshes.
             # On Win32 pystray only re-evaluates callables when update_menu()
             # is called; the right-click handler does NOT re-evaluate them.
-            try:
+            with contextlib.suppress(Exception):
                 icon.update_menu()
-            except Exception:
-                pass
         except Exception:
             pass
 
