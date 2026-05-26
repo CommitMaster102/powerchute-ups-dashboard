@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import run_suite, JITTER_MS
+from harness import run_suite
 from playwright.sync_api import TimeoutError as PWTimeout
 
 

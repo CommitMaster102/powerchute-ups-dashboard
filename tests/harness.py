@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 
-from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeout
+from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import TimeoutError as PWTimeout
 
 # output/dashboard.html lives one level up from tests/.
 DASHBOARD = Path(__file__).resolve().parent.parent / "output" / "dashboard.html"

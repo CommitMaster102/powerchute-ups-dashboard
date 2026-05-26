@@ -10,7 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import run_suite, JITTER_MS
+from harness import JITTER_MS, run_suite
 
 
 def run(runner, anim_data):

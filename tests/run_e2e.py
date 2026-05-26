@@ -18,24 +18,27 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from playwright.sync_api import sync_playwright
-from harness import (
-    DASHBOARD, TestRunner, wait_ready, stash_full_lengths,
-    assert_expected_speeds, summarize,
-)
-
+import e2e_axis_range
+import e2e_concurrency
 import e2e_diagnostics
 import e2e_initial_render
-import e2e_no_autoplay
-import e2e_play_completion
 import e2e_isolation
+import e2e_no_autoplay
 import e2e_pause_freeze
-import e2e_resume
-import e2e_time_label
+import e2e_play_completion
 import e2e_realistic_play
-import e2e_axis_range
+import e2e_resume
 import e2e_state_machine
-import e2e_concurrency
+import e2e_time_label
+from harness import (
+    DASHBOARD,
+    TestRunner,
+    assert_expected_speeds,
+    stash_full_lengths,
+    summarize,
+    wait_ready,
+)
+from playwright.sync_api import sync_playwright
 
 
 def main() -> int:

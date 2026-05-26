@@ -17,7 +17,6 @@ Open the dashboard with run_analyzer.bat or manually:
 from __future__ import annotations
 
 import csv
-import sys
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -1595,7 +1594,7 @@ def main():
     html = _inject_controls_into_html(html, animations)
     DASHBOARD_HTML.write_text(html, encoding="utf-8")
     print(f"  Wrote {DASHBOARD_HTML}")
-    print(f"  Opening in browser...")
+    print("  Opening in browser...")
     try:
         webbrowser.open(DASHBOARD_HTML.as_uri())
     except Exception as e:

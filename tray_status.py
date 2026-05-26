@@ -23,12 +23,12 @@ import re
 import threading
 import time
 import traceback
-import urllib3
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 from pystray import Icon, Menu, MenuItem
@@ -118,8 +118,8 @@ _PRIVATE_BROWSERS = [
 
 def _open_private_window(url: str) -> bool:
     """Launch `url` in the first browser found, in private/incognito mode."""
-    import subprocess
     import shutil
+    import subprocess
     for exe, paths, flag in _PRIVATE_BROWSERS:
         for p in paths:
             if Path(p).exists():
@@ -260,7 +260,7 @@ class PCSSClient:
             raise SessionExpired()
         return r.text
 
-    def get_status(self) -> "PcssStatus":
+    def get_status(self) -> PcssStatus:
         if not self._logged_in:
             self.login()
         try:
@@ -505,7 +505,7 @@ class State:
     busy: bool = False  # True when PCSS rejected login because another session is connected
 
 
-def _format_tooltip(state: "State") -> str:
+def _format_tooltip(state: State) -> str:
     s = state.status
     ts = (time.strftime("%H:%M:%S", time.localtime(state.last_update))
           if state.last_update else "--")

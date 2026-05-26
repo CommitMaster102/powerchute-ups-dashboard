@@ -12,7 +12,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import run_suite, wait_ready, JITTER_MS
+from harness import JITTER_MS, run_suite, wait_ready
 
 AXIS_DUMP_JS = """(() => {
   const gd = document.getElementsByClassName('plotly-graph-div')[0];
