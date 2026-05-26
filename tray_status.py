@@ -202,7 +202,7 @@ def load_credentials() -> dict:
         )
         raise SystemExit(1)
 
-    cfg["poll_interval_sec"] = max(10, int(cfg["poll_interval_sec"]))
+    cfg["poll_interval_sec"] = str(max(10, int(cfg["poll_interval_sec"])))
     return cfg
 
 
@@ -300,7 +300,7 @@ class PCSSClient:
 
         form = soup.find("form", attrs={"name": "loginForm"}) or soup.find("form")
         action = form["action"] if form and form.has_attr("action") else "j_security_check"
-        action = re.sub(r";jsessionid=[^?]*", "", action)
+        action = re.sub(r";jsessionid=[^?]*", "", str(action))
         if not action.startswith("http"):
             action = f"{self.base}/{action.lstrip('/')}"
 
@@ -499,7 +499,7 @@ def color_for_pct(pct: int | None) -> tuple[int, int, int, int]:
     return (220, 60, 60, 255)         # red
 
 
-def _load_font(target_size: int) -> ImageFont.FreeTypeFont:
+def _load_font(target_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     for name in ("arialbd.ttf", "seguibl.ttf", "segoeuib.ttf",
                  "arial.ttf", "segoeui.ttf"):
         try:
@@ -675,7 +675,7 @@ def main():
             # When busy (browser holds the PCSS user lock), poll more often so
             # we reclaim the session within seconds of the user closing it.
             wait = (_BUSY_POLL_INTERVAL_SEC if state.busy
-                    else cfg["poll_interval_sec"])
+                    else int(cfg["poll_interval_sec"]))
             time.sleep(wait)
 
     def open_pcss(_=None):

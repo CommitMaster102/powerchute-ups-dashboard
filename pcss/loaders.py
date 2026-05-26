@@ -70,7 +70,12 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
         return pd.DataFrame(), metas
 
     for f in sorted(energylog_dir.glob("*.log")):
-        meta = {"month": f.stem, "interval_sec": 300, "model": "?", "firmware": "?", "max_load_w": 1400.0}
+        # Typed per-file metadata locals (avoids a heterogeneous dict).
+        m_month: str = f.stem
+        m_interval: int = 300
+        m_model: str = "?"
+        m_firmware: str = "?"
+        m_maxload: float = 1400.0
         n_samples = 0
         try:
             content = f.read_text(encoding="utf-8", errors="ignore")
@@ -83,16 +88,16 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
             if line.startswith("#"):
                 # parse metadata of form "# $key=value"
                 if "$month=" in line:
-                    meta["month"] = line.split("=", 1)[1]
+                    m_month = line.split("=", 1)[1]
                 elif "$interval=" in line:
                     with contextlib.suppress(ValueError):
-                        meta["interval_sec"] = int(line.split("=", 1)[1])
+                        m_interval = int(line.split("=", 1)[1])
                 elif "$modelname=" in line:
-                    meta["model"] = line.split("=", 1)[1]
+                    m_model = line.split("=", 1)[1]
                 elif "$firmware=" in line:
-                    meta["firmware"] = line.split("=", 1)[1]
+                    m_firmware = line.split("=", 1)[1]
                 elif "$calculatedMaxLoad=" in line:
-                    meta["max_load_w"] = parse_pcss_number(line.split("=", 1)[1])
+                    m_maxload = float(parse_pcss_number(line.split("=", 1)[1]))
                 continue
             parts = line.split(";")
             if len(parts) < 4:
@@ -110,15 +115,15 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
                 "load_pct": load_pct,
                 "real_w": real_w,
                 "source_file": f.name,
-                "interval_sec": int(meta["interval_sec"]),
+                "interval_sec": m_interval,
             })
             n_samples += 1
         metas.append(EnergyLogMeta(
-            month=str(meta["month"]),
-            interval_sec=int(meta["interval_sec"]),
-            model=str(meta["model"]),
-            firmware=str(meta["firmware"]),
-            max_load_w=float(meta["max_load_w"]),
+            month=m_month,
+            interval_sec=m_interval,
+            model=m_model,
+            firmware=m_firmware,
+            max_load_w=m_maxload,
             n_samples=n_samples,
         ))
 

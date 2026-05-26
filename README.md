@@ -37,42 +37,60 @@ The more often you run it, the more accurate the growth-rate plot becomes — ev
 
 ```
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install -e .[dev]                    # runtime + test/lint tooling
+.venv\Scripts\python -m playwright install chromium    # for the E2E tests
 ```
+(`pip install -r requirements.txt` installs runtime deps only.)
+
+## Command-line options
+
+`analyze_ups.py` runs with no arguments (console summary + dashboard, opens browser). Flags:
+
+```
+-o, --output PATH     dashboard HTML path (default output/dashboard.html)
+--no-browser          don't open a browser
+--since / --until     YYYY-MM-DD — only analyze samples in this date range
+-q, --quiet           suppress the console summary (still writes the dashboard)
+--no-snapshot         don't append to size_history.csv
+--config PATH         config.toml path (default: ./config.toml if present)
+--agent-dir PATH      override the PCSS agent directory
+--json PATH           also write a machine-readable summary as JSON
+--version
+```
+
+## Configuration
+
+Optional `config.toml` (auto-loaded from the repo root, or `--config PATH`) overrides the built-in defaults — copy `config.example.toml` to start. It holds the PCSS agent path, the Coopesantos/PCSS tariff rates (update when the quarterly rate changes), the CO₂ factor, voltage/load thresholds, the runtime curve, and an opt-in `[alerts]` switch.
 
 ## Tests
 
-The dashboard's interactive replay controls (per-panel ▶/⏸, the cumulative-reveal animation, the play/pause/resume state machine) are covered by tests under `tests/`.
+Tests are **pytest** under `tests/` (math + tray unit tests, plus browser-driven E2E of the replay controls). The E2E fixture is hermetic — it synthesizes data and builds a temp dashboard, so no real PCSS logs are needed.
 
 ```
-# Regenerate the dashboard the tests read, then:
-.venv\Scripts\python.exe analyze_ups.py
+# Fast unit tests (no browser):
+.venv\Scripts\python.exe -m pytest tests -m "not e2e"
 
-# All browser-driven E2E suites in one Chromium session:
-.venv\Scripts\python.exe tests\run_e2e.py
+# Browser E2E (Playwright + chromium; add -n auto to parallelize):
+.venv\Scripts\python.exe -m pytest tests -m e2e
 
-# Or a single focused suite (the full run is slow):
-.venv\Scripts\python.exe tests\e2e_pause_freeze.py
-
-# Pure unit test (no browser):
-.venv\Scripts\python.exe tests\test_animation_slicing.py
+# A single suite / one test:
+.venv\Scripts\python.exe -m pytest tests\e2e_pause_freeze.py
+.venv\Scripts\python.exe -m pytest tests\test_math.py -k tiered
 ```
 
-The E2E suites need **Playwright**, which is intentionally *not* in `requirements.txt` (test-only):
-
-```
-.venv\Scripts\pip install playwright
-.venv\Scripts\python -m playwright install chromium
-```
+Playwright is intentionally *not* in `requirements.txt` (it's in the `dev` extra). Set `STATEOFUPS_E2E_REAL=1` to run E2E against the committed `output/dashboard.html` instead of synthetic data.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `analyze_ups.py` | Main script. Loads logs, computes stats, builds dashboard. |
-| `run_analyzer.bat` | Double-click launcher (activates venv, runs script). |
-| `requirements.txt` | pandas, numpy, plotly. |
-| `tests/` | `harness.py` (shared helpers) + `run_e2e.py` (one-browser runner) + one `e2e_*.py` per suite + `test_animation_slicing.py`. |
+| `analyze_ups.py` | CLI orchestrator. Loads logs, computes stats, builds the dashboard. |
+| `pcss/` | The package: `config`, `common`, `loaders`, `stats`, `dashboard`, `animation` (+ `animation.js`). |
+| `tray_status.py` | Live system-tray battery icon (scrapes the PCSS web UI). |
+| `config.example.toml` | Template config; copy to `config.toml`. |
+| `run_analyzer.bat` / `run_tray.bat` | Double-click launchers. |
+| `pyproject.toml` / `requirements.txt` | Packaging + deps (ruff/mypy/pytest config in pyproject). |
+| `tests/` | pytest: `test_math.py`, `test_tray.py`, `test_animation_slicing.py`, `conftest.py` (hermetic fixture), `harness.py`, one `e2e_*.py` per browser suite. |
 | `output/dashboard.html` | Latest dashboard. Overwritten each run. |
 | `output/size_history.csv` | Append-only growth log. **Don't delete** — the longer it runs, the better the projection. |
 
@@ -117,18 +135,19 @@ The E2E suites need **Playwright**, which is intentionally *not* in `requirement
 - **EventLog is binary.** Only its size is read — contents are not parsed. This is intentional; events are visible in the PCSS UI.
 - **`size_history.csv` is the long-running record.** It survives across PCSS log rotations (defaults to 1-month retention) so you can still see trends after PCSS truncates its own logs.
 - **Empirical growth rate (measured 2026-04-28 → 2026-05-01):** ~7.9 KB/day across all three logs combined → ~2.9 MB/year. PCSS defaults (1-month retention, 20-min interval) are appropriate for this workload; no need to tune them.
-- **DataLog uses Spanish locale numbers** (`1.234,56` → 1234.56). `parse_es_number()` handles this.
+- **DataLog uses Spanish locale numbers** (`1.234,56` → 1234.56), parsed by `read_csv(decimal=",")` in `pcss/loaders.py`.
 - **energylog uses dot-decimal** numbers and timestamps as **seconds since 2010-01-01 LOCAL** (not UTC, not Unix epoch). Verified empirically by aligning the first energylog timestamp with the first DataLog timestamp.
 - **Real wattage is `null`** in energylog — the BX2000M has no wattmeter. PCSS calculates power as `relativeLoad × calculatedMaxLoad / 100`, where `calculatedMaxLoad` is 1400W (declared in the energylog header).
 - **PCSS cost is wrong by design.** PCSS supports only a single rate, but Coopesantos T-RE is tiered. The dashboard reports both so the discrepancy is visible. The "Cost (Coopesantos tiered)" row in the summary table is the one that matches an actual bill.
-- **Tariff constants are hardcoded** in `analyze_ups.py` under the `CONFIG` section. When the quarterly Coopesantos rate changes, update `COOPESANTOS_LOW_RATE`, `COOPESANTOS_HIGH_RATE`, `PCSS_FLAT_RATE`. (The scheduled `trig_01PgYk7Fb6HXqGjcJ5CiAbC1` agent will email when this needs to happen.)
+- **Tariff constants** default in `pcss/config.py` and are overridable via `config.toml` `[tariff]` (`coopesantos_low/high`, `tier_limit_kwh`, `pcss_flat`). When the quarterly Coopesantos rate changes, edit `config.toml` — no code change. (The scheduled `trig_01PgYk7Fb6HXqGjcJ5CiAbC1` agent will email when this needs to happen.)
+- **High-load episode duration** counts each sample as one sampling interval, so a k-sample run is ~k×interval (not the (k−1)×interval span between first/last timestamps); this can surface short episodes the old span-based measure missed.
 
 ## Paths assumed
 
-Hardcoded at the top of `analyze_ups.py`:
+The PCSS agent directory defaults in `pcss/config.py`:
 
 ```
 PCSS_AGENT = C:\Program Files\APC\PowerChute Serial Shutdown\agent
 ```
 
-If PCSS is reinstalled elsewhere, update those constants.
+If PCSS is reinstalled elsewhere, set `[paths] pcss_agent` in `config.toml` (or pass `--agent-dir`).

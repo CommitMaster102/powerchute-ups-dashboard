@@ -378,7 +378,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         go.Table(
             header=dict(values=["Metric", "Value"],
                         fill_color="#444", font=dict(color="white"), align="left"),
-            cells=dict(values=list(zip(*rows, strict=False)) if rows else [[], []],
+            cells=dict(values=list(zip(*rows, strict=False)) if rows else [(), ()],
                        align="left", height=22),
         ),
         row=7, col=2,
