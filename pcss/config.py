@@ -6,6 +6,7 @@ analyze_ups.py CONFIG block). Phase 2 layers a `Config` dataclass +
 """
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import numpy as np
@@ -46,3 +47,58 @@ HIGH_LOAD_PCT = 80.0
 
 # DataLog default sample interval (PCSS factory default).
 DATALOG_EXPECTED_INTERVAL_MIN = 20.0
+
+
+def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
+                output: Path | None = None) -> Path | None:
+    """Overlay a config.toml (and CLI overrides) onto the module defaults.
+
+    Config is intentionally module-level state: consumers read ``config.X`` at
+    call time, so mutating these globals here — before the pipeline runs — is
+    how a config file / CLI flags take effect, without threading a Config
+    object through every function. Returns the config path that was used (or
+    None). When `path` is None, falls back to ./config.toml if it exists.
+    """
+    global PCSS_AGENT, DATALOG, EVENTLOG, ENERGYLOG_DIR, DASHBOARD_HTML
+    global COOPESANTOS_TIER_LIMIT_KWH, COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, PCSS_FLAT_RATE
+    global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
+    global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
+
+    if path is None:
+        default = Path("config.toml")
+        path = default if default.exists() else None
+
+    data: dict = {}
+    if path is not None and Path(path).exists():
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+
+    paths = data.get("paths", {})
+    tariff = data.get("tariff", {})
+    grid = data.get("grid", {})
+    th = data.get("thresholds", {})
+    rc = data.get("runtime_curve", {})
+
+    agent = agent_dir or paths.get("pcss_agent")
+    if agent:
+        PCSS_AGENT = Path(agent)
+    DATALOG = PCSS_AGENT / "DataLog"
+    EVENTLOG = PCSS_AGENT / "EventLog"
+    ENERGYLOG_DIR = PCSS_AGENT / "energylog"
+
+    COOPESANTOS_LOW_RATE = float(tariff.get("coopesantos_low", COOPESANTOS_LOW_RATE))
+    COOPESANTOS_HIGH_RATE = float(tariff.get("coopesantos_high", COOPESANTOS_HIGH_RATE))
+    COOPESANTOS_TIER_LIMIT_KWH = float(tariff.get("tier_limit_kwh", COOPESANTOS_TIER_LIMIT_KWH))
+    PCSS_FLAT_RATE = float(tariff.get("pcss_flat", PCSS_FLAT_RATE))
+    CO2_KG_PER_KWH = float(grid.get("co2_kg_per_kwh", CO2_KG_PER_KWH))
+    VOLTAGE_NORMAL_LOW = float(th.get("voltage_normal_low", VOLTAGE_NORMAL_LOW))
+    VOLTAGE_NORMAL_HIGH = float(th.get("voltage_normal_high", VOLTAGE_NORMAL_HIGH))
+    HIGH_LOAD_PCT = float(th.get("high_load_pct", HIGH_LOAD_PCT))
+    DATALOG_EXPECTED_INTERVAL_MIN = float(th.get("datalog_expected_interval_min", DATALOG_EXPECTED_INTERVAL_MIN))
+
+    if rc.get("watts") and rc.get("minutes"):
+        RUNTIME_CURVE_W = np.array(rc["watts"], dtype=float)
+        RUNTIME_CURVE_MIN = np.array(rc["minutes"], dtype=float)
+
+    DASHBOARD_HTML = Path(output) if output else (OUTPUT / "dashboard.html")
+    return path

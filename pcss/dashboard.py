@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from pcss import config
 from pcss.animation import (
     _heatmap_metadata,
     _register_animation,
@@ -17,7 +18,6 @@ from pcss.animation import (
     _runtime_metadata,
 )
 from pcss.common import fmt_bytes, fmt_crc
-from pcss.config import HIGH_LOAD_PCT, PCSS_FLAT_RATE, VOLTAGE_NORMAL_HIGH, VOLTAGE_NORMAL_LOW
 from pcss.stats import estimate_runtime
 
 
@@ -103,14 +103,14 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                                 voltage_anomalies["ts"].to_numpy(),
                                 voltage_anomalies["Line Voltage"].to_numpy()))
         # Normal envelope shading
-        fig.add_hrect(y0=VOLTAGE_NORMAL_LOW, y1=VOLTAGE_NORMAL_HIGH,
+        fig.add_hrect(y0=config.VOLTAGE_NORMAL_LOW, y1=config.VOLTAGE_NORMAL_HIGH,
                       fillcolor="green", opacity=0.05, line_width=0, row=1, col=1)
 
         add_timeseries(fig, datalog_df, "Battery Voltage", 1, 2, "#2ca02c", "Battery Voltage", bv_animated)
         add_timeseries(fig, datalog_df, "UPS Load", 2, 1, "#d62728", "UPS Load", ul_animated)
         # 80% threshold line on UPS Load
-        fig.add_hline(y=HIGH_LOAD_PCT, line_dash="dash", line_color="orange",
-                      annotation_text=f"{HIGH_LOAD_PCT}% threshold",
+        fig.add_hline(y=config.HIGH_LOAD_PCT, line_dash="dash", line_color="orange",
+                      annotation_text=f"{config.HIGH_LOAD_PCT}% threshold",
                       annotation_position="top right", row=2, col=1)
         add_timeseries(fig, datalog_df, "Battery Capacity", 2, 2, "#bcbd22", "Battery %", bc_animated)
 
@@ -166,7 +166,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     if energy_summary and "samples" in energy_summary:
         s = energy_summary["samples"].copy().sort_values("ts")
         s["cum_kwh"] = s["kwh"].cumsum()
-        s["cum_cost_pcss"] = s["cum_kwh"] * PCSS_FLAT_RATE
+        s["cum_cost_pcss"] = s["cum_kwh"] * config.PCSS_FLAT_RATE
         s_ts = s["ts"].to_numpy()
         fig.add_trace(
             go.Scatter(

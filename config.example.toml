@@ -1,0 +1,27 @@
+# stateOfUPS configuration. Copy to config.toml (auto-loaded from the repo root)
+# or pass an explicit path with --config. Every value is optional; anything you
+# omit falls back to the built-in default in pcss/config.py. CLI flags
+# (--agent-dir, --output) override the file.
+
+[paths]
+# Where PCSS writes its logs. Change if PCSS is reinstalled elsewhere.
+pcss_agent = 'C:\Program Files\APC\PowerChute Serial Shutdown\agent'
+
+[tariff]                 # CRC per kWh; Coopesantos T-RE Residencial.
+coopesantos_low  = 78.17 # first `tier_limit_kwh` per month
+coopesantos_high = 126.51
+tier_limit_kwh   = 200.0
+pcss_flat        = 126.51 # single rate PCSS itself reports with
+
+[grid]
+co2_kg_per_kwh = 0.098    # Costa Rica grid intensity (Low Carbon Power 2024)
+
+[thresholds]
+voltage_normal_low  = 114.0  # NEC ±5% of 120V
+voltage_normal_high = 126.0
+high_load_pct       = 80.0
+datalog_expected_interval_min = 20.0
+
+[runtime_curve]          # empirical BX2000M-LM: watts -> minutes of runtime
+watts   = [0, 100, 150, 250, 500, 600, 800, 1200]
+minutes = [60, 40, 30, 15, 5, 3.5, 2, 0]

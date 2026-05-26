@@ -64,8 +64,10 @@ def compute_stats_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def detect_gaps(df: pd.DataFrame, expected_interval_min: float = config.DATALOG_EXPECTED_INTERVAL_MIN) -> pd.DataFrame:
+def detect_gaps(df: pd.DataFrame, expected_interval_min: float | None = None) -> pd.DataFrame:
     """Find DataLog timestamp gaps > 2× expected interval (likely PC off / PCSS down)."""
+    if expected_interval_min is None:
+        expected_interval_min = config.DATALOG_EXPECTED_INTERVAL_MIN
     if df.empty or len(df) < 2:
         return pd.DataFrame()
     deltas_min = df["ts"].diff().dt.total_seconds() / 60
@@ -89,12 +91,14 @@ def detect_voltage_anomalies(df: pd.DataFrame) -> pd.DataFrame:
     return sub.reset_index(drop=True)
 
 
-def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float = config.HIGH_LOAD_PCT,
+def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = None,
                               min_duration_sec: int = 600) -> pd.DataFrame:
     """
     Find sustained high-load episodes from energylog (>= threshold for >= min_duration).
     Returns one row per episode: start, end, duration_min, peak_pct, peak_w.
     """
+    if threshold_pct is None:
+        threshold_pct = config.HIGH_LOAD_PCT
     if edf.empty or "load_pct" not in edf.columns:
         return pd.DataFrame()
     above = edf["load_pct"] >= threshold_pct
