@@ -48,6 +48,44 @@ def add_timeseries(fig, df, col, row, col_idx, color, ylabel,
         animated.append((len(fig.data) - 1, x, y))
 
 
+def _add_battery_health(fig, datalog_df) -> None:
+    """Overlay a rolling mean + linear-fit degradation trend on the Battery
+    Voltage panel (row 1, col 2). Static reference traces (not animated) — a
+    slow downward slope over weeks/months is the early sign of an aging
+    battery. Kept on the existing panel to avoid disturbing the 7×2 grid and
+    the tuned animation-overlay geometry."""
+    if "Battery Voltage" not in datalog_df.columns:
+        return
+    bv = datalog_df.dropna(subset=["Battery Voltage"])
+    if len(bv) < 5:
+        return
+    ts = bv["ts"]
+    volts = bv["Battery Voltage"].to_numpy(dtype=float)
+    # Rolling mean (~8h window at the 20-min default cadence) to damp noise.
+    roll = bv["Battery Voltage"].rolling(window=24, min_periods=3).mean()
+    fig.add_trace(
+        go.Scatter(
+            x=ts, y=roll, mode="lines", name="BV rolling mean",
+            line=dict(color="#555555", width=1, dash="dot"),
+            hovertemplate="rolling mean<br>%{x|%Y-%m-%d %H:%M}<br>%{y:.2f} V<extra></extra>",
+        ),
+        row=1, col=2,
+    )
+    # Linear fit of voltage vs days-elapsed → slope is the degradation rate.
+    days = (ts - ts.iloc[0]).dt.total_seconds().to_numpy() / 86400.0
+    slope, intercept = np.polyfit(days, volts, 1)
+    trend = slope * days + intercept
+    fig.add_trace(
+        go.Scatter(
+            x=ts, y=trend, mode="lines",
+            name=f"BV trend ({slope:+.3f} V/day)",
+            line=dict(color="#ff7f0e", width=1.5),
+            hovertemplate=f"trend {slope:+.4f} V/day<br>%{{x|%Y-%m-%d %H:%M}}<br>%{{y:.2f}} V<extra></extra>",
+        ),
+        row=1, col=2,
+    )
+
+
 def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.DataFrame,
                     dl_stats: dict, hist_stats: dict, sizes: dict, energy_summary: dict,
                     stats_table: pd.DataFrame, gaps: pd.DataFrame,
@@ -107,6 +145,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                       fillcolor="green", opacity=0.05, line_width=0, row=1, col=1)
 
         add_timeseries(fig, datalog_df, "Battery Voltage", 1, 2, "#2ca02c", "Battery Voltage", bv_animated)
+        _add_battery_health(fig, datalog_df)
         add_timeseries(fig, datalog_df, "UPS Load", 2, 1, "#d62728", "UPS Load", ul_animated)
         # 80% threshold line on UPS Load
         fig.add_hline(y=config.HIGH_LOAD_PCT, line_dash="dash", line_color="orange",

@@ -220,6 +220,10 @@ def main(argv: list[str] | None = None) -> int:
         for frm, to, dmin in gaps[["from", "to", "duration_min"]].head(5).itertuples(index=False, name=None):
             say(f"    {frm} -> {to}  ({dmin:.1f} min)")
 
+    alert_path = _maybe_write_alerts(voltage_anomalies, high_load)
+    if alert_path:
+        say(f"  [alert] appended to {alert_path}")
+
     section("CROSS-VALIDATION (DataLog vs energylog)")
     crossval = cross_validate_load(datalog_df, energy_df) if not energy_df.empty else {}
     if crossval:
@@ -297,6 +301,22 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
         "cross_validation": crossval or {},
     }
     Path(path).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+
+
+def _maybe_write_alerts(voltage_anomalies, high_load) -> Path | None:
+    """Opt-in (config [alerts] enabled): append a timestamped line to
+    alerts.log when the analyzed window has voltage anomalies or sustained
+    high-load. Email/notify is left as an extension point."""
+    if not config.ALERTS_ENABLED:
+        return None
+    n_v, n_h = len(voltage_anomalies), len(high_load)
+    if n_v == 0 and n_h == 0:
+        return None
+    line = (f"{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}  "
+            f"voltage_anomalies={n_v}  high_load_episodes={n_h}\n")
+    with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
+        f.write(line)
+    return config.ALERTS_LOG
 
 
 if __name__ == "__main__":

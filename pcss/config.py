@@ -48,6 +48,13 @@ HIGH_LOAD_PCT = 80.0
 # DataLog default sample interval (PCSS factory default).
 DATALOG_EXPECTED_INTERVAL_MIN = 20.0
 
+# Opt-in alerting: when enabled (config [alerts] enabled=true), the analyzer
+# appends a line to ALERTS_LOG whenever the analyzed window has voltage
+# anomalies or sustained high-load episodes. Email/notify is a documented
+# extension point (no SMTP dependency by default).
+ALERTS_ENABLED = False
+ALERTS_LOG = OUTPUT / "alerts.log"
+
 
 def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
                 output: Path | None = None) -> Path | None:
@@ -63,6 +70,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global COOPESANTOS_TIER_LIMIT_KWH, COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, PCSS_FLAT_RATE
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
+    global ALERTS_ENABLED
 
     if path is None:
         default = Path("config.toml")
@@ -99,6 +107,8 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     if rc.get("watts") and rc.get("minutes"):
         RUNTIME_CURVE_W = np.array(rc["watts"], dtype=float)
         RUNTIME_CURVE_MIN = np.array(rc["minutes"], dtype=float)
+
+    ALERTS_ENABLED = bool(data.get("alerts", {}).get("enabled", ALERTS_ENABLED))
 
     DASHBOARD_HTML = Path(output) if output else (OUTPUT / "dashboard.html")
     return path
