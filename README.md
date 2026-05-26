@@ -80,6 +80,17 @@ Tests are **pytest** under `tests/` (math + tray unit tests, plus browser-driven
 
 Playwright is intentionally *not* in `requirements.txt` (it's in the `dev` extra). Set `STATEOFUPS_E2E_REAL=1` to run E2E against the committed `output/dashboard.html` instead of synthetic data.
 
+## Development (lint + types)
+
+The project is kept **ruff-clean and mypy-clean**. Both are installed by the `dev` extra and configured in `pyproject.toml` (`[tool.ruff]` — pycodestyle/pyflakes/isort/pyupgrade/bugbear/simplify; `[tool.mypy]`). Run before committing:
+
+```
+.venv\Scripts\python.exe -m ruff check .              # lint (add --fix to auto-fix)
+.venv\Scripts\python.exe -m mypy pcss analyze_ups.py tray_status.py
+```
+
+`ruff format` is available too, but the codebase is hand-formatted — run lint, not the formatter, unless you intend a reformat.
+
 ## Files
 
 | File | What it is |
