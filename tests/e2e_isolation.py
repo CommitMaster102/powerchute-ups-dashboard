@@ -10,6 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import run_suite
 
 
@@ -18,6 +19,14 @@ def run(runner, anim_data):
         print(f"\n=== isolation: group {g!r} plays ===")
         runner.test_play_does_not_affect_other_groups(g, anim_data)
         runner.page.wait_for_timeout(150)
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_isolation(runner, anim_data):
+    run(runner, anim_data)
+    assert not runner.failures, str(runner.failures)
 
 
 if __name__ == "__main__":

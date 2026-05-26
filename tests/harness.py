@@ -363,7 +363,7 @@ class TestRunner:
         )
         self.check(
             f"[pause {group}] at least one trace stays partial",
-            any(p < f for p, f in zip(at_pause, full)),
+            any(p < f for p, f in zip(at_pause, full, strict=False)),
             f"atPause={at_pause} full={full}",
         )
         self.check(

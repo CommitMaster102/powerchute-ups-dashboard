@@ -12,6 +12,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import run_suite
 
 
@@ -83,6 +84,14 @@ def run(runner, anim_data):
                  not result["afterEnd"]["playDis"], "")
     runner.check("[btn] pause disabled at end (no auto-restart)",
                  result["afterEnd"]["pauseDis"], "")
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_state_machine(fresh_runner, anim_data):
+    run(fresh_runner, anim_data)
+    assert not fresh_runner.failures, str(fresh_runner.failures)
 
 
 if __name__ == "__main__":

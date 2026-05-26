@@ -11,6 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import run_suite
 from playwright.sync_api import TimeoutError as PWTimeout
 
@@ -60,6 +61,14 @@ def run(runner, anim_data):
         not is_stepping,
         "stepper still running"
     )
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_realistic_play(fresh_runner, anim_data):
+    run(fresh_runner, anim_data)
+    assert not fresh_runner.failures, str(fresh_runner.failures)
 
 
 if __name__ == "__main__":

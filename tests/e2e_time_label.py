@@ -10,6 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import run_suite
 
 
@@ -18,6 +19,14 @@ def run(runner, anim_data):
         print(f"\n=== time-label: group {g!r} ===")
         runner.test_time_label_advances(g, anim_data)
         runner.page.wait_for_timeout(150)
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_time_label(runner, anim_data):
+    run(runner, anim_data)
+    assert not runner.failures, str(runner.failures)
 
 
 if __name__ == "__main__":

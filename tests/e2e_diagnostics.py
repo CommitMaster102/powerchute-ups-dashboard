@@ -14,6 +14,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import run_suite
 
 
@@ -34,7 +35,7 @@ def run(runner, anim_data):
         print(f"  ORIG.dl capture by trace: {full_orig}")
         print(f"  cutoffs_ms[0..2] = {anim_data['lv']['cutoffs_ms'][:3]}")
         print(f"  cutoffs_ms[-3..]  = {anim_data['lv']['cutoffs_ms'][-3:]}")
-        for ti, idx in enumerate(anim_data["lv"]["trace_indices"][:2]):
+        for idx in anim_data["lv"]["trace_indices"][:2]:
             shape = page.evaluate(
                 f"(() => {{const tr = ({runner.gd_handle()}).data[{idx}];"
                 f" const x = tr.x; if (!x) return {{kind:'null'}};"
@@ -80,6 +81,14 @@ def run(runner, anim_data):
                 orig["xlen"] > 0 and orig["ylen"] > 0,
                 f"x={orig['xlen']} y={orig['ylen']}",
             )
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_diagnostics(runner, anim_data):
+    run(runner, anim_data)
+    assert not runner.failures, str(runner.failures)
 
 
 if __name__ == "__main__":

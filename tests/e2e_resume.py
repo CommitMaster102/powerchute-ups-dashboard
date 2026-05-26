@@ -10,6 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import run_suite
 
 
@@ -20,6 +21,14 @@ def run(runner, anim_data):
         print(f"\n=== resume: group {g!r} ===")
         runner.test_play_resumes_full_after_pause_then_play(g, anim_data)
         runner.page.wait_for_timeout(150)
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_resume(runner, anim_data):
+    run(runner, anim_data)
+    assert not runner.failures, str(runner.failures)
 
 
 if __name__ == "__main__":

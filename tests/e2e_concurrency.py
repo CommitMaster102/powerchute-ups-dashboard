@@ -10,6 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import JITTER_MS, run_suite
 
 
@@ -21,7 +22,8 @@ def run(runner, anim_data):
     page = runner.page
     runner.click('.anim-play[data-group="lv"]')
     runner.click('.anim-play[data-group="kw"]')
-    ts = anim_data["lv"]; kw = anim_data["kw"]
+    ts = anim_data["lv"]
+    kw = anim_data["kw"]
     page.wait_for_timeout(max(ts["speed_ms"] * ts["n_frames"],
                               kw["speed_ms"] * kw["n_frames"]) + JITTER_MS + 400)
     ts_post = runner.trace_lengths(ts["trace_indices"])
@@ -31,6 +33,14 @@ def run(runner, anim_data):
         all(L > 0 for L in ts_post) and all(L > 0 for L in kw_post),
         f"ts={ts_post} kw={kw_post}",
     )
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_concurrency(runner, anim_data):
+    run(runner, anim_data)
+    assert not runner.failures, str(runner.failures)
 
 
 if __name__ == "__main__":

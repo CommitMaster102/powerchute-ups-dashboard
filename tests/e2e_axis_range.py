@@ -12,6 +12,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import JITTER_MS, run_suite, wait_ready
 
 AXIS_DUMP_JS = """(() => {
@@ -65,6 +66,14 @@ def run(runner, anim_data):
             r_lower.startswith("2026"),
             f"post range = {r}",
         )
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_axis_range(fresh_runner, anim_data):
+    run(fresh_runner, anim_data)
+    assert not fresh_runner.failures, str(fresh_runner.failures)
 
 
 if __name__ == "__main__":

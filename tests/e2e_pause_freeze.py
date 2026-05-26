@@ -12,6 +12,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 from harness import run_suite
 
 
@@ -22,6 +23,14 @@ def run(runner, anim_data):
         print(f"\n=== pause-freeze: group {g!r} ===")
         runner.test_pause_freezes_state(g, anim_data)
         runner.page.wait_for_timeout(150)
+
+
+pytestmark = pytest.mark.e2e
+
+
+def test_pause_freeze(runner, anim_data):
+    run(runner, anim_data)
+    assert not runner.failures, str(runner.failures)
 
 
 if __name__ == "__main__":

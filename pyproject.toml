@@ -59,6 +59,8 @@ no_implicit_optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]   # make pcss / analyze_ups / tray_status importable from tests
+python_files = ["test_*.py", "e2e_*.py"]   # collect the e2e suites too
 markers = [
     "e2e: browser-driven Playwright dashboard tests (slow; need a generated dashboard)",
 ]
