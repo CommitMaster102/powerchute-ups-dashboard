@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-PowerChute Serial Shutdown (PCSS) log analyzer + live status tray for the APC BX2000M-LM UPS on Windows. PCSS writes logs under `C:\Program Files\APC\PowerChute Serial Shutdown\agent\`; this repo turns them into a dashboard and a system-tray battery icon. Read `README.md` for the domain rationale (why both PCSS-flat and Coopesantos-tiered cost are reported, the empirical growth-rate question, etc.).
+PowerChute Serial Shutdown (PCSS) log analyzer and status tray for the APC BX2000M-LM UPS on Windows. PCSS writes logs under `C:\Program Files\APC\PowerChute Serial Shutdown\agent\`; this repository converts them into a dashboard and a system-tray battery icon. See `README.md` for background: why both PCSS-flat and Coopesantos-tiered cost are reported, and how log growth is measured.
 
-Two entry points share the **`pcss/` package**: `analyze_ups.py` (a thin CLI orchestrator → HTML dashboard) and `tray_status.py` (long-running tray icon). They also share the `output/` directory.
+Two entry points share the **`pcss/` package**: `analyze_ups.py` (a CLI that produces the HTML dashboard) and `tray_status.py` (the tray icon). They also share the `output/` directory.
 
 ## Commands
 
@@ -37,7 +37,7 @@ Tests are **pytest** under `tests/`. `tests/conftest.py` is hermetic: it synthes
 
 ### `pcss/` package — the analyzer
 
-`analyze_ups.py` is a ~320-line CLI orchestrator: `parse_args()` → `config.load_config()` → load logs → compute → `build_dashboard()` → write/open HTML (+ optional `--json` summary, opt-in alerts). The work lives in:
+`analyze_ups.py` is a ~320-line CLI orchestrator: `parse_args()` → `config.load_config()` → load logs → compute → `build_dashboard()` → write/open HTML (plus an optional `--json` summary and opt-in alerts). The modules are:
 
 - **`pcss/config.py`** — defaults + `load_config(path, agent_dir, output)` which overlays a `config.toml` and CLI overrides onto module-level constants. **Config is module-level state**: consumers read `config.X` at call time, so `load_config()` mutating these before the pipeline runs is how overrides take effect (no Config object threaded through every function). `config.example.toml` documents the keys.
 - **`pcss/common.py`** — shared helpers (`parse_es_number`, `parse_pcss_number`, `ts_2010_to_dt`, `fmt_bytes`, `fmt_crc`, `EPOCH_2010`).
@@ -46,24 +46,24 @@ Tests are **pytest** under `tests/`. `tests/conftest.py` is hermetic: it synthes
 - **`pcss/dashboard.py`** — `build_dashboard` (the 7×2 grid) + `add_timeseries` + a static battery-voltage degradation trend.
 - **`pcss/animation.py`** + **`pcss/animation.js`** — the animation system (below).
 
-Three data sources, **three different formats** — the parsing quirks are the heart of this code:
+Three data sources, each in a different format and requiring different parsing:
 - **DataLog** (TSV, ~20-min samples): Spanish-locale numbers (`1.234,56` → `1234.56`) parsed by `read_csv(decimal=",")` (was a per-cell `parse_es_number` apply).
 - **energylog/*.log** (`;`-delimited, 5-min): dot-decimal; `real_w` is always `null` (no wattmeter — power = `relativeLoad × calculatedMaxLoad/100`, max load 1400W from the header). Each row carries its file's `interval_sec` so kWh stays correct if PCSS is reconfigured. Timestamps are **seconds since 2010-01-01 LOCAL time** — `ts_2010_to_dt()`, verified empirically.
 - **EventLog** (binary Java-serialized): only its file size is read.
 
-`output/size_history.csv` is append-only and intentionally outlives PCSS's own log rotation — never truncate it.
+`output/size_history.csv` is append-only and is retained beyond PCSS's own log rotation. Do not truncate it.
 
-### Dashboard animation system (the subtle part)
+### Dashboard animation system
 
-7×2 Plotly grid; per-panel Play/Pause "cumulative reveal" with a deliberate non-standard contract:
+7×2 Plotly grid; per-panel Play/Pause "cumulative reveal" uses the following contract:
 
-- **`fig.frames` is kept EMPTY.** Python never builds `go.Frame`. `_replay_metadata()` / `_runtime_metadata()` / `_heatmap_metadata()` (in `pcss/animation.py`) emit pure metadata dicts; `_register_animation()` collects them.
-- The initial render shows full data immediately. On Play, hand-written JS — kept in **`pcss/animation.js`** (loaded and injected via a single `__ANIM_DATA__` token by `_build_custom_controls_html`/`_inject_controls_into_html`) — reconstructs frames client-side by slicing live trace data against `cutoffs_ms`.
-- **Timezone trap:** Plotly serializes datetimes as ISO strings *without* a timezone; JS `Date.parse` reads those as LOCAL while Python cutoffs (`pd.Timestamp.value`, always ns) are UTC. The fix forces UTC parsing in JS. `tests/test_animation_slicing.py` guards this; the browser-driven counterparts live in `tests/e2e_*.py`.
+- **`fig.frames` is kept EMPTY.** Python never builds `go.Frame`. `_replay_metadata()` / `_runtime_metadata()` / `_heatmap_metadata()` (in `pcss/animation.py`) emit metadata dicts; `_register_animation()` collects them.
+- The initial render shows full data immediately. On Play, custom JS — kept in **`pcss/animation.js`** (loaded and injected via a single `__ANIM_DATA__` token by `_build_custom_controls_html`/`_inject_controls_into_html`) — reconstructs frames in the browser by slicing live trace data against `cutoffs_ms`.
+- **Timezone handling:** Plotly serializes datetimes as ISO strings *without* a timezone; JS `Date.parse` reads those as LOCAL while Python cutoffs (`pd.Timestamp.value`, always ns) are UTC. The JS forces UTC parsing to match. `tests/test_animation_slicing.py` tests this; the browser-driven equivalents are in `tests/e2e_*.py`.
 
-### `tray_status.py` — the live tray icon
+### `tray_status.py` — the tray icon
 
-Long-running pystray loop scraping the PCSS web UI (`https://localhost:6547`). **TLS is pinned, not disabled**: `PCSSClient` trust-on-first-use saves the server's self-signed cert to `output/pcss_cert.pem`, verifies against it, and re-pins once on `SSLError` (`_request` wraps every call). The **password lives in the OS keyring** (Windows Credential Manager, service `stateOfUPS-PCSS`); a plaintext password in `credentials.txt` is migrated into the keyring on first run and the file line blanked. `PCSSClient` handles the Java form-token login (`j_security_check`), auto re-login on `SessionExpired`, and backs off on `UserAlreadyConnected`. `parse_status()` extracts battery % from Spanish-locale HTML; `render_icon()` draws the icon. Single-instance mutex; file-only logging.
+A pystray loop that polls the PCSS web UI (`https://localhost:6547`). **TLS is pinned, not disabled**: `PCSSClient` saves the server's self-signed cert to `output/pcss_cert.pem` on first connection, verifies against it, and re-pins once on `SSLError` (`_request` wraps every call). The **password is stored in the OS keyring** (Windows Credential Manager, service `stateOfUPS-PCSS`); a plaintext password in `credentials.txt` is migrated into the keyring on first run and the file line is blanked. `PCSSClient` handles the Java form-token login (`j_security_check`), re-logs in on `SessionExpired`, and polls less often on `UserAlreadyConnected` (another session holds the login). `parse_status()` extracts the battery percentage from Spanish-locale HTML; `render_icon()` draws the icon. Single-instance mutex; file-only logging.
 
 `credentials.txt` holds username/url/poll (gitignored). Delete `output/pcss_cert.pem` to force a re-pin (e.g. after a PCSS reinstall).
 

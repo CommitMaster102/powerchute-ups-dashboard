@@ -10,12 +10,12 @@ PCSS logs are written in three places under `C:\Program Files\APC\PowerChute Ser
 - `EventLog` — binary, Java-serialized
 - `energylog/*.log` — monthly energy / cost / CO2 rollups
 
-The PCSS GUI shows current values but does not give a long-horizon view, and there is no built-in way to know how fast logs grow on disk. This analyzer answers two questions:
+The PCSS GUI shows current values but does not show history over time, and has no way to report how fast the logs grow on disk. This analyzer provides two things:
 
-1. **What does the UPS look like over time?** — Plotly dashboard with voltage / load / battery time series, sample-interval histogram, and latest-readings table.
-2. **How fast do PCSS logs grow?** — every run appends a snapshot to `output/size_history.csv`, then plots the growth curve and projects forward.
+1. **UPS state over time** — a Plotly dashboard with voltage / load / battery time series, a sample-interval histogram, and a latest-readings table.
+2. **Log growth rate** — each run appends a snapshot to `output/size_history.csv`, then plots the growth curve and projects it forward.
 
-The second question matters because PCSS exposes data-log retention and sample-interval settings; without measured growth data, picking values is guesswork. This script gives the empirical answer.
+The second is useful because PCSS exposes data-log retention and sample-interval settings; the size history provides measured data for choosing those values instead of estimating them.
 
 ## How to run
 
@@ -31,7 +31,7 @@ It will:
 3. Print a console summary (sizes, sample counts, projections, growth rates).
 4. Write `output/dashboard.html` and open it in your browser.
 
-The more often you run it, the more accurate the growth-rate plot becomes — every run is a new data point on the size-history curve.
+Each run adds a data point to the size-history curve, which improves the growth-rate projection over time.
 
 ## First-time setup
 
@@ -97,13 +97,13 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 |---|---|
 | `analyze_ups.py` | CLI orchestrator. Loads logs, computes stats, builds the dashboard. |
 | `pcss/` | The package: `config`, `common`, `loaders`, `stats`, `dashboard`, `animation` (+ `animation.js`). |
-| `tray_status.py` | Live system-tray battery icon (scrapes the PCSS web UI). |
+| `tray_status.py` | System-tray battery icon; reads the PCSS web UI. |
 | `config.example.toml` | Template config; copy to `config.toml`. |
 | `run_analyzer.bat` / `run_tray.bat` | Double-click launchers. |
 | `pyproject.toml` / `requirements.txt` | Packaging + deps (ruff/mypy/pytest config in pyproject). |
 | `tests/` | pytest: `test_math.py`, `test_tray.py`, `test_animation_slicing.py`, `conftest.py` (hermetic fixture), `harness.py`, one `e2e_*.py` per browser suite. |
 | `output/dashboard.html` | Latest dashboard. Overwritten each run. |
-| `output/size_history.csv` | Append-only growth log. **Don't delete** — the longer it runs, the better the projection. |
+| `output/size_history.csv` | Append-only growth log. Do not delete; more snapshots improve the projection. |
 
 ## Dashboard layout (7 rows × 2 cols = 14 panels)
 
@@ -121,10 +121,10 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 
 **Energy & cost (from `energylog/*.log`):**
 - Total kWh over recorded period
-- Cost calculated **two ways**: PCSS flat-rate (what PCSS itself reports) vs Coopesantos T-RE Residencial tiered (₡78.17 first 200 kWh, ₡126.51 above) — the tiered figure is what your bill actually uses
+- Cost calculated **two ways**: PCSS flat-rate (what PCSS reports) and Coopesantos T-RE Residencial tiered (₡78.17 for the first 200 kWh, ₡126.51 above); the tiered figure matches the actual electricity bill
 - CO₂ emissions at 0.098 kg/kWh (CR grid intensity, Low Carbon Power 2024)
 - Per-month breakdown
-- Daily and hourly profiles (heatmap shows when in the day you draw power)
+- Daily and hourly profiles (the heatmap shows power draw by hour of day)
 
 **Anomaly detection:**
 - Line voltage outside the 114-126V envelope (NEC ±5% of nominal 120V)
@@ -132,24 +132,24 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 - DataLog timestamp gaps > 2× expected interval (PCSS down / PC off)
 
 **Cross-validation:**
-- DataLog `UPS Load` (20-min) vs energylog `relativeLoad` (5-min) — MAE comparison confirms both sources agree. If they ever diverge significantly, something's broken.
+- DataLog `UPS Load` (20-min) vs energylog `relativeLoad` (5-min). The mean absolute error compares the two sources; a large divergence indicates a data problem.
 
 **Runtime estimate:**
-- Empirical runtime curve from `ups_profile` memory (Idle 30min @ 150W → Peak 3.5min @ 600W). Plots full curve with current power reading marked.
+- Empirical runtime curve (defaults in `pcss/config.py`, overridable via `config.toml` `[runtime_curve]`): Idle 30 min @ 150W to Peak 3.5 min @ 600W. Plots the full curve with the current power reading marked.
 
 **Statistics summary:**
 - Per-column min / mean / median / p95 / max for every numeric DataLog field.
 
-## Things worth knowing
+## Notes
 
-- **DataLog sample interval is set in PCSS, not here.** Default is 20 min. The histogram in row 3 confirms whatever PCSS is actually doing.
-- **EventLog is binary.** Only its size is read — contents are not parsed. This is intentional; events are visible in the PCSS UI.
-- **`size_history.csv` is the long-running record.** It survives across PCSS log rotations (defaults to 1-month retention) so you can still see trends after PCSS truncates its own logs.
+- **DataLog sample interval is set in PCSS, not here.** Default is 20 min. The sample-interval histogram (row 5, right) shows the interval PCSS actually uses.
+- **EventLog is binary.** Only its size is read; contents are not parsed. Events are visible in the PCSS UI.
+- **`size_history.csv` is the long-running record.** It is retained across PCSS log rotations (default 1-month retention), so trends remain visible after PCSS truncates its own logs.
 - **Empirical growth rate (measured 2026-04-28 → 2026-05-01):** ~7.9 KB/day across all three logs combined → ~2.9 MB/year. PCSS defaults (1-month retention, 20-min interval) are appropriate for this workload; no need to tune them.
 - **DataLog uses Spanish locale numbers** (`1.234,56` → 1234.56), parsed by `read_csv(decimal=",")` in `pcss/loaders.py`.
 - **energylog uses dot-decimal** numbers and timestamps as **seconds since 2010-01-01 LOCAL** (not UTC, not Unix epoch). Verified empirically by aligning the first energylog timestamp with the first DataLog timestamp.
 - **Real wattage is `null`** in energylog — the BX2000M has no wattmeter. PCSS calculates power as `relativeLoad × calculatedMaxLoad / 100`, where `calculatedMaxLoad` is 1400W (declared in the energylog header).
-- **PCSS cost is wrong by design.** PCSS supports only a single rate, but Coopesantos T-RE is tiered. The dashboard reports both so the discrepancy is visible. The "Cost (Coopesantos tiered)" row in the summary table is the one that matches an actual bill.
+- **PCSS reports a single-rate cost.** PCSS supports only one rate, but Coopesantos T-RE is tiered, so the PCSS figure differs from the bill. The dashboard reports both. The "Cost (Coopesantos tiered)" row in the summary table matches the actual bill.
 - **Tariff constants** default in `pcss/config.py` and are overridable via `config.toml` `[tariff]` (`coopesantos_low/high`, `tier_limit_kwh`, `pcss_flat`). When the quarterly Coopesantos rate changes, edit `config.toml` — no code change. (The scheduled `trig_01PgYk7Fb6HXqGjcJ5CiAbC1` agent will email when this needs to happen.)
 - **High-load episode duration** counts each sample as one sampling interval, so a k-sample run is ~k×interval (not the (k−1)×interval span between first/last timestamps); this can surface short episodes the old span-based measure missed.
 
