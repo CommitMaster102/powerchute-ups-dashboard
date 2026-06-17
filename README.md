@@ -101,7 +101,7 @@ Tests are **pytest** under `tests/` (math + tray unit tests, plus browser-driven
 .venv\Scripts\python.exe -m pytest tests\test_math.py -k tiered
 ```
 
-**Speed:** each E2E suite is parametrized **per animation group** (so `pytest-xdist`'s `-n auto` spreads ~43 short browser checks across cores instead of looping 8 groups serially in one test), and every E2E test reloads to a pristine page so it is order-independent under parallel workers. `--reruns` (pytest-rerunfailures) absorbs the rare browser-timing flake. On a many-core machine the full suite finishes in under 32 seconds; the unit-only run is sub-second.
+**Speed:** each E2E suite is parametrized **per animation group** (so `pytest-xdist`'s `-n auto` spreads ~43 short browser checks across cores instead of looping 8 groups serially in one test), and every E2E test resets the page in place between tests (`__animDebug.resetAll()` — restore full data + idle, no full reload) so it is order-independent under parallel workers and stays fast even on low-core CI. `--reruns` (pytest-rerunfailures) absorbs the rare browser-timing flake. On a many-core machine the full suite finishes in under 32 seconds; the unit-only run is sub-second.
 
 **CI** (`.github/workflows/ci.yml`, Windows) always runs lint + types + the unit suite on a code change (docs-only changes skip even that). The slow browser suite is **opt-in**, because it's expensive: it runs only when a pull request carries the **`e2e`** label (add the label to trigger a run) or when the workflow is dispatched manually (Actions → Run workflow). Ordinary pushes don't run it. The lint/unit job installs only `.[lint,test]`, so it never downloads Playwright.
 
@@ -129,7 +129,7 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 | `run_analyzer.bat` / `run_tray.bat` | Double-click launchers. |
 | `register_scheduled_task.ps1` / `scheduled_run.ps1` | Set up and run a guarded daily analyzer task (Windows Task Scheduler). |
 | `pyproject.toml` / `requirements.txt` | Packaging + deps (ruff/mypy/pytest config in pyproject). |
-| `tests/` | pytest: `test_math.py`, `test_tray.py`, `test_animation_slicing.py`, `conftest.py` (hermetic fixture), `harness.py`, one `e2e_*.py` per browser suite. |
+| `tests/` | pytest: `test_math.py`, `test_pipeline.py`, `test_tray.py`, `test_animation_slicing.py`, `conftest.py` (hermetic fixture), `harness.py`, one per-group-parametrized `e2e_*.py` per browser suite. |
 | `output/dashboard.html` | Latest dashboard. Overwritten each run. |
 | `output/size_history.csv` | Append-only growth log. Do not delete; more snapshots improve the projection. |
 
