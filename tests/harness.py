@@ -25,6 +25,7 @@ output/dashboard.html before running any E2E suite.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from collections.abc import Callable
@@ -386,12 +387,27 @@ class TestRunner:
         if a["type"] != "cumulative":
             return
         nominal_ms = a["speed_ms"] * a["n_frames"]
-        self.click(f'.anim-play[data-group="{group}"]')
-        self.page.wait_for_timeout(int(nominal_ms * 0.3))
-        self.click(f'.anim-pause[data-group="{group}"]')
-        self.page.wait_for_timeout(150)
-        self.click(f'.anim-play[data-group="{group}"]')
-        self.page.wait_for_timeout(nominal_ms + JITTER_MS)
+        # Drive play→pause→replay inside ONE page.evaluate. With separate
+        # Playwright clicks, CDP latency on a loaded runner can let the short
+        # (~2.4s) animation finish before the pause click lands — then the
+        # pause button is already disabled and the click times out. Same
+        # in-browser technique the pause-freeze / state-machine suites use.
+        self.page.evaluate(f"""(async () => {{
+          const g = {json.dumps(group)};
+          const playBtn = document.querySelector('.anim-play[data-group="' + g + '"]');
+          const pauseBtn = document.querySelector('.anim-pause[data-group="' + g + '"]');
+          playBtn.click();
+          await new Promise(r => setTimeout(r, {int(nominal_ms * 0.3)}));
+          pauseBtn.click();
+          await new Promise(r => setTimeout(r, 100));
+          playBtn.click();   // replay from the start
+        }})()""")
+        # Poll the real completion signal rather than sleeping a fixed time.
+        with contextlib.suppress(PWTimeout):
+            self.page.wait_for_function(
+                f"window.__animDebug.getState({json.dumps(group)}) === 'ended'",
+                timeout=nominal_ms + JITTER_MS + RPC_OVERHEAD_MS,
+            )
         post = self.trace_lengths(a["trace_indices"])
         self.check(
             f"[replay {group}] re-Play after Pause restores full data",

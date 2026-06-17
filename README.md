@@ -103,7 +103,7 @@ Tests are **pytest** under `tests/` (math + tray unit tests, plus browser-driven
 
 **Speed:** each E2E suite is parametrized **per animation group** (so `pytest-xdist`'s `-n auto` spreads ~43 short browser checks across cores instead of looping 8 groups serially in one test), and every E2E test reloads to a pristine page so it is order-independent under parallel workers. `--reruns` (pytest-rerunfailures) absorbs the rare browser-timing flake. On a many-core machine the full suite finishes in under 32 seconds; the unit-only run is sub-second.
 
-**CI** (`.github/workflows/ci.yml`, Windows) skips the slow browser job entirely unless a change touches the dashboard/animation code or the E2E harness (`pcss/animation.*`, `pcss/dashboard.py`, `analyze_ups.py`, `tests/conftest.py|harness.py|e2e_*.py`). Docs-only and most code changes run just the unit suite.
+**CI** (`.github/workflows/ci.yml`, Windows) always runs lint + types + the unit suite on a code change (docs-only changes skip even that). The slow browser suite is **opt-in**, because it's expensive: it runs only when a pull request carries the **`e2e`** label (add the label to trigger a run) or when the workflow is dispatched manually (Actions → Run workflow). Ordinary pushes don't run it. The lint/unit job installs only `.[lint,test]`, so it never downloads Playwright.
 
 Playwright is intentionally *not* in `requirements.txt` (it's in the `dev` extra, with `pytest-xdist` and `pytest-rerunfailures`). Set `STATEOFUPS_E2E_REAL=1` to run E2E against the generated `output/dashboard.html` (which you must have produced locally — `output/` is gitignored) instead of synthetic data.
 

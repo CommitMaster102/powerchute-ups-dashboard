@@ -21,13 +21,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Granular extras so each CI job installs only what it needs — the lint+unit
+# job skips the ~36 MiB Playwright download entirely.
+lint = ["ruff>=0.6", "mypy>=1.11"]
+test = ["pytest>=8.0", "pytest-xdist>=3.6", "pytest-rerunfailures>=14.0"]
+e2e = ["playwright>=1.49"]
+# Everything, for local development (one install does it all).
 dev = [
-    "playwright>=1.49",
+    "ruff>=0.6",
+    "mypy>=1.11",
     "pytest>=8.0",
     "pytest-xdist>=3.6",
     "pytest-rerunfailures>=14.0",
-    "ruff>=0.6",
-    "mypy>=1.11",
+    "playwright>=1.49",
 ]
 
 [project.scripts]

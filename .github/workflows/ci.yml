@@ -6,27 +6,31 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `labeled` so adding the `e2e` label to an open PR triggers a run.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Cancel superseded runs on a PR branch (the dominant source of wasted minutes);
-# every push to main is still fully tested.
+# Cancel superseded runs on a PR branch; every push to main is fully tested.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # The runner cache (D:) and install target (C:) are different filesystems, so
+  # uv's hardlink fails and falls back to copy with a warning. Tell it to copy
+  # up front — no failed-hardlink probe, no warning.
+  UV_LINK_MODE: copy
+
 jobs:
-  # Decide what changed. The browser E2E suite is slow, so it only runs when code
-  # that can affect the rendered dashboard or its animations changed. Everything
-  # else just needs the sub-second unit tests; docs-only changes need neither.
-  # (Runs on Ubuntu — it is only a git diff, no project code executes here.)
+  # Detect whether anything other than Markdown changed, so docs-only changes
+  # skip the test job. (Only a git diff runs here, so Ubuntu is fine.)
   changes:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
-      anim: ${{ steps.filter.outputs.anim }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -36,21 +40,12 @@ jobs:
             code:
               - '**'
               - '!**/*.md'
-            anim:
-              - 'pcss/animation.py'
-              - 'pcss/animation.js'
-              - 'pcss/dashboard.py'
-              - 'analyze_ups.py'
-              - 'tests/conftest.py'
-              - 'tests/harness.py'
-              - 'tests/e2e_*.py'
-              - 'pyproject.toml'
-              - '.github/workflows/ci.yml'
 
   # Always-on for code changes: lint + types + the fast unit suite (no browser).
+  # Installs only lint + test extras — NOT Playwright — so the install is lean.
   lint-unit:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,8 +55,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - name: Install (runtime + dev)
-        run: uv pip install --system -e ".[dev]"
+          cache-suffix: lint
+      - name: Install (runtime + lint + test)
+        run: uv pip install --system -e ".[lint,test]"
       - name: Lint (ruff)
         run: python -m ruff check .
       - name: Types (mypy)
@@ -69,12 +65,16 @@ jobs:
       - name: Unit tests (no browser)
         run: python -m pytest tests -m "not e2e" -q
 
-  # Slow browser suite: only when animation/dashboard/test code changed.
-  # Parametrized per group + pytest-xdist so the 43 items spread across the
-  # runner's cores; --reruns absorbs the occasional browser-timing flake.
+  # Slow browser suite — OPT-IN ONLY (it's expensive). It runs when:
+  #   * a pull request carries the `e2e` label (add the label to trigger), or
+  #   * the workflow is dispatched manually (Actions tab → Run workflow).
+  # It does NOT run on ordinary pushes/PRs.
   e2e:
     needs: changes
-    if: needs.changes.outputs.anim == 'true'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'e2e'))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,8 +84,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - name: Install (runtime + dev)
-        run: uv pip install --system -e ".[dev]"
+          cache-suffix: e2e
+      - name: Install (runtime + test + e2e)
+        run: uv pip install --system -e ".[test,e2e]"
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
@@ -98,7 +99,8 @@ jobs:
         run: python -m pytest tests -m e2e -n auto --dist worksteal --reruns 2 --reruns-delay 1 -q
 
   # Single required status check. Always runs, so a required check always reports
-  # a result even when a job was skipped (docs-only PR, or no animation change).
+  # a result even when the E2E job was skipped (the common case) or lint-unit was
+  # skipped for a docs-only change.
   ci-required:
     needs: [lint-unit, e2e]
     if: always()
