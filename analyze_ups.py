@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import webbrowser
 from pathlib import Path
 
@@ -18,7 +19,6 @@ import pandas as pd
 
 from pcss import config
 from pcss.animation import _inject_controls_into_html
-from pcss.animation import _replay_metadata as _replay_metadata  # noqa: F401  re-export for tests
 from pcss.common import fmt_bytes
 from pcss.dashboard import build_dashboard
 from pcss.loaders import (
@@ -110,6 +110,20 @@ def main(argv: list[str] | None = None) -> int:
         say(f"  Config: {used_cfg or 'built-in defaults'}")
         say(f"  Agent dir: {config.PCSS_AGENT}")
 
+    # The default agent path is Windows-only (that's where PCSS runs). On any
+    # platform, if it isn't there, tell the user how to point at exported logs
+    # instead of silently producing an empty report. Printed to stderr so it
+    # never pollutes stdout / --json, and shown even under --quiet.
+    if not config.PCSS_AGENT.exists():
+        print(
+            f"[warn] PCSS agent directory not found: {config.PCSS_AGENT}\n"
+            "       PowerChute Serial Shutdown runs on Windows. Point the analyzer\n"
+            "       at a directory of exported logs with:  --agent-dir PATH\n"
+            "       or a config.toml [paths] pcss_agent = '...' (see config.example.toml).\n"
+            "       Continuing; the report will be empty unless logs are reachable.",
+            file=sys.stderr,
+        )
+
     since_ts = pd.to_datetime(args.since) if args.since else None
     until_ts = (pd.to_datetime(args.until) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)) if args.until else None
 
@@ -145,8 +159,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         say("  Run again later to see growth between snapshots.")
 
-    datalog_df = _date_filter(load_datalog(), since_ts, until_ts)
-    dl_stats = datalog_stats(datalog_df, sizes["DataLog"])
+    # Disk-growth projections must use the full on-disk log: sizes["DataLog"]
+    # is the whole-file size, so datalog_stats() needs the unfiltered frame —
+    # otherwise file_size / (filtered span) over-reports the growth rate by
+    # roughly full_span/filtered_span. Everything downstream (anomalies, gaps,
+    # energy, cross-validation, dashboard series) uses the filtered frame.
+    raw_datalog_df = load_datalog()
+    datalog_df = _date_filter(raw_datalog_df, since_ts, until_ts)
+    dl_stats = datalog_stats(raw_datalog_df, sizes["DataLog"])
 
     section("DATALOG SUMMARY")
     if datalog_df.empty:

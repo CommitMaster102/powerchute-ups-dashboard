@@ -1,0 +1,113 @@
+name: CI
+
+# PowerChute Serial Shutdown is a Windows product and the tray uses the Windows
+# Credential Manager + a Windows tray backend, so the test jobs run on Windows.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on a PR branch (the dominant source of wasted minutes);
+# every push to main is still fully tested.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Decide what changed. The browser E2E suite is slow, so it only runs when code
+  # that can affect the rendered dashboard or its animations changed. Everything
+  # else just needs the sub-second unit tests; docs-only changes need neither.
+  # (Runs on Ubuntu — it is only a git diff, no project code executes here.)
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      anim: ${{ steps.filter.outputs.anim }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+            anim:
+              - 'pcss/animation.py'
+              - 'pcss/animation.js'
+              - 'pcss/dashboard.py'
+              - 'analyze_ups.py'
+              - 'tests/conftest.py'
+              - 'tests/harness.py'
+              - 'tests/e2e_*.py'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+
+  # Always-on for code changes: lint + types + the fast unit suite (no browser).
+  lint-unit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install (runtime + dev)
+        run: uv pip install --system -e ".[dev]"
+      - name: Lint (ruff)
+        run: python -m ruff check .
+      - name: Types (mypy)
+        run: python -m mypy pcss analyze_ups.py tray_status.py
+      - name: Unit tests (no browser)
+        run: python -m pytest tests -m "not e2e" -q
+
+  # Slow browser suite: only when animation/dashboard/test code changed.
+  # Parametrized per group + pytest-xdist so the 43 items spread across the
+  # runner's cores; --reruns absorbs the occasional browser-timing flake.
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.anim == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install (runtime + dev)
+        run: uv pip install --system -e ".[dev]"
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+      - name: Browser E2E tests
+        run: python -m pytest tests -m e2e -n auto --dist worksteal --reruns 2 --reruns-delay 1 -q
+
+  # Single required status check. Always runs, so a required check always reports
+  # a result even when a job was skipped (docs-only PR, or no animation change).
+  ci-required:
+    needs: [lint-unit, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed
+        env:
+          LINT_UNIT: ${{ needs.lint-unit.result }}
+          E2E: ${{ needs.e2e.result }}
+        run: |
+          echo "lint-unit=$LINT_UNIT  e2e=$E2E"
+          for r in "$LINT_UNIT" "$E2E"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::A required CI job did not pass."
+              exit 1
+            fi
+          done
+          echo "All required CI jobs passed or were skipped."

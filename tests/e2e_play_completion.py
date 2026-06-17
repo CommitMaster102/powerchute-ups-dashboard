@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
-from harness import run_suite
+from harness import ALL_GROUPS, run_suite
 
 
 def run(runner, anim_data):
@@ -24,12 +24,14 @@ def run(runner, anim_data):
 pytestmark = pytest.mark.e2e
 
 
-def test_play_completion(fresh_runner, anim_data):
-    # Needs a pristine page: it asserts each panel returns to its FULL pre-play
-    # length, so a prior suite leaving a panel paused-partial would break the
-    # baseline. fresh_runner reloads first.
-    run(fresh_runner, anim_data)
-    assert not fresh_runner.failures, str(fresh_runner.failures)
+# One item per group. `runner` reloads first, so each asserts its panel returns
+# to FULL from a pristine baseline regardless of what ran before it.
+@pytest.mark.parametrize("group", ALL_GROUPS)
+def test_play_completion(runner, anim_data, group):
+    if group not in anim_data:
+        pytest.skip(f"group {group!r} absent from ANIM_DATA")
+    runner.test_play_completes_with_full_data(group, anim_data)
+    assert not runner.failures, str(runner.failures)
 
 
 if __name__ == "__main__":

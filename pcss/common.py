@@ -31,19 +31,6 @@ def fmt_crc(n: float) -> str:
     return f"CRC {n:,.2f}"
 
 
-def parse_es_number(x):
-    """Parse Spanish-locale number (1.234,56 -> 1234.56)."""
-    if isinstance(x, str):
-        x = x.strip()
-        if x in ("N/A", "", "NaN", "null"):
-            return np.nan
-        x = x.replace(".", "").replace(",", ".")
-    try:
-        return float(x)
-    except (ValueError, TypeError):
-        return np.nan
-
-
 def parse_pcss_number(x):
     """Parse PCSS energylog number (1234.567 dot decimal, may be 'null')."""
     if isinstance(x, str):

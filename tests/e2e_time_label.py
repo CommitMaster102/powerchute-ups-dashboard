@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
-from harness import run_suite
+from harness import ALL_GROUPS, run_suite
 
 
 def run(runner, anim_data):
@@ -24,8 +24,11 @@ def run(runner, anim_data):
 pytestmark = pytest.mark.e2e
 
 
-def test_time_label(runner, anim_data):
-    run(runner, anim_data)
+@pytest.mark.parametrize("group", ALL_GROUPS)
+def test_time_label(runner, anim_data, group):
+    if group not in anim_data:
+        pytest.skip(f"group {group!r} absent from ANIM_DATA")
+    runner.test_time_label_advances(group, anim_data)
     assert not runner.failures, str(runner.failures)
 
 

@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
-from harness import run_suite
+from harness import CUMULATIVE_GROUPS, run_suite
 
 
 def run(runner, anim_data):
@@ -28,8 +28,12 @@ def run(runner, anim_data):
 pytestmark = pytest.mark.e2e
 
 
-def test_pause_freeze(runner, anim_data):
-    run(runner, anim_data)
+# Only cumulative panels have a meaningful partial length to freeze.
+@pytest.mark.parametrize("group", CUMULATIVE_GROUPS)
+def test_pause_freeze(runner, anim_data, group):
+    if group not in anim_data:
+        pytest.skip(f"group {group!r} absent from ANIM_DATA")
+    runner.test_pause_freezes_state(group, anim_data)
     assert not runner.failures, str(runner.failures)
 
 

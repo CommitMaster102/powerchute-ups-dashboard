@@ -25,3 +25,8 @@ datalog_expected_interval_min = 20.0
 [runtime_curve]          # empirical BX2000M-LM: watts -> minutes of runtime
 watts   = [0, 100, 150, 250, 500, 600, 800, 1200]
 minutes = [60, 40, 30, 15, 5, 3.5, 2, 0]
+
+[alerts]
+# Opt-in. When true, a run that finds voltage anomalies or sustained high-load
+# episodes appends one line to output/alerts.log. Off by default.
+enabled = false

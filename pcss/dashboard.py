@@ -22,9 +22,12 @@ from pcss.stats import estimate_runtime
 
 
 def add_timeseries(fig, df, col, row, col_idx, color, ylabel,
-                   animated: list | None = None):
+                   animated: list | None = None, show_legend: bool = True):
     """Add a time-series trace. If `animated` is a list, append
-    (trace_index, x_array, y_array) so the caller can build animation frames."""
+    (trace_index, x_array, y_array) so the caller can build animation frames.
+    `show_legend=False` keeps the trace off the shared legend (used for
+    single-trace panels whose subplot title already names them — it keeps the
+    horizontal legend short enough not to wrap into the figure title)."""
     if col not in df.columns:
         return
     series = df[col].dropna()
@@ -41,6 +44,7 @@ def add_timeseries(fig, df, col, row, col_idx, color, ylabel,
             marker=dict(size=5),
             hovertemplate=f"<b>{ylabel}</b><br>%{{x|%Y-%m-%d %H:%M}}<br>%{{y}}<extra></extra>",
             legendgroup=ylabel,
+            showlegend=show_legend,
         ),
         row=row, col=col_idx,
     )
@@ -146,12 +150,14 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 
         add_timeseries(fig, datalog_df, "Battery Voltage", 1, 2, "#2ca02c", "Battery Voltage", bv_animated)
         _add_battery_health(fig, datalog_df)
-        add_timeseries(fig, datalog_df, "UPS Load", 2, 1, "#d62728", "UPS Load", ul_animated)
+        add_timeseries(fig, datalog_df, "UPS Load", 2, 1, "#d62728", "UPS Load", ul_animated,
+                       show_legend=False)
         # 80% threshold line on UPS Load
         fig.add_hline(y=config.HIGH_LOAD_PCT, line_dash="dash", line_color="orange",
                       annotation_text=f"{config.HIGH_LOAD_PCT}% threshold",
                       annotation_position="top right", row=2, col=1)
-        add_timeseries(fig, datalog_df, "Battery Capacity", 2, 2, "#bcbd22", "Battery %", bc_animated)
+        add_timeseries(fig, datalog_df, "Battery Capacity", 2, 2, "#bcbd22", "Battery %", bc_animated,
+                       show_legend=False)
 
     # ----- Row 3 col 1: Power consumption from energylog -----
     if not energy_df.empty:
@@ -162,6 +168,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                 mode="lines", name="Power (W)",
                 line=dict(color="#e377c2", width=1.5),
                 hovertemplate="<b>Power</b><br>%{x|%Y-%m-%d %H:%M}<br>%{y:.0f} W<extra></extra>",
+                showlegend=False,
             ),
             row=3, col=1,
         )
@@ -237,19 +244,23 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                 marker_color="#9467bd",
                 hovertemplate="%{x}<br>%{y:.4f} kWh<extra></extra>",
                 name="Daily kWh",
+                showlegend=False,
             ),
             row=4, col=2,
         )
 
     # ----- Row 5 col 1: Runtime estimate curve + current point -----
     w_axis = np.linspace(0, 1300, 200)
-    rt_axis = [estimate_runtime(w) for w in w_axis]
+    # np.interp matches estimate_runtime() over [0, 1300] (w<=0 maps to the
+    # first curve point either way) — vectorized, so no 200-iteration loop.
+    rt_axis = np.interp(w_axis, config.RUNTIME_CURVE_W, config.RUNTIME_CURVE_MIN)
     fig.add_trace(
         go.Scatter(
             x=w_axis, y=rt_axis, mode="lines",
             name="Runtime curve",
             line=dict(color="#8c564b", width=2),
             hovertemplate="%{x:.0f} W → %{y:.1f} min<extra></extra>",
+            showlegend=False,
         ),
         row=5, col=1,
     )
@@ -275,7 +286,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         deltas = datalog_df["ts"].diff().dt.total_seconds().dropna()
         if not deltas.empty:
             fig.add_trace(
-                go.Histogram(x=deltas, nbinsx=30, marker_color="#7f7f7f", name="Intervals"),
+                go.Histogram(x=deltas, nbinsx=30, marker_color="#7f7f7f", name="Intervals",
+                             showlegend=False),
                 row=5, col=2,
             )
 
@@ -308,13 +320,18 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                 line=dict(color="#ff7f0e", width=2),
                 name="Projected DataLog size",
                 hovertemplate="Day %{x}<br>%{y:.1f} KB<extra></extra>",
+                showlegend=False,
             ),
             row=6, col=2,
         )
         for d, lbl in [(30, "1 mo"), (90, "3 mo"), (180, "6 mo"), (365, "1 yr")]:
             v = (dl_stats["daily_bytes"] * d) / 1024
+            # Use row/col so Plotly resolves the correct axis refs. The
+            # secondary_y on row 4 col 1 adds an extra y-axis, which shifts
+            # this panel's data onto y13 — hardcoding "y12" anchored the
+            # annotations to a data-less axis and pushed them off-scale.
             fig.add_annotation(
-                x=d, y=v, xref=f"x{12}", yref=f"y{12}",
+                x=d, y=v, row=6, col=2,
                 text=f"{lbl}<br>{v:.0f} KB",
                 showarrow=True, arrowhead=2, ax=20, ay=-25,
                 font=dict(size=9),
@@ -347,7 +364,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         rows.append(["", ""])
         rows.append(["═ ENERGY ═", ""])
         rows.append(["Total kWh", f"{energy_summary['total_kwh']:.4f}"])
-        rows.append(["Cost (PCSS flat ₡126.51)", fmt_crc(energy_summary["total_cost_pcss"])])
+        rows.append([f"Cost (PCSS flat ₡{config.PCSS_FLAT_RATE:g})", fmt_crc(energy_summary["total_cost_pcss"])])
         rows.append(["Cost (Coopesantos tiered)", fmt_crc(energy_summary["total_cost_tiered"])])
         rows.append(["CO₂ emitted", f"{energy_summary['total_co2_kg']:.4f} kg"])
         rows.append(["Span", f"{energy_summary['first']} → {energy_summary['last']}"])
@@ -372,7 +389,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     rows.append(["═ ANOMALIES ═", ""])
     rows.append(["Voltage out-of-range", f"{len(voltage_anomalies)} samples"])
     rows.append(["Sustained high-load episodes", f"{len(high_load_episodes)}"])
-    rows.append(["DataLog gaps (>40 min)", f"{len(gaps)}"])
+    rows.append([f"DataLog gaps (>{config.DATALOG_EXPECTED_INTERVAL_MIN * 2:.0f} min)", f"{len(gaps)}"])
 
     fig.add_trace(
         go.Table(
@@ -414,15 +431,25 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     fig.update_layout(
         title=dict(
             text=f"<b>PowerChute UPS Dashboard</b> — {datetime.now():%Y-%m-%d %H:%M:%S}",
-            x=0.5, xanchor="center", font=dict(size=22),
+            x=0.5, xanchor="center", y=0.992, yanchor="top", yref="container",
+            font=dict(size=22),
         ),
         height=2400,
-        margin=dict(b=80, t=90, l=60, r=60),
+        # Tall top margin reserves a band for the title + the horizontal legend.
+        # The legend is anchored just below the title (yanchor="bottom", growing
+        # upward), so even when it wraps to two rows it stays inside this band
+        # instead of climbing into the title. Single-trace panels are kept off
+        # the legend (show_legend=False) so it stays short. The play/pause
+        # overlays are positioned per-panel in JS from the real axis domains, so
+        # they adapt to this margin automatically.
+        margin=dict(b=80, t=175, l=60, r=60),
         showlegend=True,
         template="plotly_white",
         hovermode="closest",
-        legend=dict(orientation="h", y=1.04, x=0.5,
-                    xanchor="center", yanchor="bottom"),
+        legend=dict(orientation="h", y=1.028, x=0.5,
+                    xanchor="center", yanchor="bottom",
+                    font=dict(size=10), bgcolor="rgba(255,255,255,0.7)",
+                    bordercolor="#d0d0d0", borderwidth=1),
     )
 
     # ------------------------------------------------------------------

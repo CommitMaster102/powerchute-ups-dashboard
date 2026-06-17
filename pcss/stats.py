@@ -11,10 +11,17 @@ from pcss import config
 def datalog_stats(df: pd.DataFrame, file_size: int) -> dict:
     if df.empty:
         return {}
-    span_seconds = max((df["ts"].iloc[-1] - df["ts"].iloc[0]).total_seconds(), 1)
-    span_days = span_seconds / 86400
     n = len(df)
-    daily_bytes = file_size / span_days if span_days > 0 else float("nan")
+    if n >= 2:
+        span_seconds = max((df["ts"].iloc[-1] - df["ts"].iloc[0]).total_seconds(), 1)
+        span_days = span_seconds / 86400
+    else:
+        # A single row gives no interval to project from. Returning a real
+        # span here (the old max(..., 1) second) would divide the full file
+        # size by ~1 second and project tens of GB/day. NaN says "unknown".
+        span_days = float("nan")
+    valid_span = span_days == span_days and span_days > 0  # NaN-safe
+    daily_bytes = file_size / span_days if valid_span else float("nan")
     deltas = df["ts"].diff().dt.total_seconds().dropna()
     return {
         "first": df["ts"].iloc[0],

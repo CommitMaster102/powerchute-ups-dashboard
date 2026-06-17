@@ -3,8 +3,9 @@
 Hermetic: a session fixture synthesizes a small DataLog + energylog in a temp
 dir, runs the real analyzer pipeline to a temp dashboard.html, and serves that
 to one shared headless Chromium — so the browser tests no longer depend on real
-PCSS logs being present. Set STATEOFUPS_E2E_REAL=1 to test the committed
-output/dashboard.html instead.
+PCSS logs being present. Set STATEOFUPS_E2E_REAL=1 to test the generated
+output/dashboard.html instead (output/ is gitignored, so it must exist locally
+from a prior analyze_ups.py run).
 
 Fixtures:
   anim_data       — the page's ANIM_DATA contract (session)
@@ -32,7 +33,7 @@ from harness import (  # noqa: E402
 )
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-EPOCH_2010 = datetime(2010, 1, 1)
+from pcss.common import EPOCH_2010  # noqa: E402  (single source of truth)
 
 
 def _write_synthetic_agent(agent: Path) -> Path:
@@ -109,15 +110,20 @@ def anim_data(_page) -> dict:
 
 @pytest.fixture
 def runner(_page, anim_data) -> TestRunner:
-    """Fresh TestRunner over the shared page (no reload). Use for tests that
-    play-from-current-state and don't require pristine data."""
-    return TestRunner(_page)
-
-
-@pytest.fixture
-def fresh_runner(_page, anim_data) -> TestRunner:
-    """Reload the page to a pristine (full-data, nothing playing) state first."""
+    """A TestRunner over a freshly-reloaded page. Every E2E test starts from a
+    pristine state (full data, nothing playing) so the per-group tests are
+    order-independent — they can run in any sequence and across xdist workers
+    (which share one page per worker) without a prior test's leftover
+    paused/partial panel contaminating this one. The reload cost is amortized
+    across cores under ``-n auto``."""
     _page.reload()
     wait_ready(_page)
     stash_full_lengths(_page, anim_data)
     return TestRunner(_page)
+
+
+@pytest.fixture
+def fresh_runner(runner) -> TestRunner:
+    """Back-compat alias. ``runner`` already reloads to a pristine page, so the
+    suites that historically asked for a "fresh" page get the same fixture."""
+    return runner

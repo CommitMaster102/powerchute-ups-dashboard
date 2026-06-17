@@ -8,6 +8,8 @@ PowerChute Serial Shutdown (PCSS) log analyzer and status tray for the APC BX200
 
 Two entry points share the **`pcss/` package**: `analyze_ups.py` (a CLI that produces the HTML dashboard) and `tray_status.py` (the tray icon). They also share the `output/` directory.
 
+The analyzer (`analyze_ups.py` + `pcss/`) is pure Python and runs on any OS against a configured/exported log directory; only `tray_status.py` is Windows-only (Windows Credential Manager + tray backend). The default `PCSS_AGENT` path is the Windows install location; when it does not exist, `analyze_ups.py` prints how to set `--agent-dir`/`[paths] pcss_agent` instead of failing. CI runs on Windows only.
+
 ## Commands
 
 First-time setup (no venv is committed):
@@ -21,17 +23,19 @@ python -m venv .venv
 | Task | Command |
 |---|---|
 | Run the analyzer (console summary + `output/dashboard.html`, opens browser) | `.venv\Scripts\python.exe analyze_ups.py` — or double-click `run_analyzer.bat` |
-| Analyzer flags | `--no-browser`, `-o/--output PATH`, `--since/--until YYYY-MM-DD`, `-q/--quiet`, `--no-snapshot`, `--config PATH`, `--agent-dir PATH`, `--json PATH`, `--version` (see `--help`) |
+| Analyzer flags | `--no-browser`, `-o/--output PATH`, `--since/--until YYYY-MM-DD`, `-q/--quiet`, `--no-snapshot`, `--config PATH`, `--agent-dir PATH`, `--json PATH`, `-v/--verbose`, `--version` (see `--help`) |
 | Run the tray icon (silent, no console) | `run_tray.bat` (launches `pythonw.exe tray_status.py`) |
+| Register the daily scheduled run (Windows, per-user) | `powershell -ExecutionPolicy Bypass -File register_scheduled_task.ps1 [-RunTime HH:mm] [-Force]` — creates a Task Scheduler job that runs `scheduled_run.ps1` (guarded: single mutex, skip-if-running, once-a-day marker `output/last_scheduled_run.txt`; logs to `output/scheduled_run.log`) |
 | All unit tests (fast, no browser) | `.venv\Scripts\python.exe -m pytest tests -m "not e2e"` |
-| All E2E browser suites | `.venv\Scripts\python.exe -m pytest tests -m e2e` (add `-n auto` to parallelize) — or `tests\run_e2e.py` |
-| A single E2E suite | `.venv\Scripts\python.exe -m pytest tests\e2e_pause_freeze.py` (also runnable standalone: `python tests\e2e_pause_freeze.py`) |
+| Whole suite, parallel (< 32 s) | `.venv\Scripts\python.exe -m pytest tests -n auto --dist worksteal --reruns 2 --reruns-delay 1` |
+| All E2E browser suites | `.venv\Scripts\python.exe -m pytest tests -m e2e -n auto --dist worksteal` — or `tests\run_e2e.py` |
+| A single E2E suite / group | `.venv\Scripts\python.exe -m pytest tests\e2e_pause_freeze.py` · `... "tests\e2e_isolation.py::test_isolation[lv]"` (each `e2e_*.py` also runs standalone: `python tests\e2e_pause_freeze.py`) |
 | One math test | `.venv\Scripts\python.exe -m pytest tests\test_math.py -k tiered` |
 | Lint / types | `.venv\Scripts\python.exe -m ruff check .` · `.venv\Scripts\python.exe -m mypy pcss analyze_ups.py tray_status.py` |
 
-Tests are **pytest** under `tests/`. `tests/conftest.py` is hermetic: it synthesizes a small DataLog+energylog, runs the real pipeline to a temp `dashboard.html`, and serves it to one shared headless Chromium — so E2E does **not** need real PCSS logs (set `STATEOFUPS_E2E_REAL=1` to test the committed `output/dashboard.html` instead). **Playwright (+chromium) is required for E2E but is test-only** (in the `dev` extra, not `requirements.txt`).
+Tests are **pytest** under `tests/`. `tests/conftest.py` is hermetic: it synthesizes a small DataLog+energylog, runs the real pipeline to a temp `dashboard.html`, and serves it to one shared headless Chromium — so E2E does **not** need real PCSS logs (set `STATEOFUPS_E2E_REAL=1` to test the generated `output/dashboard.html` instead — `output/` is gitignored, so it must exist locally). **Playwright (+chromium) is required for E2E but is test-only** (in the `dev` extra, not `requirements.txt`).
 
-**E2E notes:** `tests/harness.py` holds `TestRunner` + the per-suite assertions; each `tests/e2e_*.py` exposes a `run(runner, anim_data)` (reused by both pytest and its standalone `__main__`). `tests/harness.py:EXPECTED_GROUPS` must stay in sync with the `_register_animation()` speeds in `pcss/dashboard.py` (the fixture asserts on mismatch). Timing tolerances live in `harness.py` (`JITTER_MS`, `RPC_OVERHEAD_MS`); play-completion waits on the engine's real `'ended'` state, and the pause/state-machine suites drive play→pause inside a single `page.evaluate` so CDP latency can't race a short (~2.4 s) animation. Tests that need a pristine page use the `fresh_runner` fixture (reloads first); others use `runner`.
+**E2E notes:** `tests/harness.py` holds `TestRunner` + the per-suite assertions; each `tests/e2e_*.py` exposes a `run(runner, anim_data)` (reused by the standalone `__main__`) **and** a pytest test parametrized **per animation group** (`@pytest.mark.parametrize("group", ALL_GROUPS / CUMULATIVE_GROUPS)` from `harness.py`) so `pytest-xdist -n auto` spreads ~43 short browser checks across cores rather than looping 8 groups serially in one test (214 s → < 32 s). The `runner` fixture **reloads the page before every test**, so each item starts pristine and is order-independent across xdist workers (which share one page per worker); `fresh_runner` is now just an alias. `--reruns` (pytest-rerunfailures) covers the rare timing flake. `tests/harness.py:EXPECTED_GROUPS` (and `ALL_GROUPS`/`CUMULATIVE_GROUPS`) must stay in sync with the `_register_animation()` speeds/groups in `pcss/dashboard.py` (the fixture asserts on mismatch). CI runs the E2E job only when dashboard/animation/test code changes (see `.github/workflows/ci.yml`). Timing tolerances live in `harness.py` (`JITTER_MS`, `RPC_OVERHEAD_MS`); play-completion waits on the engine's real `'ended'` state, and the pause/state-machine suites drive play→pause inside a single `page.evaluate` so CDP latency can't race a short (~2.4 s) animation. Tests that need a pristine page use the `fresh_runner` fixture (reloads first); others use `runner`.
 
 ## Architecture
 
@@ -40,14 +44,14 @@ Tests are **pytest** under `tests/`. `tests/conftest.py` is hermetic: it synthes
 `analyze_ups.py` is a ~320-line CLI orchestrator: `parse_args()` → `config.load_config()` → load logs → compute → `build_dashboard()` → write/open HTML (plus an optional `--json` summary and opt-in alerts). The modules are:
 
 - **`pcss/config.py`** — defaults + `load_config(path, agent_dir, output)` which overlays a `config.toml` and CLI overrides onto module-level constants. **Config is module-level state**: consumers read `config.X` at call time, so `load_config()` mutating these before the pipeline runs is how overrides take effect (no Config object threaded through every function). `config.example.toml` documents the keys.
-- **`pcss/common.py`** — shared helpers (`parse_es_number`, `parse_pcss_number`, `ts_2010_to_dt`, `fmt_bytes`, `fmt_crc`, `EPOCH_2010`).
+- **`pcss/common.py`** — shared helpers (`parse_pcss_number`, `ts_2010_to_dt`, `fmt_bytes`, `fmt_crc`, `EPOCH_2010`).
 - **`pcss/loaders.py`** — `load_datalog` (vectorized via `read_csv(decimal=",")`; surfaces a count of skipped malformed rows), `load_energylog`, `record_size_snapshot`, `history_summary`.
 - **`pcss/stats.py`** — stats, anomaly/gap/high-load detection, energy/cost/CO2, runtime interp, cross-validation.
 - **`pcss/dashboard.py`** — `build_dashboard` (the 7×2 grid) + `add_timeseries` + a static battery-voltage degradation trend.
 - **`pcss/animation.py`** + **`pcss/animation.js`** — the animation system (below).
 
 Three data sources, each in a different format and requiring different parsing:
-- **DataLog** (TSV, ~20-min samples): Spanish-locale numbers (`1.234,56` → `1234.56`) parsed by `read_csv(decimal=",")` (was a per-cell `parse_es_number` apply).
+- **DataLog** (TSV, ~20-min samples): Spanish-locale numbers (`1.234,56` → `1234.56`) parsed by `read_csv(decimal=",")`.
 - **energylog/*.log** (`;`-delimited, 5-min): dot-decimal; `real_w` is always `null` (no wattmeter — power = `relativeLoad × calculatedMaxLoad/100`, max load 1400W from the header). Each row carries its file's `interval_sec` so kWh stays correct if PCSS is reconfigured. Timestamps are **seconds since 2010-01-01 LOCAL time** — `ts_2010_to_dt()`, verified empirically.
 - **EventLog** (binary Java-serialized): only its file size is read.
 

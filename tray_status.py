@@ -255,23 +255,29 @@ class PCSSClient:
         self.user = username
         self.passwd = password
         self.session = requests.Session()
+        # We only ever talk to localhost with a pinned self-signed cert, so the
+        # pinned PEM must be the sole source of trust. trust_env=False stops a
+        # REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE / proxy env var (common in
+        # corporate setups) from silently overriding session.verify and making
+        # the pinned cert look invalid.
+        self.session.trust_env = False
         parsed = urlparse(self.base)
         self._host = parsed.hostname or "localhost"
         self._port = parsed.port or 6547
         self._logged_in = False
 
     def _ensure_verify(self) -> None:
-        """Pin the cert on first use and verify against it. If the server is
-        unreachable when we try to pin, fall back to no verification for this
-        attempt and retry the pin on the next request."""
+        """Pin the cert on first use and verify against it. If pinning fails
+        (e.g. the server is unreachable), let the error propagate rather than
+        falling back to verify=False: an unverified connection opens a MitM
+        window, and on requests<2.32 (CVE-2024-35195) the first verify=False
+        request poisons the connection pool so later pinned requests stay
+        unverified for the life of the session. A failed pin surfaces as a
+        normal connection error that refresh() catches and shows as an error
+        icon — the next poll retries the pin cleanly."""
         if not PCSS_CERT.exists():
-            try:
-                _pin_cert(self._host, self._port)
-                log(f"Pinned PCSS cert -> {PCSS_CERT}")
-            except Exception as e:
-                log(f"Cert pin failed ({e}); TLS verification disabled this attempt.")
-                self.session.verify = False
-                return
+            _pin_cert(self._host, self._port)
+            log(f"Pinned PCSS cert -> {PCSS_CERT}")
         self.session.verify = str(PCSS_CERT)
 
     def _request(self, method: str, url: str, **kw):
@@ -635,29 +641,36 @@ def main():
     state = State()
     icon: Icon
 
+    # Serializes all use of the shared requests.Session. The poll loop and the
+    # "Refrescar ahora" menu item (which spawns a thread) both call refresh(),
+    # and open_pcss() also touches client.session — concurrent access to one
+    # requests.Session is not thread-safe.
+    refresh_lock = threading.Lock()
+
     def refresh():
-        try:
-            status = client.get_status()
-            state.status = status
-            state.last_update = time.time()
-            state.busy = False
-            state.last_error = (None if status.battery_pct is not None
-                                else "Could not parse % from /status")
-            log(f"battery={status.battery_pct}%  load={status.load_pct}%  "
-                f"runtime={status.runtime_min}min  inputV={status.input_v}  "
-                f"battV={status.battery_v}  state={status.device_status!r}")
-        except UserAlreadyConnected as e:
-            # Browser/another session is using PCSS — keep last-known values,
-            # mark busy. Polling switches to fast (15s) interval so we recover
-            # within seconds of the user closing the browser.
-            state.busy = True
-            state.last_update = time.time()
-            log(f"PCSS busy: {e}")
-        except Exception as e:
-            state.busy = False
-            state.last_error = f"{type(e).__name__}: {e}"
-            state.status = PcssStatus()
-            log(f"Refresh failed: {state.last_error}\n{traceback.format_exc()}")
+        with refresh_lock:
+            try:
+                status = client.get_status()
+                state.status = status
+                state.last_update = time.time()
+                state.busy = False
+                state.last_error = (None if status.battery_pct is not None
+                                    else "Could not parse % from /status")
+                log(f"battery={status.battery_pct}%  load={status.load_pct}%  "
+                    f"runtime={status.runtime_min}min  inputV={status.input_v}  "
+                    f"battV={status.battery_v}  state={status.device_status!r}")
+            except UserAlreadyConnected as e:
+                # Browser/another session is using PCSS — keep last-known values,
+                # mark busy. Polling switches to fast (15s) interval so we recover
+                # within seconds of the user closing the browser.
+                state.busy = True
+                state.last_update = time.time()
+                log(f"PCSS busy: {e}")
+            except Exception as e:
+                state.busy = False
+                state.last_error = f"{type(e).__name__}: {e}"
+                state.status = PcssStatus()
+                log(f"Refresh failed: {state.last_error}\n{traceback.format_exc()}")
         try:
             icon.icon = render_icon(state.status.battery_pct)
             icon.title = _format_tooltip(state)
@@ -690,9 +703,12 @@ def main():
         #  - Incognito has empty cookies → Jetty doesn't see two valid
         #    sessions, so no "Duplicate sessions" 400.
         try:
-            if not client._logged_in:
-                client.login()
-            jsid = client.session.cookies.get("JSESSIONID")
+            # Hold the same lock as refresh() so we never drive the shared
+            # session from two threads at once.
+            with refresh_lock:
+                if not client._logged_in:
+                    client.login()
+                jsid = client.session.cookies.get("JSESSIONID")
             url = (f"{cfg['url']}/status;jsessionid={jsid}" if jsid
                    else f"{cfg['url']}/status")
         except Exception as e:

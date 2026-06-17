@@ -110,3 +110,34 @@ def test_resolve_password_falls_back_without_backend(monkeypatch):
     monkeypatch.setattr(t, "keyring", fake)
     # No usable backend -> use the file password as-is.
     assert t._resolve_password("bob", "filepw") == "filepw"
+
+
+# ---------------------------------------------------------------- already-connected
+@pytest.mark.parametrize("html,expected", [
+    ("El usuario ya está conectado", True),
+    ("usuario ya conectado en otra sesión", True),
+    ("No se ha podido iniciar la sesión", True),
+    ("User already connected", True),
+    ("Bienvenido — sesión iniciada", False),
+    ("", False),
+])
+def test_is_already_connected(html, expected):
+    assert t._is_already_connected(html) is expected
+
+
+# ---------------------------------------------------------------- TLS hardening
+def test_client_pins_cert_and_ignores_env():
+    # PCSSClient must not trust ambient REQUESTS_CA_BUNDLE / proxy env: the
+    # pinned self-signed cert is the only source of trust (audit hardening).
+    c = t.PCSSClient("https://localhost:6547", "u", "p")
+    assert c.session.trust_env is False
+    assert c._host == "localhost"
+    assert c._port == 6547
+
+
+def test_parse_locale_number_decimal_comma_and_dot():
+    # Documents current behaviour: a single comma is the decimal sep (Spanish);
+    # a bare integer and an English decimal both parse.
+    assert t._parse_locale_number("27,4") == pytest.approx(27.4)
+    assert t._parse_locale_number("1234.5") == pytest.approx(1234.5)
+    assert t._parse_locale_number("100") == pytest.approx(100.0)

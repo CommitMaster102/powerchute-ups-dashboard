@@ -57,6 +57,14 @@ EXPECTED_GROUPS = {
 # little late.
 JITTER_MS = 2000
 
+# Group keys for per-group parametrization (so pytest-xdist can spread each
+# group's animation across cores instead of one suite looping all 8 serially).
+# ALL_GROUPS mirrors EXPECTED_GROUPS; CUMULATIVE_GROUPS are the replay panels
+# that have a meaningful "partial length" for the pause/resume tests (hm is a
+# heatmap reveal, rt is a marker).
+ALL_GROUPS = list(EXPECTED_GROUPS)
+CUMULATIVE_GROUPS = ["lv", "bv", "ul", "bc", "pw", "kw"]
+
 # Extra budget for the Playwright<->CDP click roundtrip and the
 # wait-for-state poll. Measured click latency is ~300-500ms; we allow more
 # so a loaded CI box doesn't flap, while a real >2x animation hang still
@@ -402,8 +410,11 @@ class TestRunner:
         # Sample roughly 70% through to give a stable advanced reading.
         self.page.wait_for_timeout(int(a["speed_ms"] * a["n_frames"] * 0.7))
         mid = self.js(sel_js)
-        # Drain to the end before continuing.
-        self.page.wait_for_timeout(a["speed_ms"] * a["n_frames"] + JITTER_MS)
+        # No need to drain to the end: this test only inspects `first` and
+        # `mid`, and each parametrized item runs on its own freshly-reloaded
+        # page, so leaving the animation mid-flight can't leak into another
+        # test. (Dropping the ~nominal+JITTER drain is the single biggest
+        # per-item speedup under pytest-xdist.)
         # rAF + Playwright RPC roundtrip can land 1-3 frames in. For tiny
         # animations like hm (6 frames) that's already 30%+. Accept the
         # first read in the first third of the timeline.

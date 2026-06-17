@@ -4,4 +4,6 @@
 *.js text
 *.md text
 *.toml text
+*.yml text
 *.bat text eol=crlf
+*.ps1 text eol=crlf

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import io
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,12 +31,13 @@ def load_datalog(path: Path | None = None) -> pd.DataFrame:
     path = path or config.DATALOG
     if not path.exists():
         return pd.DataFrame()
-    # Count non-blank source lines (minus header) so we can surface how many
-    # rows get dropped as malformed/undated.
-    with path.open("r", encoding="utf-8", errors="ignore") as fh:
-        n_raw = max(sum(1 for line in fh if line.strip()) - 1, 0)
+    # Read the file once. Count non-blank source lines (minus header) to
+    # surface how many rows get dropped as malformed/undated, then parse the
+    # same in-memory text instead of opening the file a second time.
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    n_raw = max(sum(1 for line in text.splitlines() if line.strip()) - 1, 0)
     df = pd.read_csv(
-        path, sep="\t", engine="python", encoding="utf-8", on_bad_lines="skip",
+        io.StringIO(text), sep="\t", engine="python", on_bad_lines="skip",
         decimal=",", na_values=["N/A", "null", "NaN", ""],
     )
     df.columns = [c.strip() for c in df.columns]
@@ -51,8 +53,6 @@ def load_datalog(path: Path | None = None) -> pd.DataFrame:
 class EnergyLogMeta:
     month: str
     interval_sec: int
-    model: str
-    firmware: str
     max_load_w: float
     n_samples: int
 
@@ -73,8 +73,6 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
         # Typed per-file metadata locals (avoids a heterogeneous dict).
         m_month: str = f.stem
         m_interval: int = 300
-        m_model: str = "?"
-        m_firmware: str = "?"
         m_maxload: float = 1400.0
         n_samples = 0
         try:
@@ -92,10 +90,6 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
                 elif "$interval=" in line:
                     with contextlib.suppress(ValueError):
                         m_interval = int(line.split("=", 1)[1])
-                elif "$modelname=" in line:
-                    m_model = line.split("=", 1)[1]
-                elif "$firmware=" in line:
-                    m_firmware = line.split("=", 1)[1]
                 elif "$calculatedMaxLoad=" in line:
                     m_maxload = float(parse_pcss_number(line.split("=", 1)[1]))
                 continue
@@ -121,8 +115,6 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
         metas.append(EnergyLogMeta(
             month=m_month,
             interval_sec=m_interval,
-            model=m_model,
-            firmware=m_firmware,
             max_load_w=m_maxload,
             n_samples=n_samples,
         ))

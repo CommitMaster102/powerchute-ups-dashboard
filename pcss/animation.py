@@ -57,10 +57,15 @@ def _runtime_metadata(trace_idx: int | None, energy_df: pd.DataFrame,
     if t_min == t_max:
         return None
     cutoffs = pd.date_range(t_min, t_max, periods=n_frames)
+    # For each cutoff, the marker shows the latest power reading at/before it.
+    # s is sorted by ts, so searchsorted finds that index in one pass instead
+    # of recomputing a full boolean mask per frame.
+    t_ns = t.to_numpy().astype("datetime64[ns]")
+    p_vals = s["power_w"].to_numpy(dtype=float)
+    idx = np.searchsorted(t_ns, cutoffs.to_numpy().astype("datetime64[ns]"), side="right") - 1
     marker_data = []
-    for cutoff in cutoffs:
-        mask = t <= cutoff
-        w = 0.0 if not mask.any() else float(s.loc[mask.to_numpy(), "power_w"].iloc[-1])
+    for i in idx:
+        w = 0.0 if i < 0 else float(p_vals[i])
         marker_data.append({"w": w, "rt": float(estimate_runtime(w))})
     return {
         "type": "marker",
@@ -91,78 +96,33 @@ def _heatmap_metadata(trace_idx: int | None, pivot: pd.DataFrame):
 
 def _build_custom_controls_html(animations: list[dict]) -> str:
     """One floating ▶/⏸ pair per animation, anchored to its own chart.
-    Each pair calls Plotly.animate() with an explicit frame list — no shared
-    queue, no auto-play, fully independent."""
+
+    The overlays carry NO position here — animation.js's positionOverlays()
+    places each one at the top-right inside its panel, computed from the live
+    subplot domains (axis.domain × _fullLayout._size). That tracks the panels
+    through any margin/legend/viewport change and replaces the old hardcoded
+    pixel math that drifted (overlays landing over the month axis or far below
+    the panel). Each overlay starts hidden and is revealed once positioned."""
     if not animations:
         return ""
-    # Layout constants — must match make_subplots(rows=7, vertical_spacing=0.080,
-    # horizontal_spacing=0.10) and fig.update_layout(height=2400, margin=...).
-    N_ROWS = 7
-    V_SPACE = 0.080
-    H_SPACE = 0.10
-    HEIGHT = 2400
-    MARGIN_T = 90
-    MARGIN_B = 80
-    MARGIN_L = 60
-    MARGIN_R = 60
-    panel_h = (1 - (N_ROWS - 1) * V_SPACE) / N_ROWS
-    plot_h = HEIGHT - MARGIN_T - MARGIN_B
-
-    def _row_top_px(row: int) -> float:
-        # paper-y of the top of row R, converted to pixels-from-top-of-fig.
-        # The `- 0.1` shifts the anchor DOWN into each panel (~0.1 of plot
-        # paper height ≈ 223px). Placing the overlay below the subplot
-        # title — inside the plot area — turned out to be the only
-        # reliable way to keep alignment consistent across all rows;
-        # anchoring above the panel collided with the figure's MARGIN_T
-        # on row 1 and with the V_SPACE gap inconsistently on later rows.
-        paper_top = 1 - (row - 1) * (panel_h + V_SPACE) - 0.1
-        return MARGIN_T + (1 - paper_top) * plot_h
-
-    def _col_right_paper(col: int) -> float:
-        # paper-x of the right edge of the column (1 or 2)
-        return 0.5 - H_SPACE / 2 if col == 1 else 1.0
-
-    # Each animation gets pinned to one panel.
-    POSITIONS = {
-        "lv": (1, 1),   # Line Voltage
-        "bv": (1, 2),   # Battery Voltage
-        "ul": (2, 1),   # UPS Load
-        "bc": (2, 2),   # Battery Capacity
-        "pw": (3, 1),   # Power consumption
-        "hm": (3, 2),   # Heatmap
-        "kw": (4, 1),   # Cumulative kWh
-        "rt": (5, 1),   # Runtime
-    }
-
     overlays_html = []
     for a in animations:
         g = a["group"]
-        if g not in POSITIONS:
-            continue
-        row, col = POSITIONS[g]
-        top_px = (_row_top_px(row))
-        rp = _col_right_paper(col)
-        # CSS `right` from the right edge of the figure container. The
-        # column-dependent inset (4*MARGIN_R for col=2, 2*MARGIN_R for
-        # col=1) keeps each overlay tucked inside its own panel's data
-        # area: col=2 needs a larger inset to clear the heatmap colorbar
-        # on row 3, while col=1 only needs to clear the column gap.
-        right_css = (f"calc((100% - {MARGIN_L + MARGIN_R}px) * {1 - rp:.4f}"
-                     f" + {MARGIN_R * (4 if col == 2 else 2)}px)")
         first_label = a["labels"][0] if a["labels"] else ""
         overlays_html.append(f"""
-<div class="anim-overlay" data-group="{g}" style="top: {top_px:.0f}px; right: {right_css};">
-  <button class="anim-btn anim-play" data-group="{g}" type="button" title="Reproducir">▶</button>
-  <button class="anim-btn anim-pause" data-group="{g}" type="button" title="Sin animación que pausar" disabled>⏸</button>
-  <select class="anim-speed" data-group="{g}" title="Velocidad">
+<div class="anim-overlay" data-group="{g}">
+  <button class="anim-btn anim-play" data-group="{g}" type="button"
+          title="Reproducir" aria-label="Reproducir animación">▶</button>
+  <button class="anim-btn anim-pause" data-group="{g}" type="button"
+          title="Sin animación que pausar" aria-label="Pausar animación" disabled>⏸</button>
+  <select class="anim-speed" data-group="{g}" title="Velocidad" aria-label="Velocidad de reproducción">
     <option value="0.25">0.25x</option>
     <option value="0.5">0.5x</option>
     <option value="1" selected>1x</option>
     <option value="2">2x</option>
     <option value="4">4x</option>
   </select>
-  <select class="anim-easing" data-group="{g}" title="Curva (easing)">
+  <select class="anim-easing" data-group="{g}" title="Curva (easing)" aria-label="Curva de aceleración">
     <option value="linear" selected>linear</option>
     <option value="smooth">smooth</option>
     <option value="ease-in">slow-in</option>
@@ -187,7 +147,8 @@ def _build_custom_controls_html(animations: list[dict]) -> str:
   align-items: center; gap: 4px; padding: 3px 6px;
   background: rgba(255,255,255,0.92); border: 1px solid #c8c8c8;
   border-radius: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-  font-family: Arial, Helvetica, sans-serif; pointer-events: auto; }
+  font-family: Arial, Helvetica, sans-serif; pointer-events: auto;
+  visibility: hidden; }  /* revealed by positionOverlays() once placed */
 .anim-overlay .anim-btn { width: 26px; height: 22px; font-size: 11px;
   cursor: pointer; background: #fff; border: 1px solid #bbb;
   border-radius: 3px; color: #333; padding: 0; line-height: 1; }

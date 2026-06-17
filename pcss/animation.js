@@ -30,9 +30,58 @@
   // user request we don't auto-restart.
   const STATE = {};
   const SAVED_T = {};
+  const LAST_KEY = {};   // group -> last frame key applied; skips redundant restyle
   let target = null;
 
   function gd() { return document.getElementsByClassName("plotly-graph-div")[0]; }
+
+  function panelAxesFor(a) {
+    // The subplot an animation lives on, read from its first trace.
+    const idxs = a.trace_indices || (a.trace_idx != null ? [a.trace_idx] : []);
+    const tr = idxs.length ? target.data[idxs[0]] : null;
+    if (!tr) return null;
+    return {
+      xa: (tr.xaxis || "x").replace("x", "xaxis"),
+      ya: (tr.yaxis || "y").replace("y", "yaxis"),
+    };
+  }
+  function positionOverlays() {
+    // Place each overlay in the gap BELOW its panel, under the x-axis month/
+    // tick labels, right-aligned to the panel — so the controls never cover the
+    // plotted data or panel annotations (e.g. the "80% threshold" label). All
+    // positions are derived from the live axis domains and _fullLayout._size
+    // (the real plot-area box in px), so they track margin/legend/viewport
+    // changes instead of drifting against an assumed geometry.
+    if (!target || !target._fullLayout) return;
+    const fl = target._fullLayout;
+    const W = fl.width, H = fl.height;
+    const sz = fl._size || {
+      l: fl.margin.l, t: fl.margin.t,
+      w: W - fl.margin.l - fl.margin.r, h: H - fl.margin.t - fl.margin.b,
+    };
+    const parent = target.parentElement;
+    if (!parent) return;
+    const gdRect = target.getBoundingClientRect();
+    const pRect = parent.getBoundingClientRect();
+    const offTop = gdRect.top - pRect.top;
+    const offLeft = gdRect.left - pRect.left;
+    document.querySelectorAll('.anim-overlay').forEach(ov => {
+      const a = ANIM_DATA[ov.dataset.group];
+      if (!a) return;
+      const ax = panelAxesFor(a);
+      if (!ax || !fl[ax.xa] || !fl[ax.ya]) return;
+      const xdom = fl[ax.xa].domain, ydom = fl[ax.ya].domain;
+      if (!xdom || !ydom) return;
+      const rightPx = offLeft + sz.l + xdom[1] * sz.w;       // panel data-area right edge
+      const bottomPx = offTop + sz.t + (1 - ydom[0]) * sz.h; // panel data-area BOTTOM edge
+      ov.style.left = "";
+      ov.style.right = (pRect.width - rightPx + 6) + "px";
+      // Drop below the x-axis tick labels (the first tick shows a 2-line
+      // "Mon DD / YYYY", ~30px) into the inter-panel gap.
+      ov.style.top = (bottomPx + 40) + "px";
+      ov.style.visibility = "visible";
+    });
+  }
   function toMs(x) {
     // Plotly serializes pandas datetimes as ISO strings with NO timezone
     // suffix ("2026-04-27T23:18:52.000000"). Per ECMAScript spec, that
@@ -150,7 +199,7 @@
       const tMin = a.cutoffs_ms[0];
       const tMax = a.cutoffs_ms[a.cutoffs_ms.length - 1];
       const cutoff = tMin + (tMax - tMin) * t;
-      const xs = [], ys = [];
+      const xs = [], ys = [], ends = [];
       for (let ti = 0; ti < a.trace_indices.length; ti++) {
         const orig = ORIG[g][ti];
         const xms = orig.xms;
@@ -160,17 +209,27 @@
           end = j + 1;
         }
         if (end === 0 && orig.x.length > 0) end = 1;
+        ends.push(end);
         xs.push(orig.x.slice(0, end));
         ys.push(orig.y.slice(0, end));
       }
+      // Sub-frame rAF ticks often land on the same slice; skip the restyle
+      // when no trace gained a point (cheap motion, no wasted redraw).
+      const key = "c" + ends.join(",");
+      if (LAST_KEY[g] === key) return;
+      LAST_KEY[g] = key;
       Plotly.restyle(target, {x: xs, y: ys}, a.trace_indices);
     } else if (a.type === "heatmap_reveal") {
       const i = Math.min(Math.floor(t * a.n_frames), a.n_frames - 1);
+      if (LAST_KEY[g] === "h" + i) return;
+      LAST_KEY[g] = "h" + i;
       const z = a.z_full.map((row, ridx) =>
         ridx <= i ? row.slice() : new Array(row.length).fill(null));
       Plotly.restyle(target, { z: [z] }, [a.trace_idx]);
     } else if (a.type === "marker") {
       const i = Math.min(Math.floor(t * a.n_frames), a.n_frames - 1);
+      if (LAST_KEY[g] === "m" + i) return;
+      LAST_KEY[g] = "m" + i;
       const d = a.marker_data[i];
       Plotly.restyle(target, {
         x: [[d.w]], y: [[d.rt]],
@@ -222,6 +281,7 @@
     // pre-animation bounds, and the now-full data will fit inside them.
     const a = ANIM_DATA[g];
     if (!ORIG[g]) return;
+    LAST_KEY[g] = null;   // next play must re-render from scratch
     if (a.type === "cumulative") {
       Plotly.restyle(target, {
         x: ORIG[g].map(o => o.x),
@@ -253,7 +313,8 @@
       });
     });
     document.querySelectorAll('.anim-easing').forEach(sel => {
-      // Easing changes apply to the NEXT play. Same reasoning as speed.
+      // Easing is read live each rAF tick, so a change applies immediately to
+      // an in-progress animation (and to the next play).
       EASING[sel.dataset.group] = sel.value || "linear";
       sel.addEventListener("change", () => {
         EASING[sel.dataset.group] = sel.value || "linear";
@@ -275,17 +336,19 @@
       // tStarts and ultimately negative elapsed times.
       const myGen = (GEN[g] || 0) + 1;
       GEN[g] = myGen;
+      LAST_KEY[g] = null;     // force a fresh render of the first frame
       applyAtT(g, t0);
       setLabelByT(g, t0);
       setState(g, "playing");
-      const easeFn = EASINGS[EASING[g] || "linear"] || EASINGS["linear"];
       const tick = (now) => {
         if (GEN[g] !== myGen) return;       // superseded; let the new chain run
         const elapsed = Math.max(0, now - tStart);
         const tLinear = Math.min(elapsed / totalMs, 1);
         // Save linear t so resume picks up the actual elapsed point, not
-        // the eased visual position. Visual easing applies to applyAtT.
+        // the eased visual position. The easing fn is read live each tick so
+        // changing the easing dropdown mid-play takes effect immediately.
         SAVED_T[g] = tLinear;
+        const easeFn = EASINGS[EASING[g] || "linear"] || EASINGS["linear"];
         const tEased = easeFn(tLinear);
         applyAtT(g, tEased);
         setLabelByT(g, tEased);
@@ -338,6 +401,17 @@
       STATE[g] = "idle";
       SAVED_T[g] = 0;
       refreshButtons(g);
+    });
+    // Position the overlays now and again on the next frame (in case Plotly's
+    // _fullLayout/_size isn't fully settled on the first call), then keep them
+    // aligned on viewport resize — the figure height is fixed but width (and
+    // therefore each panel's pixel box) changes responsively.
+    positionOverlays();
+    requestAnimationFrame(positionOverlays);
+    let _resizeRaf = null;
+    window.addEventListener("resize", () => {
+      if (_resizeRaf) cancelAnimationFrame(_resizeRaf);
+      _resizeRaf = requestAnimationFrame(positionOverlays);
     });
   }
   if (document.readyState === "loading") {

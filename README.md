@@ -55,6 +55,7 @@ python -m venv .venv
 --config PATH         config.toml path (default: ./config.toml if present)
 --agent-dir PATH      override the PCSS agent directory
 --json PATH           also write a machine-readable summary as JSON
+-v, --verbose         print the resolved config + agent dir
 --version
 ```
 
@@ -62,23 +63,49 @@ python -m venv .venv
 
 Optional `config.toml` (auto-loaded from the repo root, or `--config PATH`) overrides the built-in defaults — copy `config.example.toml` to start. It holds the PCSS agent path, the Coopesantos/PCSS tariff rates (update when the quarterly rate changes), the CO₂ factor, voltage/load thresholds, the runtime curve, and an opt-in `[alerts]` switch.
 
+## Scheduled daily run (Windows)
+
+`register_scheduled_task.ps1` creates a per-user Windows Task Scheduler job that runs the analyzer once a day. It does not need admin rights.
+
+```
+powershell -ExecutionPolicy Bypass -File register_scheduled_task.ps1            # default: 09:00
+powershell -ExecutionPolicy Bypass -File register_scheduled_task.ps1 -RunTime 22:30
+powershell -ExecutionPolicy Bypass -File register_scheduled_task.ps1 -Force     # replace an existing task
+```
+
+The task runs `scheduled_run.ps1`, which runs `analyze_ups.py --no-browser --quiet`. It does not call `run_analyzer.bat` because that file ends in `pause` and opens a browser, which would hang an unattended task. `scheduled_run.ps1` has three guards: a single mutex so two scheduled copies never overlap, a check that skips if any analyzer run is already in progress, and a once-a-day marker (`output/last_scheduled_run.txt`) so it runs at most once per day. The marker is only written on success, so a failed run retries on the next trigger. All output is appended to `output/scheduled_run.log`.
+
+Remove the task with:
+
+```
+Unregister-ScheduledTask -TaskName 'stateOfUPS Daily Analyzer' -Confirm:$false
+```
+
 ## Tests
 
 Tests are **pytest** under `tests/` (math + tray unit tests, plus browser-driven E2E of the replay controls). The E2E fixture is hermetic — it synthesizes data and builds a temp dashboard, so no real PCSS logs are needed.
 
 ```
-# Fast unit tests (no browser):
+# Fast unit tests (no browser) — the everyday loop, ~0.6 s:
 .venv\Scripts\python.exe -m pytest tests -m "not e2e"
 
-# Browser E2E (Playwright + chromium; add -n auto to parallelize):
-.venv\Scripts\python.exe -m pytest tests -m e2e
+# Whole suite in parallel — unit + all 43 browser items, < 32 s end-to-end:
+.venv\Scripts\python.exe -m pytest tests -n auto --dist worksteal --reruns 2 --reruns-delay 1
 
-# A single suite / one test:
+# Browser E2E only:
+.venv\Scripts\python.exe -m pytest tests -m e2e -n auto --dist worksteal
+
+# A single suite / one test / one group:
 .venv\Scripts\python.exe -m pytest tests\e2e_pause_freeze.py
+.venv\Scripts\python.exe -m pytest "tests\e2e_isolation.py::test_isolation[lv]"
 .venv\Scripts\python.exe -m pytest tests\test_math.py -k tiered
 ```
 
-Playwright is intentionally *not* in `requirements.txt` (it's in the `dev` extra). Set `STATEOFUPS_E2E_REAL=1` to run E2E against the committed `output/dashboard.html` instead of synthetic data.
+**Speed:** each E2E suite is parametrized **per animation group** (so `pytest-xdist`'s `-n auto` spreads ~43 short browser checks across cores instead of looping 8 groups serially in one test), and every E2E test reloads to a pristine page so it is order-independent under parallel workers. `--reruns` (pytest-rerunfailures) absorbs the rare browser-timing flake. On a many-core machine the full suite finishes in under 32 seconds; the unit-only run is sub-second.
+
+**CI** (`.github/workflows/ci.yml`, Windows) skips the slow browser job entirely unless a change touches the dashboard/animation code or the E2E harness (`pcss/animation.*`, `pcss/dashboard.py`, `analyze_ups.py`, `tests/conftest.py|harness.py|e2e_*.py`). Docs-only and most code changes run just the unit suite.
+
+Playwright is intentionally *not* in `requirements.txt` (it's in the `dev` extra, with `pytest-xdist` and `pytest-rerunfailures`). Set `STATEOFUPS_E2E_REAL=1` to run E2E against the generated `output/dashboard.html` (which you must have produced locally — `output/` is gitignored) instead of synthetic data.
 
 ## Development (lint + types)
 
@@ -100,6 +127,7 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 | `tray_status.py` | System-tray battery icon; reads the PCSS web UI. |
 | `config.example.toml` | Template config; copy to `config.toml`. |
 | `run_analyzer.bat` / `run_tray.bat` | Double-click launchers. |
+| `register_scheduled_task.ps1` / `scheduled_run.ps1` | Set up and run a guarded daily analyzer task (Windows Task Scheduler). |
 | `pyproject.toml` / `requirements.txt` | Packaging + deps (ruff/mypy/pytest config in pyproject). |
 | `tests/` | pytest: `test_math.py`, `test_tray.py`, `test_animation_slicing.py`, `conftest.py` (hermetic fixture), `harness.py`, one `e2e_*.py` per browser suite. |
 | `output/dashboard.html` | Latest dashboard. Overwritten each run. |
@@ -150,7 +178,7 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 - **energylog uses dot-decimal** numbers and timestamps as **seconds since 2010-01-01 LOCAL** (not UTC, not Unix epoch). Verified empirically by aligning the first energylog timestamp with the first DataLog timestamp.
 - **Real wattage is `null`** in energylog — the BX2000M has no wattmeter. PCSS calculates power as `relativeLoad × calculatedMaxLoad / 100`, where `calculatedMaxLoad` is 1400W (declared in the energylog header).
 - **PCSS reports a single-rate cost.** PCSS supports only one rate, but Coopesantos T-RE is tiered, so the PCSS figure differs from the bill. The dashboard reports both. The "Cost (Coopesantos tiered)" row in the summary table matches the actual bill.
-- **Tariff constants** default in `pcss/config.py` and are overridable via `config.toml` `[tariff]` (`coopesantos_low/high`, `tier_limit_kwh`, `pcss_flat`). When the quarterly Coopesantos rate changes, edit `config.toml` — no code change. (The scheduled `trig_01PgYk7Fb6HXqGjcJ5CiAbC1` agent will email when this needs to happen.)
+- **Tariff constants** default in `pcss/config.py` and are overridable via `config.toml` `[tariff]` (`coopesantos_low/high`, `tier_limit_kwh`, `pcss_flat`). When the quarterly Coopesantos rate changes, edit `config.toml` — no code change.
 - **High-load episode duration** counts each sample as one sampling interval, so a k-sample run is ~k×interval (not the (k−1)×interval span between first/last timestamps); this can surface short episodes the old span-based measure missed.
 
 ## Paths assumed
@@ -161,4 +189,4 @@ The PCSS agent directory defaults in `pcss/config.py`:
 PCSS_AGENT = C:\Program Files\APC\PowerChute Serial Shutdown\agent
 ```
 
-If PCSS is reinstalled elsewhere, set `[paths] pcss_agent` in `config.toml` (or pass `--agent-dir`).
+This default is the standard Windows install path (PCSS is a Windows product). If PCSS is installed elsewhere — or you are running the analyzer on Linux/macOS against a copy of exported logs — set `[paths] pcss_agent` in `config.toml` or pass `--agent-dir PATH`. The analyzer itself (`analyze_ups.py` + the `pcss` package) is pure Python and runs on any OS; only `tray_status.py` is Windows-only (it uses the Windows Credential Manager and a tray backend). If the agent directory does not exist, the analyzer prints how to point it at the right path instead of failing.

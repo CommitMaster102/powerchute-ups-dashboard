@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from pcss import config
-from pcss.common import parse_es_number, parse_pcss_number
+from pcss.common import parse_pcss_number
 from pcss.loaders import history_summary
 from pcss.stats import (
     compute_energy_summary,
@@ -172,22 +172,6 @@ def test_datalog_stats_basic():
 
 
 # ---------------------------------------------------------------- locale parsing
-@pytest.mark.parametrize("raw,expected", [
-    ("1.234,56", 1234.56),
-    ("122,0", 122.0),
-    ("99", 99.0),
-    ("N/A", None),
-    ("null", None),
-    ("", None),
-])
-def test_parse_es_number(raw, expected):
-    out = parse_es_number(raw)
-    if expected is None:
-        assert np.isnan(out)
-    else:
-        assert out == pytest.approx(expected)
-
-
 @pytest.mark.parametrize("raw,expected", [
     ("1234.567", 1234.567),
     ("null", None),
