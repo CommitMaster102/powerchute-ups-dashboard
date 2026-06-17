@@ -295,6 +295,21 @@
       }, [a.trace_idx]);
     }
   }
+  function resetAllGroups() {
+    // Return every panel to its pristine state (full data, idle, label at
+    // frame 0) WITHOUT a page reload. The E2E fixtures call this between tests
+    // so each one starts clean and is order-independent under pytest-xdist —
+    // far cheaper than reloading the ~1MB dashboard, which matters most on
+    // low-core CI runners where reloads can't be parallelized away.
+    Object.keys(ANIM_DATA).forEach(g => {
+      clearStepper(g);          // cancels any in-flight rAF
+      LAST_KEY[g] = null;
+      restoreOriginals(g);      // full data back on every trace
+      SAVED_T[g] = 0;
+      setState(g, "idle");      // resets the play/pause button states
+      if (ANIM_DATA[g].labels) setTime(g, 0);
+    });
+  }
   function setup() {
     target = gd();
     if (!target || !window.Plotly) { setTimeout(setup, 100); return; }
@@ -433,6 +448,8 @@
     getSpeed: (g) => SPEED[g] || 1,
     getState: (g) => STATE[g] || "idle",
     getSavedT: (g) => SAVED_T[g] || 0,
+    // Used by the E2E fixtures to reset between tests without a page reload.
+    resetAll: () => resetAllGroups(),
   };
 })();
 </script>

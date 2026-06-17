@@ -86,6 +86,12 @@ jobs:
           enable-cache: true
       - name: Install (runtime + dev)
         run: uv pip install --system -e ".[dev]"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: playwright-${{ runner.os }}-
       - name: Install Playwright Chromium
         run: python -m playwright install chromium
       - name: Browser E2E tests

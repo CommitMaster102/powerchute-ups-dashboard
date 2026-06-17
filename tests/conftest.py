@@ -110,15 +110,17 @@ def anim_data(_page) -> dict:
 
 @pytest.fixture
 def runner(_page, anim_data) -> TestRunner:
-    """A TestRunner over a freshly-reloaded page. Every E2E test starts from a
-    pristine state (full data, nothing playing) so the per-group tests are
-    order-independent — they can run in any sequence and across xdist workers
-    (which share one page per worker) without a prior test's leftover
-    paused/partial panel contaminating this one. The reload cost is amortized
-    across cores under ``-n auto``."""
-    _page.reload()
-    wait_ready(_page)
-    stash_full_lengths(_page, anim_data)
+    """A TestRunner over a page reset to its pristine state (full data, nothing
+    playing) so the per-group tests are order-independent — they can run in any
+    sequence and across xdist workers (which share one page per worker) without
+    a prior test's leftover paused/partial panel contaminating this one.
+
+    Reset is done in-page via ``__animDebug.resetAll()`` rather than a full
+    ``page.reload()``: it's ~50ms vs ~2s and avoids reload races, which is what
+    keeps the parametrized suite fast on low-core CI runners (where reloads
+    can't be parallelized away) and flake-free."""
+    _page.evaluate("window.__animDebug.resetAll()")
+    _page.wait_for_timeout(80)   # let the restyle redraws land
     return TestRunner(_page)
 
 
