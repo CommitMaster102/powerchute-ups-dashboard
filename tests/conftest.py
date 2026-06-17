@@ -24,16 +24,24 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))          # harness
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 
-from harness import (  # noqa: E402
-    DASHBOARD,
-    TestRunner,
-    assert_expected_speeds,
-    stash_full_lengths,
-    wait_ready,
-)
-from playwright.sync_api import sync_playwright  # noqa: E402
-
 from pcss.common import EPOCH_2010  # noqa: E402  (single source of truth)
+
+# Playwright + the browser harness are only needed for the E2E suites. Import
+# them inside a guard so the unit suite collects and runs without Playwright
+# installed — CI's lint-unit job installs only `.[lint,test]` (no ~36 MiB
+# Playwright download). When it's absent, skip collecting the e2e_*.py files
+# entirely instead of erroring at import time.
+try:
+    from harness import (  # noqa: E402
+        DASHBOARD,
+        TestRunner,
+        assert_expected_speeds,
+        stash_full_lengths,
+        wait_ready,
+    )
+    from playwright.sync_api import sync_playwright  # noqa: E402
+except ImportError:
+    collect_ignore_glob = ["e2e_*.py"]
 
 
 def _write_synthetic_agent(agent: Path) -> Path:
