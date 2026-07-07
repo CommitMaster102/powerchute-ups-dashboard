@@ -105,6 +105,54 @@ def banner(s: str):
     print("=" * 72)
 
 
+def _calibration_console_lines(calibration: dict | None) -> list[str]:
+    """The RUNTIME-CURVE CALIBRATION console lines (roadmap item 16).
+
+    Reports the count of usable discharges behind the fit and either the
+    recovered drain-rate constant k with the observed load span it was fitted
+    across, or the honest below-floor status — the same shape the battery and
+    forecast sections already use. Kept a pure function of the calibration
+    dict (``pcss.stats.calibrate_runtime_curve``'s result) so both the wording
+    and the below-floor case stay unit-testable without a full pipeline run.
+    """
+    cal = calibration or {}
+    if cal.get("status") == "calibrated":
+        lines = [f"  Fitted from {cal['n_episodes']} usable discharge(s): "
+                 f"k = {cal['k']:.5f} %/min/W"]
+        w_lo, w_hi = cal.get("watts_observed_min"), cal.get("watts_observed_max")
+        if w_lo is not None and w_hi is not None:
+            if abs(w_hi - w_lo) < 1:
+                lines.append(f"  Observed load: {w_lo:.0f} W (single operating point)")
+            else:
+                lines.append(f"  Observed load range: {w_lo:.0f}-{w_hi:.0f} W")
+        return lines
+    need = cal.get("min_episodes", config.CALIBRATION_MIN_EPISODES)
+    return [f"  Not enough discharge data yet "
+            f"({cal.get('n_episodes', 0)}/{need:.0f} usable discharges needed)."]
+
+
+def _calibration_for_json(calibration: dict | None) -> dict:
+    """The runtime-curve calibration (roadmap item 16) as machine-clean values
+    for --json. A missing or non-finite numeric (NaN) becomes null rather than
+    a non-standard JSON token, the same NaN-safe convention the grid-quality
+    serializer follows."""
+    cal = calibration or {}
+
+    def clean(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        return v
+
+    return {
+        "status": cal.get("status"),
+        "n_episodes": cal.get("n_episodes"),
+        "min_episodes": cal.get("min_episodes"),
+        "k": clean(cal.get("k")),
+        "watts_observed_min": clean(cal.get("watts_observed_min")),
+        "watts_observed_max": clean(cal.get("watts_observed_max")),
+    }
+
+
 def _date_filter(df: pd.DataFrame, since: pd.Timestamp | None, until: pd.Timestamp | None) -> pd.DataFrame:
     if df.empty or "ts" not in df.columns:
         return df
@@ -565,6 +613,15 @@ def main(argv: list[str] | None = None) -> int:
     else:
         say("  No power data yet.")
 
+    # Runtime-curve calibration (roadmap item 16): the same structured result
+    # that feeds the rt panel's measured overlay, reported here so a headless
+    # or scheduled run surfaces the fit (or its honest below-floor status)
+    # without opening the dashboard. calibration was computed once earlier from
+    # the authoritative EventLog spans.
+    section("RUNTIME-CURVE CALIBRATION")
+    for _line in _calibration_console_lines(calibration):
+        say(_line)
+
     # Self-test detection (roadmap item 18): event-based when the PCSS
     # self-test event id is known (still unobserved as of this writing; see
     # pcss.eventlog.SELF_TEST_EVENT_IDS), shape-based otherwise. Feeds two
@@ -643,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
                             voltage_anomalies, high_load, on_battery, gaps, crossval,
                             archive_df, archive_added, battery,
                             events_df, ev_status, ev_spans, forecast, reconciled_bills,
-                            grid_quality)
+                            grid_quality, calibration)
         say(f"  Wrote JSON summary to {args.json}")
 
     events_summary = None
@@ -795,7 +852,7 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
                         voltage_anomalies, high_load, on_battery, gaps, crossval,
                         archive_df, archive_added, battery,
                         events_df, ev_status, ev_spans, forecast=None,
-                        reconciled_bills=None, grid_quality=None) -> None:
+                        reconciled_bills=None, grid_quality=None, calibration=None) -> None:
     """Structured machine-readable summary for external tooling (--json)."""
     energy_json = {k: energy_summary.get(k) for k in
                    ("total_kwh", "total_cost_pcss", "total_cost_tiered", "total_co2_kg",
@@ -826,6 +883,7 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
         "cross_validation": crossval or {},
         "battery": battery or {},
         "forecast": forecast or {},
+        "calibration": _calibration_for_json(calibration),
         "events": {
             "status": ev_status,
             "n_events": int(len(events_df)),

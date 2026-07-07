@@ -8,6 +8,7 @@ spawns pystray or a real subprocess.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 
 import tray_status as t
@@ -160,3 +161,104 @@ def test_tail_of_log_missing_file_returns_placeholder(tmp_path):
     log_path = tmp_path / "does_not_exist.log"
     result = t.tail_of_log(log_path, max_lines=5, max_chars=100)
     assert result  # non-empty placeholder, never raises
+
+
+# ---------------------------------------------------------------- watchdog timeout (item 24 / B9)
+class _FakeProc:
+    """A stand-in for a spawned analyzer process. Its first wait raises
+    TimeoutExpired (a wedged run); any later wait returns a code."""
+
+    def __init__(self, wait_results):
+        self.pid = 4321
+        self.killed = False
+        self.wait_timeouts: list = []
+        self._results = list(wait_results)
+
+    def wait(self, timeout=None):
+        self.wait_timeouts.append(timeout)
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def kill(self):
+        self.killed = True
+
+
+class _FakeIcon:
+    def __init__(self):
+        self.notes: list[tuple] = []
+
+    def notify(self, message, title=None):
+        self.notes.append((message, title))
+
+
+def test_tray_run_timeout_constant_is_fifteen_minutes():
+    assert t.TRAY_RUN_TIMEOUT_SEC == 15 * 60
+
+
+def test_kill_process_tree_kills_and_never_raises(monkeypatch):
+    run_calls = []
+    monkeypatch.setattr(t.subprocess, "run", lambda *a, **k: run_calls.append((a, k)))
+    proc = _FakeProc([0])
+    t._kill_process_tree(proc)
+    assert proc.killed is True
+    # A process-tree kill was attempted (taskkill names the pid).
+    assert any("taskkill" in str(a) and "4321" in str(a) for a, k in run_calls)
+
+
+def test_kill_process_tree_swallows_all_errors(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("no taskkill here")
+
+    monkeypatch.setattr(t.subprocess, "run", boom)
+
+    class Explosive:
+        pid = 1
+        def kill(self):
+            raise RuntimeError("already gone")
+
+    t._kill_process_tree(Explosive())  # must not raise
+
+
+def _patch_worker_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(t, "TRAY_RUN_LOG", tmp_path / "tray_run.log")
+    monkeypatch.setattr(t, "SCHEDULED_RUN_MARKER", tmp_path / "marker.txt")
+    monkeypatch.setattr(t, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(t, "log", lambda *a, **k: None)
+    monkeypatch.setattr(t.subprocess, "run", lambda *a, **k: None)  # taskkill no-op
+
+
+def test_worker_timeout_kills_releases_gate_and_toasts(monkeypatch, tmp_path):
+    _patch_worker_env(monkeypatch, tmp_path)
+    fake = _FakeProc([subprocess.TimeoutExpired(cmd="analyze", timeout=t.TRAY_RUN_TIMEOUT_SEC), 1])
+    monkeypatch.setattr(t.subprocess, "Popen", lambda *a, **k: fake)
+    icon = _FakeIcon()
+    gate = t.SingleFlightRun()
+    assert gate.try_start() is True
+
+    t._run_analyzer_worker(icon, gate)
+
+    # The wait was bounded by the watchdog timeout, not an unbounded wait().
+    assert fake.wait_timeouts[0] == t.TRAY_RUN_TIMEOUT_SEC
+    assert fake.killed is True                 # the wedged process was killed
+    assert gate.active is False                # the single-flight slot was released
+    assert icon.notes, "a failure toast must fire on timeout"
+    body = icon.notes[-1][0].lower()
+    assert "min" in body or "límite" in body or "cancel" in body
+
+
+def test_worker_success_path_still_toasts_ok(monkeypatch, tmp_path):
+    _patch_worker_env(monkeypatch, tmp_path)
+    fake = _FakeProc([0])
+    monkeypatch.setattr(t.subprocess, "Popen", lambda *a, **k: fake)
+    icon = _FakeIcon()
+    gate = t.SingleFlightRun()
+    gate.try_start()
+
+    t._run_analyzer_worker(icon, gate)
+
+    assert fake.wait_timeouts[0] == t.TRAY_RUN_TIMEOUT_SEC
+    assert fake.killed is False
+    assert gate.active is False
+    assert any("actualizado" in msg.lower() for msg, _ in icon.notes)

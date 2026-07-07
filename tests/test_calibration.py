@@ -14,6 +14,8 @@ the honest result carries no curve at all — the same floor pattern as
 """
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -163,6 +165,37 @@ def test_below_floor_returns_honest_status():
     assert result["k"] is None
     assert result["watts"] is None
     assert result["minutes"] is None
+    # Even below the floor, the observed range from the usable observations is
+    # reported (roadmap item 16, item B7): two discharges at 100 W and 200 W.
+    assert result["watts_observed_min"] == pytest.approx(100.0)
+    assert result["watts_observed_max"] == pytest.approx(200.0)
+
+
+# ---------------------------------------------------------------- observed watt range (item B7)
+def test_calibrated_result_carries_observed_watt_range():
+    """The measured overlay extrapolates one global k across all configured
+    watt points, so the honest range is the span of the observations it was
+    fitted from — here 120 W to 480 W."""
+    k_true = 0.01
+    dl_rows: list[dict] = []
+    energy_rows: list[dict] = []
+    spans = []
+    for i, (power, duration) in enumerate(
+            [(120.0, 10.0), (200.0, 5.0), (480.0, 2.5), (300.0, 4.0)]):
+        drop = k_true * power * duration
+        spans.append(_episode(f"2026-08-{1 + i:02d} 00:00", power, duration, drop,
+                              dl_rows, energy_rows))
+    datalog_df, energy_df = _frames(dl_rows, energy_rows)
+    result = calibrate_runtime_curve(_spans(spans), datalog_df, energy_df)
+    assert result["status"] == "calibrated"
+    assert result["watts_observed_min"] == pytest.approx(120.0)
+    assert result["watts_observed_max"] == pytest.approx(480.0)
+
+
+def test_empty_result_has_null_observed_range():
+    result = calibrate_runtime_curve(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    assert result["watts_observed_min"] is None
+    assert result["watts_observed_max"] is None
 
 
 def test_empty_spans_or_missing_columns_is_insufficient():
@@ -366,3 +399,126 @@ def test_build_dashboard_spanish_calibration_note(monkeypatch):
         assert "descargas" in html
     finally:
         pass
+
+
+def test_build_dashboard_rt_subtitle_names_observed_watt_range():
+    """The honesty note names the observed load span the single global k was
+    fitted across (roadmap item 16, item B7)."""
+    calibration = {"status": "calibrated", "n_episodes": 4, "min_episodes": 3,
+                   "k": 0.01, "watts": [100.0, 200.0], "minutes": [10.0, 5.0],
+                   "watts_observed_min": 120.0, "watts_observed_max": 480.0}
+    html = build_dashboard(**_minimal_dashboard_inputs(), calibration=calibration)
+    assert "measured from 4 discharges near 120-480 W" in html
+
+
+def test_build_dashboard_rt_subtitle_degenerate_single_wattage():
+    """When every usable discharge sat at one wattage, the note reads a single
+    figure rather than a nonsensical N-N range."""
+    calibration = {"status": "calibrated", "n_episodes": 4, "min_episodes": 3,
+                   "k": 0.01, "watts": [100.0, 200.0], "minutes": [10.0, 5.0],
+                   "watts_observed_min": 250.0, "watts_observed_max": 250.0}
+    html = build_dashboard(**_minimal_dashboard_inputs(), calibration=calibration)
+    assert "measured from 4 discharges near 250 W" in html
+    assert "250-250" not in html
+
+
+def test_build_dashboard_rt_subtitle_spanish_observed_range(monkeypatch):
+    monkeypatch.setattr(config, "DASHBOARD_LANGUAGE", "es")
+    calibration = {"status": "calibrated", "n_episodes": 4, "min_episodes": 3,
+                   "k": 0.01, "watts": [100.0, 200.0], "minutes": [10.0, 5.0],
+                   "watts_observed_min": 120.0, "watts_observed_max": 480.0}
+    html = build_dashboard(**_minimal_dashboard_inputs(), calibration=calibration)
+    assert "cerca de 120-480 W" in html
+
+
+# ---------------------------------------------------------------- console + --json surfaces (item B6)
+def test_calibration_console_lines_calibrated_names_k_and_range():
+    import analyze_ups
+    cal = {"status": "calibrated", "n_episodes": 4, "min_episodes": 3, "k": 0.01234,
+           "watts": [100.0], "minutes": [10.0],
+           "watts_observed_min": 120.0, "watts_observed_max": 480.0}
+    text = "\n".join(analyze_ups._calibration_console_lines(cal))
+    assert "Fitted from 4" in text
+    assert "0.01234" in text        # k printed to 5 decimals
+    assert "120-480 W" in text
+
+
+def test_calibration_console_lines_below_floor_is_honest():
+    import analyze_ups
+    cal = {"status": "insufficient_evidence", "n_episodes": 1, "min_episodes": 3,
+           "k": None, "watts": None, "minutes": None,
+           "watts_observed_min": 200.0, "watts_observed_max": 200.0}
+    lines = analyze_ups._calibration_console_lines(cal)
+    assert any("1/3" in ln for ln in lines)
+    assert any("not enough" in ln.lower() for ln in lines)
+
+
+def test_calibration_for_json_calibrated_is_clean():
+    import analyze_ups
+    cal = {"status": "calibrated", "n_episodes": 4, "min_episodes": 3, "k": 0.01,
+           "watts": [100.0], "minutes": [10.0],
+           "watts_observed_min": 120.0, "watts_observed_max": 480.0}
+    j = analyze_ups._calibration_for_json(cal)
+    assert j["status"] == "calibrated"
+    assert j["k"] == pytest.approx(0.01)
+    assert j["n_episodes"] == 4
+    assert j["watts_observed_min"] == pytest.approx(120.0)
+    assert j["watts_observed_max"] == pytest.approx(480.0)
+
+
+def test_calibration_for_json_is_nan_safe():
+    import analyze_ups
+    cal = {"status": "insufficient_evidence", "n_episodes": 0, "min_episodes": 3,
+           "k": float("nan"), "watts": None, "minutes": None,
+           "watts_observed_min": float("nan"), "watts_observed_max": None}
+    j = analyze_ups._calibration_for_json(cal)
+    assert j["k"] is None
+    assert j["watts_observed_min"] is None
+    assert j["watts_observed_max"] is None
+    # The whole thing must serialize as standard JSON (no NaN token).
+    assert "NaN" not in json.dumps(j)
+
+
+def _write_calibration_agent(agent):
+    """A minimal DataLog + energylog agent with no EventLog, so a real
+    pipeline run reaches the calibration surfaces with an honest
+    insufficient-evidence result (no authoritative outage spans to fit)."""
+    agent.mkdir(parents=True, exist_ok=True)
+    (agent / "energylog").mkdir(exist_ok=True)
+    start = pd.Timestamp("2026-05-01 00:00")
+    dl_lines = ["Date and Time\tLine Voltage\tBattery Voltage\tUPS Load\tBattery Capacity"]
+    for i in range(48):
+        t = start + pd.Timedelta(minutes=20 * i)
+        vals = f"{120.0:.1f}\t{27.0:.1f}\t{20.0:.1f}\t{100.0:.1f}".replace(".", ",")
+        dl_lines.append(f"{t:%m/%d/%Y %H:%M:%S}\t{vals}")
+    (agent / "DataLog").write_text("\n".join(dl_lines) + "\n", encoding="utf-8")
+    epoch_2010 = pd.Timestamp("2010-01-01")
+    el = ["# $month=2026-05", "# $interval=300", "# $calculatedMaxLoad=1400.0"]
+    for i in range(288):
+        t = start + pd.Timedelta(minutes=5 * i)
+        secs = (t - epoch_2010).total_seconds()
+        el.append(f"{secs:.0f};null;20.0;280.0")
+    (agent / "energylog" / "2026-05.log").write_text("\n".join(el) + "\n", encoding="utf-8")
+    return agent
+
+
+def _cal_config(tmp_path):
+    conf = tmp_path / "config.toml"
+    conf.write_text("[archive]\nenabled = false\n", encoding="utf-8")
+    return conf
+
+
+def test_pipeline_reports_calibration_console_and_json(tmp_path, capsys):
+    import analyze_ups
+    agent = _write_calibration_agent(tmp_path / "agent")
+    jpath = tmp_path / "summary.json"
+    code = analyze_ups.main(["--agent-dir", str(agent), "-o", str(tmp_path / "d.html"),
+                             "--no-browser", "--no-snapshot", "--json", str(jpath),
+                             "--config", str(_cal_config(tmp_path))])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "RUNTIME-CURVE CALIBRATION" in out
+    assert "not enough discharge data" in out.lower()
+    data = json.loads(jpath.read_text(encoding="utf-8"))
+    assert "calibration" in data
+    assert data["calibration"]["status"] == "insufficient_evidence"

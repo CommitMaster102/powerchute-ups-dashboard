@@ -100,6 +100,7 @@ _STRINGS_ES = {
     "runtime curve": "curva de autonomía",
     "measured": "medido",
     "measured from": "medido a partir de",
+    "near": "cerca de",
     "discharge": "descarga",
     "discharges": "descargas",
     "not enough discharge data yet": "aún no hay suficientes datos de descarga",
@@ -1694,6 +1695,15 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     if cal.get("status") == "calibrated":
         cal_bit = (f"{_L('measured from')} "
                    f"{_count(cal['n_episodes'], _L('discharge'), _L('discharges'))}")
+        # The single global k is extrapolated across every configured watt
+        # point, so name the load span it was actually fitted from (item B7).
+        # A degenerate range (every discharge at one wattage) reads as a
+        # single figure rather than a nonsensical "N-N W".
+        w_lo = cal.get("watts_observed_min")
+        w_hi = cal.get("watts_observed_max")
+        if w_lo is not None and w_hi is not None:
+            range_txt = f"{w_lo:.0f} W" if abs(w_hi - w_lo) < 1 else f"{w_lo:.0f}-{w_hi:.0f} W"
+            cal_bit = f"{cal_bit} {_L('near')} {range_txt}"
     else:
         cal_bit = (f"{_L('not enough discharge data yet')} "
                    f"({cal.get('n_episodes', 0)}/{cal_min_episodes:.0f})")

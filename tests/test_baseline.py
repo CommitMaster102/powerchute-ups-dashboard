@@ -284,9 +284,10 @@ def test_min_days_argument_overrides_config():
 
 # ---------------------------------------------------------------- threshold knob
 def test_deviation_pct_threshold_respected():
-    """One day at 286 W against a 200 W baseline (diluted by that same day
-    to ~204.3 W) deviates by ~40%: past the default 35% floor, short of a
-    stricter 45% one."""
+    """One day at 286 W against its pure-peer 200 W baseline — leave-one-out
+    excludes the evaluated day from its own comparison (polish wave B, item
+    B8), so there is no self-dilution — deviates by (286 - 200) / 200 = 43%:
+    past the default 35% floor, short of a stricter 45% one."""
     dates = list(pd.bdate_range("2026-01-05", periods=19))
     test_idx = 9
 
@@ -301,6 +302,49 @@ def test_deviation_pct_threshold_respected():
 
     strict_result = detect_baseline_deviations(df, deviation_pct=45.0)
     assert test_date not in set(strict_result["flagged"]["date"])
+
+
+# ---------------------------------------------------------------- leave-one-out (item B8)
+def test_leave_one_out_flags_day_that_self_diluted_baseline_misses():
+    """Leave-one-out baselines (polish wave B, item B8): a day is compared
+    against a baseline built from its PEERS only, not one its own samples
+    diluted. This borderline weekend day is missed by the old self-included
+    baseline but caught once the day is excluded from its own comparison.
+
+    Data: 21 consecutive days from Mon 2026-01-05 (three full weeks). Every
+    weekday sits flat at 300 W; every weekend day flat at 100 W except the
+    test day, Sat 2026-01-17, at 140 W. Six weekend days fall in the window
+    (Jan 10, 11, 17, 18, 24, 25); Jan 25 is the trailing (always-excluded)
+    day, leaving five weekend candidates.
+
+    Self-included weekend baseline (the OLD behavior): per hour
+    (5*100 + 140) / 6 = 106.67 W, so Jan 17 deviates by
+    |140 - 106.67| / 106.67 = 31.25% — under the 35% default, NOT flagged.
+
+    Leave-one-out weekend baseline for Jan 17 (its five weekend peers, all at
+    100 W): 100 W, so it deviates by |140 - 100| / 100 = 40% — over 35%,
+    flagged. No other day crosses: the other weekend days at 100 W deviate at
+    most |100 - 108| / 108 = 7.4% against their own leave-one-out baseline,
+    and every weekday sits exactly on its flat 300 W peer baseline.
+    """
+    dates = list(pd.date_range("2026-01-05", periods=21))
+    test_date = pd.Timestamp("2026-01-17").date()
+
+    def watts(d, h):
+        day = dates[d]
+        if day.dayofweek < 5:
+            return 300.0
+        return 140.0 if day.date() == test_date else 100.0
+
+    df = _edf_for_dates(dates, watts)
+    result = detect_baseline_deviations(df)
+    assert result["status"] == "ok"
+    flagged_dates = set(result["flagged"]["date"])
+    assert test_date in flagged_dates
+    assert flagged_dates == {test_date}, "leave-one-out should flag only the borderline day"
+    row = result["flagged"][result["flagged"]["date"] == test_date].iloc[0]
+    assert row["day_type"] == "weekend"
+    assert row["deviation_pct"] == pytest.approx(40.0, abs=0.5)
 
 
 # ---------------------------------------------------------------- payload markers (_panel_daily)

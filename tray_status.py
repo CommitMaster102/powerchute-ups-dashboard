@@ -65,6 +65,11 @@ WEBHOOK_KEYRING_USERNAME = "webhook-url"
 # Scratch log for a tray-triggered analyzer run (item 24) — overwritten on
 # every run, not history like tray_status.log or the scheduled-run log.
 TRAY_RUN_LOG = OUTPUT / "tray_run.log"
+# Watchdog ceiling for one tray-triggered analyzer run (item 24). A healthy
+# run finishes in seconds; this generous cap keeps a hung analyzer from
+# wedging the single-flight slot until the tray is restarted. On expiry the
+# process tree is killed, a failure toast fires, and the slot is released.
+TRAY_RUN_TIMEOUT_SEC = 15 * 60
 # The once-a-day marker scheduled_run.ps1 writes on a successful run; read
 # here (never written) to decide whether a tray-triggered run needs the
 # snapshot or can pass --no-snapshot.
@@ -509,17 +514,45 @@ def tail_of_log(log_path: Path, max_lines: int = 6, max_chars: int = 300) -> str
     return tail_of_text(text, max_lines=max_lines, max_chars=max_chars)
 
 
+def _kill_process_tree(proc) -> None:
+    """Terminate a spawned analyzer process and any children it started.
+
+    A plain proc.kill() ends only the direct child on Windows, so a wedged
+    analyzer that itself spawned a helper could leave that helper running.
+    taskkill /F /T /PID walks the whole tree; a plain proc.kill() is the
+    fallback when taskkill is unavailable or the process is already gone.
+    This runs on the watchdog path, where the caller is already handling a
+    timeout, so it swallows every error rather than raising a second problem.
+    """
+    pid = getattr(proc, "pid", None)
+    if pid is not None:
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                creationflags=0x08000000,  # NO_WINDOW
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+    with contextlib.suppress(Exception):
+        proc.kill()
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=10)
+
+
 def _run_analyzer_worker(icon: Icon, gate: SingleFlightRun) -> None:
-    """Runs on a background thread: spawns the analyzer, waits for it, and
-    reports completion via a toast. This is the thin pystray-facing wiring
-    around the pure helpers above — it is not unit-tested (it spawns a real
-    process and touches a real Icon), so it stays as small as possible.
+    """Runs on a background thread: spawns the analyzer, waits for it under a
+    watchdog timeout, and reports completion via a toast. This is the thin
+    pystray-facing wiring around the pure helpers above; the timeout path,
+    the process-tree kill, and the gate release are covered by mocked-Popen
+    tests in tests/test_tray_run.py.
     """
     try:
         today = time.strftime("%Y-%m-%d")
         no_snapshot = wants_no_snapshot(SCHEDULED_RUN_MARKER, today)
         cmd = analyzer_command(SCRIPT_DIR, no_snapshot)
         log(f"Actualizar dashboard: ejecutando {cmd!r} (no_snapshot={no_snapshot}).")
+        code: int | None = None
+        timed_out = False
         with TRAY_RUN_LOG.open("w", encoding="utf-8") as f:
             proc = subprocess.Popen(
                 cmd,
@@ -529,8 +562,22 @@ def _run_analyzer_worker(icon: Icon, gate: SingleFlightRun) -> None:
                 creationflags=0x08000000,  # NO_WINDOW
                 close_fds=True,
             )
-            code = proc.wait()
-        if code == 0:
+            try:
+                code = proc.wait(timeout=TRAY_RUN_TIMEOUT_SEC)
+            except subprocess.TimeoutExpired:
+                # A hung analyzer must not wedge the single-flight slot until
+                # the tray restarts: kill the tree and report the failure.
+                _kill_process_tree(proc)
+                timed_out = True
+        if timed_out:
+            tail = tail_of_log(TRAY_RUN_LOG)
+            minutes = TRAY_RUN_TIMEOUT_SEC // 60
+            icon.notify(
+                f"La actualización superó el límite de {minutes} min y fue "
+                f"cancelada:\n{tail}", "PCSS tray")
+            log(f"Actualizar dashboard: timeout tras {TRAY_RUN_TIMEOUT_SEC}s; "
+                f"proceso terminado.\n{tail}")
+        elif code == 0:
             icon.notify("Dashboard actualizado.", "PCSS tray")
             log("Actualizar dashboard: terminó OK.")
         else:

@@ -463,10 +463,26 @@ def detect_baseline_deviations(energy_df: pd.DataFrame, deviation_pct: float | N
         return out
     out["status"] = "ok"
 
-    profiles = weekday_weekend_profiles(s)
     candidate_dates = dates[:-1]        # the trailing day is always excluded
-    if not profiles or not candidate_dates:
+    if not candidate_dates:
         return out
+
+    # Leave-one-out baselines (polish wave B, item B8): each evaluated day is
+    # compared against a baseline built from its PEERS only — its own samples
+    # are excluded from the per-(day_type, hour) means it is measured against.
+    # Including a day in the very baseline it is judged against dilutes exactly
+    # the deviation the detector is trying to see, most sharply in short
+    # histories where one day is a large fraction of its day-type group.
+    # Precomputing the group sums and counts once and subtracting the day's own
+    # contribution keeps this a single pass rather than re-averaging the peers
+    # for every day. The Weekday vs Weekend dashboard card
+    # (weekday_weekend_profiles over the full history) is deliberately left
+    # unchanged: that view describes the whole record, not a per-day comparison.
+    s["hour"] = s["ts"].dt.hour
+    s["day_type"] = np.where(s["ts"].dt.dayofweek >= 5, "weekend", "weekday")
+    group_sum = s.groupby(["day_type", "hour"])["power_w"].sum()
+    group_cnt = s.groupby(["day_type", "hour"])["power_w"].size()
+    day_types_present = set(group_sum.index.get_level_values("day_type"))
 
     # "Complete" days: close enough to their peers' sample count that a
     # mid-history sampling gap does not masquerade as a behavior change.
@@ -478,18 +494,29 @@ def detect_baseline_deviations(energy_df: pd.DataFrame, deviation_pct: float | N
     for d in complete_dates:
         day = s[s["date"] == d]
         day_type = "weekend" if pd.Timestamp(d).dayofweek >= 5 else "weekday"
-        baseline = profiles.get(day_type)
-        if baseline is None or baseline.empty:
+        if day_type not in day_types_present:
             continue
-        day_profile = day.groupby(day["ts"].dt.hour)["power_w"].mean()
-        common = day_profile.index.intersection(baseline.index)
+        day_sum = day.groupby(day["ts"].dt.hour)["power_w"].sum()
+        day_cnt = day.groupby(day["ts"].dt.hour)["power_w"].size()
+        tot_sum = group_sum.loc[day_type]
+        tot_cnt = group_cnt.loc[day_type]
+        common = day_sum.index.intersection(tot_sum.index)
         if common.empty:
             continue
-        baseline_mean = float(baseline.loc[common].mean())
+        # The day's own contribution subtracted out of its day-type totals is
+        # the peer-only baseline. Hours where this day is its day-type's only
+        # sample leave no peer to compare against, so they drop out.
+        peer_cnt = tot_cnt.loc[common] - day_cnt.loc[common]
+        peer_sum = tot_sum.loc[common] - day_sum.loc[common]
+        common = common[peer_cnt.to_numpy() > 0]
+        if len(common) == 0:
+            continue
+        baseline = peer_sum.loc[common] / peer_cnt.loc[common]
+        day_profile = day_sum.loc[common] / day_cnt.loc[common]
+        baseline_mean = float(baseline.mean())
         if baseline_mean == 0:
             continue
-        mad_pct = float((day_profile.loc[common] - baseline.loc[common]).abs().mean()
-                        / baseline_mean * 100)
+        mad_pct = float((day_profile - baseline).abs().mean() / baseline_mean * 100)
         if mad_pct > deviation_pct:
             records.append({"date": d, "day_type": day_type, "deviation_pct": mad_pct})
 
@@ -1185,7 +1212,8 @@ def calibrate_runtime_curve(spans: pd.DataFrame, datalog_df: pd.DataFrame,
     if power_tolerance is None:
         power_tolerance = pd.Timedelta(minutes=15)
     out: dict = {"status": "insufficient_evidence", "n_episodes": 0,
-                 "min_episodes": min_episodes, "k": None, "watts": None, "minutes": None}
+                 "min_episodes": min_episodes, "k": None, "watts": None, "minutes": None,
+                 "watts_observed_min": None, "watts_observed_max": None}
 
     if spans is None or spans.empty or datalog_df.empty or energy_df.empty:
         return out
@@ -1242,6 +1270,13 @@ def calibrate_runtime_curve(spans: pd.DataFrame, datalog_df: pd.DataFrame,
     joined = joined[joined["power_w"] > 0]
 
     out["n_episodes"] = int(len(joined))
+    # The measured overlay extrapolates one global k across every configured
+    # watt point, so the observed load span the fit was actually drawn from
+    # (roadmap item 16, item B7) rides the result even below the floor — the
+    # honest range the rt card subtitle names.
+    if len(joined):
+        out["watts_observed_min"] = float(joined["power_w"].min())
+        out["watts_observed_max"] = float(joined["power_w"].max())
     if len(joined) < min_episodes:
         return out
 
