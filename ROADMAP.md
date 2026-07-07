@@ -6,14 +6,265 @@ are grouped by theme and roughly ordered by value for effort inside each
 group. When a feature touches the current architecture, the relevant files and
 symbols are named so the entry stays actionable later.
 
-Status as of 2026-07-06: every item on this list has been implemented — each
-entry below carries a SHIPPED note describing where it landed. Item 5
-(EventLog parsing) was initially deferred for lack of binary samples, then
-unblocked the same day: the live EventLog on this machine turned out to
-contain no personal data, decodes with a generic grammar-level reader
-(javaobj-py3), and the id-to-name mapping ships inside PCSS's own jars.
+How this file works: active candidates live at the top; finished items move,
+whole and unedited, into the "Shipped — implementation archive" section at
+the bottom of this same file, each with a SHIPPED note recording where the
+implementation landed and which tests pin it. Numbering is continuous and
+never reused, so a reference like "item 5" stays unambiguous forever. Before
+proposing or starting anything here, read the archive first — it is the
+record of what already exists, where it lives, and which design decisions
+were already made (future agents: do not re-propose or re-implement archived
+items; extend them).
 
-## Deferred from the redesign (the architecture already supports these)
+Shipped so far (details in the archive at the bottom):
+
+| # | Item | Landed in |
+|---|---|---|
+| 1 | Permalink view state | `pcss/charts.js` (`updateHash`/`restoreFromHash`) |
+| 2 | Anomaly jump navigation | `pcss/charts.js` (`jumpAnomaly`) |
+| 3 | Heatmap linked to the crosshair | `pcss/charts.js` (`highlightHeatmap`) |
+| 4 | DataLog archiving | `pcss/loaders.py` (`append_datalog_archive` …) |
+| 5 | EventLog parsing | `pcss/eventlog.py` |
+| 6 | On-battery episode inference | `pcss/stats.py` (`detect_on_battery_episodes`) |
+| 7 | Battery replace-by projection | `pcss/stats.py` (`battery_replace_projection`) |
+| 8 | Billing-cycle alignment | `pcss/stats.py` (`compute_energy_summary`) |
+| 9 | Comparison views (cmp, wk) | `pcss/dashboard.py` (`_panel_cmp`/`_panel_wk`) |
+| 10 | Touch support | `pcss/charts.js` (gesture layer) |
+| 11 | Whole-page export | print stylesheet + `#print-btn` |
+| 12 | Accessibility (first tranche) | aria summaries + focusable charts |
+| 13 | Spanish localization | `_STRINGS_ES`/`_L` in `pcss/dashboard.py` |
+| 14 | Notifications (toast route) | `AlertWatcher` in `tray_status.py` |
+| 15 | Auto-refreshing view | `[dashboard] refresh_minutes` meta refresh |
+
+## Data and analysis
+
+### 16. Runtime-curve calibration from observed discharges
+
+The `[runtime_curve]` watts-to-minutes table is hand-estimated. Every real
+outage is now a measurement: the EventLog spans (item 5) give the exact
+on-battery duration to the millisecond, the DataLog gives the battery
+capacity consumed, and the energylog gives the mean power draw during the
+span. Accumulated in the archives, those observations support a fitted
+"capacity percent per minute at W watts" model that can confirm or correct
+the configured curve — shown on the Estimated Runtime card as a measured
+overlay next to the configured line.
+
+Challenges:
+
+- Sample scarcity: four of the five outages recorded so far lasted seconds,
+  which drains no measurable capacity. Only episodes long enough to straddle
+  a DataLog sample are usable, so the model needs a minimum-evidence floor
+  and the honest "not enough discharge data yet" output, like the
+  replace-by projection's `battery_trend_min_days`.
+- Load is not constant during a discharge; the energylog's 5-minute samples
+  give a mean, and an episode shorter than one interval has no power sample
+  at all. The join is per-span, not per-sample (`merge_asof` against the
+  span midpoint is probably enough).
+- Battery age and temperature shift the curve over time; either weight
+  recent episodes more heavily or fit per calendar quarter once the archive
+  is deep enough.
+- Where it lands: a new function in `pcss/stats.py` feeding `_panel_rt` in
+  `pcss/dashboard.py` (a second series plus a subtitle note), with the
+  observations sourced from `output/archive/events.csv` and the DataLog
+  archive.
+
+### 17. Tariff history with effective dates
+
+Coopesantos revises the T-RE rates quarterly, but the config holds a single
+rate set, so every analyzer run prices the entire history at today's rates —
+past billing periods drift away from the bills they once matched. An array
+of dated rate sets (for example `[[tariff.history]]` entries with
+`effective_from`, low, high, tier limit) would price each billing period
+with the rates that were in force.
+
+Challenges:
+
+- Config shape and compatibility: the flat `[tariff]` keys must keep working
+  as the "current" rates so existing config files stay valid;
+  `load_config()` in `pcss/config.py` gains a parsed, date-sorted list.
+- The per-period grouping and tier arithmetic already exist (item 8), so
+  this is a rate lookup by period start date in `compute_energy_summary`,
+  not new math. The lookup must pick the newest entry at or before each
+  period's start, and fall back to the flat keys before the earliest entry.
+- Reporting has to say which rates priced which period (the partial-period
+  labeling pattern extends naturally), otherwise a rate boundary mid-history
+  looks like a consumption change.
+
+### 18. Self-test detection and battery health under load
+
+The Battery Charge sawtooth comes from the UPS's periodic self-tests, and
+the PCSS event bundles include self-test event ids. Detecting the tests
+(from events when the id shows up, from the capacity-dip shape otherwise)
+enables two things: excluding them explicitly from trend fits, and using
+the voltage sag under test load as a battery-health signal that complements
+the resting-voltage slope of item 7.
+
+Challenges:
+
+- The current one-month capture contains no self-test event, so the exact
+  id is unknown. Unknown ids already render numerically and accumulate in
+  `output/archive/events.csv`; the first observed test names itself, and
+  `FALLBACK_NAMES` in `pcss/eventlog.py` then gains the entry.
+- Correlating a test event with the DataLog dip around it is a windowed
+  join at the 20-minute cadence; a test shorter than one sample interval may
+  leave only the capacity dip, only the voltage sag, or neither.
+- The health metric needs a defensible interpretation (voltage sag at a
+  known load, trended over months), and it must state its confidence the
+  same way the replace-by projection does.
+
+### 19. Baseline-deviation energy alerts
+
+The weekday and weekend hourly profiles (item 9's `wk` panel) define what a
+normal day looks like. Comparing each new day against its profile — mean
+absolute deviation, or a per-hour z-score — turns "is this normal?" into a
+detection: a stuck-on appliance, a new always-on load, or a failing PSU
+shows up as a flagged day instead of a chart the user must remember to read.
+
+Challenges:
+
+- Small history first: with a few weeks of energylog, per-hour variance is
+  noisy, and holidays sit in neither profile. The detector needs a minimum
+  history floor and a deliberately blunt threshold in `[thresholds]`.
+- Where the flag surfaces: a marker on the Daily Energy bars, a line in the
+  console summary, and the `[alerts]` trigger — all three exist as patterns
+  (`markers`, the anomalies section, `_maybe_write_alerts`).
+- Honest labeling again: this flags deviation from the recorded baseline,
+  not faults; the wording must not overclaim.
+
+## Dashboard and interaction
+
+### 20. Event timeline panel
+
+Parsed events (item 5) currently surface as amber strips and reference-table
+counts. A dedicated card — one row per event category, a dot per occurrence,
+time on the x axis — would make the month's story readable at a glance:
+outages, low-battery warnings, communication drops, monitoring gaps.
+
+Challenges:
+
+- A new chart shape: categorical rows over a time axis is a fourth renderer
+  in `pcss/charts.js` next to line, bar, and heatmap; it needs its own hover
+  path and CSV export shape, and the panel key must join `PANELS` in
+  `tests/harness.py` with the conftest assertion that the page renders it.
+- The E2E fixture agent has no EventLog; either the synthetic agent copies
+  `tests/fixtures/EventLog` (real, personal-data-free) or the panel must be
+  exempt from the render assertion. Copying the fixture is simpler and also
+  exercises the parser inside the E2E build.
+- Noise: about 95 percent of recorded events are daily Monitoring and
+  Communication churn from PC boots. The panel needs a default filter (power
+  and battery categories on, housekeeping off) with the legend toggling the
+  rest.
+
+### 21. Keyboard sample step-through (the open remainder of item 12)
+
+Focus a chart, press Enter, and walk sample by sample with the arrow keys —
+the tooltip follows the cursor and an `aria-live` region reads out
+"timestamp, value, unit" for screen readers. This is the piece of item 12
+that was deliberately deferred as a real feature rather than a patch.
+
+Challenges:
+
+- The arrow keys already pan the window (`bindKeyboard` in
+  `pcss/charts.js`), so stepping needs an explicit mode — Enter to toggle
+  inspect mode on the focused panel, Escape to leave it — with a visible
+  state cue so sighted keyboard users know which mode they are in.
+- The cursor must walk the full data arrays, not the decimated index that
+  `decimateMinMax` renders, or steps would skip samples at wide zoom.
+- `aria-live` etiquette: announce on step, not on every render, and keep the
+  text short; a chatty live region is worse than none.
+
+### 22. Selectable comparison periods
+
+The Period Comparison card fixes "current versus previous". A small selector
+(previous period, same period last quarter, pick-a-period) would let the
+panel answer seasonal questions once the energylog archive spans enough
+months.
+
+Challenges:
+
+- The payload currently carries only the last two periods
+  (`_panel_cmp` in `pcss/dashboard.py`); selection needs all periods in the
+  payload, which is fine at hourly resolution but should be decimated
+  server-side beyond a few thousand points.
+- Selection is client state that belongs in the permalink hash (item 1's
+  encoder is extensible — one more key alongside `z` and `p`).
+- The control must fit the minimal card-header design; the preset-pill
+  pattern (`_section_head`) is the established look for this kind of toggle.
+
+## Alerting and automation
+
+### 23. Webhook or email notification channel (the open remainder of item 14)
+
+The toast reaches someone sitting at the PC. When nobody is, a push channel
+does: a webhook POST (ntfy.sh, a Telegram bot, or any HTTP endpoint) is
+simpler and safer to configure than SMTP and covers phones. The trigger and
+cooldown logic already exist in `AlertWatcher`; this adds a second delivery
+path.
+
+Challenges:
+
+- Ownership: the analyzer stays offline-friendly, so network delivery
+  belongs in the tray process next to the toast (`tray_status.py`), sharing
+  the watcher and its cooldown rather than duplicating them.
+- Secrets: the webhook URL or SMTP credentials go in the OS keyring under
+  the existing `KEYRING_SERVICE` pattern, never in `credentials.txt` or the
+  repo; the config only says which channel is enabled.
+- Delivery failure must never disturb polling — fire-and-forget with a
+  short timeout and a logged error, exactly like the toast path.
+
+### 24. Run the analyzer from the tray
+
+A "Actualizar dashboard" menu item that runs `analyze_ups.py --no-browser
+--quiet` and notifies when the new page is ready, so refreshing the
+dashboard does not require a terminal or waiting for the scheduled task.
+
+Challenges:
+
+- Process hygiene: spawn the venv's `python.exe` (the tray already knows
+  `SCRIPT_DIR`) detached, one at a time (reuse the single-flight idea from
+  `scheduled_run.ps1`'s skip-if-running guard, but in-process), and report
+  completion through `icon.notify`.
+- The analyzer writes the archive and the size history; a tray-triggered
+  run should behave like the scheduled one (full run, snapshot included)
+  unless it happened recently — the once-a-day snapshot marker logic can be
+  consulted rather than duplicated.
+- Failure surfacing: a nonzero exit should toast the last lines of the log,
+  not fail silently.
+
+### 25. Payload budget for multi-year archives
+
+The DataLog archive grows without bound by design. At 20-minute cadence a
+year is roughly 26,000 rows per series; a few years multiplied across the
+panels will noticeably fatten `dashboard.html` (every series ships in full
+so the page stays offline). A server-side decimation pass — min/max buckets
+per series above a point budget, mirroring `decimateMinMax` in
+`pcss/charts.js` — would cap the payload while preserving spikes.
+
+Challenges:
+
+- Zooming must not lie: the client re-decimates from the shipped arrays, so
+  server-side thinning limits the maximum zoom detail for old data. The
+  budget therefore should apply only beyond a horizon (for example, full
+  resolution for the last 90 days, min/max buckets before that), and the
+  page should say so when a thinned range is displayed.
+- The tooltip and CSV export read the shipped arrays; both keep working but
+  represent the thinned data — the CSV header should mark decimated series
+  to stay machine-honest.
+- The cheap alternative — a `[dashboard] max_days` window with the archive
+  still intact on disk — should be weighed first; it may be all a personal
+  dashboard ever needs (the ponytail question: does the fancy version need
+  to exist at all?).
+
+## Shipped — implementation archive
+
+Everything below is done and in production. Entries are preserved exactly as
+they stood on the active list, with a SHIPPED note recording where the
+implementation landed. The first fifteen items were implemented on
+2026-07-06. Item 5 (EventLog parsing) was initially deferred for lack of
+binary samples, then unblocked the same day: the live EventLog on this
+machine turned out to contain no personal data, decodes with a generic
+grammar-level reader (javaobj-py3), and the id-to-name mapping ships inside
+PCSS's own jars.
 
 ### 1. Permalink view state
 
@@ -85,8 +336,6 @@ Challenges:
 - The crosshair-mirror code (`hoverLineAt`) currently only touches panels in
   the `sync` group; the heatmap needs its own lightweight highlight path so
   hover stays cheap.
-
-## Data and analysis
 
 ### 4. DataLog archiving beyond the PCSS retention window
 
@@ -254,8 +503,6 @@ Challenges:
 - With only the live month of DataLog, comparisons rely on the energylog's
   longer retention or on item 4.
 
-## Dashboard and interaction
-
 ### 10. Touch support
 
 SHIPPED: touch drags start pending and are claimed only on horizontal intent
@@ -310,7 +557,7 @@ SHIPPED (first tranche): every chart box carries `role="img"`,
 (span, latest, minimum, maximum); focusing a panel targets the keyboard
 shortcuts without hover. The remaining idea — an arrow-key
 step-through-samples mode for reading the tooltip without a pointer — is a
-real feature on its own and stays open.
+real feature on its own and continues as item 21 on the active list.
 
 The dashboard is mouse-first. Keyboard focus for panels (the keyboard
 shortcuts currently require hovering), ARIA labels on the SVG charts, and a
@@ -350,15 +597,14 @@ Challenges:
   separators today; Spanish formatting (comma decimals) must not leak into
   the CSV export, which should stay machine-standard.
 
-## Alerting and automation
-
 ### 14. Notifications
 
 SHIPPED (toast route): `AlertWatcher` in `tray_status.py` tails
 `output/alerts.log` from its end (history never re-notifies), tolerates
 rotation, applies a 30-minute cooldown, and raises a tray notification for
 new lines; the analyzer's alert trigger now also includes on-battery
-episodes. Email remains an open extension point (needs SMTP credentials).
+episodes. The remote channel (webhook or email) continues as item 23 on the
+active list.
 
 `[alerts]` currently appends a line to `output/alerts.log`. A notification
 that a human actually sees — a Windows toast from the scheduled run, or an
