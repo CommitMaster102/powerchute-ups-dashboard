@@ -24,3 +24,6 @@ Thumbs.db
 
 # Local Claude Code permission overrides (machine-specific)
 .claude/settings.local.json
+
+# Local planning scratch artifacts (agent-native visual plans)
+.agent-native/

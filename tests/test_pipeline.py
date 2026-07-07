@@ -1,19 +1,18 @@
-"""Unit tests for loaders, config overrides, common helpers, animation
-metadata, and the analyzer's date-filter / projection behavior (pytest, no
-browser). These cover code paths test_math.py doesn't, and lock in the fixes
-made during the audit (single-row projection guard; --since must not inflate
-the disk-growth projection)."""
+"""Unit tests for loaders, config overrides, common helpers, and the
+analyzer's date-filter / projection behavior (pytest, no browser). These cover
+code paths test_math.py doesn't, and lock in the fixes made during the audit
+(single-row projection guard; --since must not inflate the disk-growth
+projection). The dashboard payload contract lives in test_chart_payload.py."""
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import pytest
 
 import pcss.config as cfg
-from pcss.animation import _heatmap_metadata, _runtime_metadata
 from pcss.common import fmt_bytes, fmt_crc, ts_2010_to_dt
 from pcss.loaders import load_datalog, load_energylog
 from pcss.stats import datalog_stats
@@ -29,6 +28,8 @@ def restore_config():
         "PCSS_FLAT_RATE", "CO2_KG_PER_KWH", "VOLTAGE_NORMAL_LOW", "VOLTAGE_NORMAL_HIGH",
         "HIGH_LOAD_PCT", "DATALOG_EXPECTED_INTERVAL_MIN", "ALERTS_ENABLED",
         "RUNTIME_CURVE_W", "RUNTIME_CURVE_MIN",
+        "BATTERY_CHARGE_WARN_PCT", "BATTERY_CHARGE_CRIT_PCT",
+        "RUNTIME_WARN_MIN", "RUNTIME_CRIT_MIN", "DASHBOARD_THEME", "DASHBOARD_MODEL",
     ]
     saved = {n: getattr(cfg, n) for n in names}
     yield cfg
@@ -143,39 +144,6 @@ def test_load_config_agent_dir_arg_wins(tmp_path, restore_config):
     assert agent / "DataLog" == c.DATALOG
 
 
-# ---------------------------------------------------------------- animation metadata
-def _energy_df(power_w, start="2026-05-01 00:00:00", interval_sec=300):
-    ts = pd.date_range(start, periods=len(power_w), freq=f"{interval_sec}s")
-    return pd.DataFrame({"ts": ts, "power_w": power_w})
-
-
-def test_runtime_metadata_marker_uses_latest_reading():
-    meta = _runtime_metadata(0, _energy_df([100.0, 200.0, 300.0]), n_frames=3)
-    assert meta["type"] == "marker"
-    assert meta["trace_idx"] == 0
-    assert len(meta["marker_data"]) == 3
-    assert meta["marker_data"][-1]["w"] == pytest.approx(300.0)
-    assert meta["marker_data"][0]["w"] == pytest.approx(100.0)
-
-
-def test_runtime_metadata_none_when_empty():
-    assert _runtime_metadata(0, pd.DataFrame()) is None
-    assert _runtime_metadata(None, _energy_df([100.0])) is None
-
-
-def test_heatmap_metadata_nan_becomes_none():
-    pivot = pd.DataFrame(
-        [[1.0, 2.0], [3.0, np.nan]],
-        index=[date(2026, 5, 1), date(2026, 5, 2)],
-        columns=[0, 1],
-    )
-    meta = _heatmap_metadata(0, pivot)
-    assert meta["type"] == "heatmap_reveal"
-    assert meta["n_frames"] == 2
-    assert meta["z_full"][0][0] == pytest.approx(1.0)
-    assert meta["z_full"][1][1] is None                  # NaN -> None for JSON/JS
-
-
 # ---------------------------------------------------------------- analyzer integration
 def _write_multiday_agent(agent):
     agent.mkdir(parents=True, exist_ok=True)
@@ -209,3 +177,19 @@ def test_since_filter_does_not_inflate_projection(tmp_path, restore_config):
     since = json.loads(j_since.read_text())
     assert full["datalog"]["daily_bytes"] == pytest.approx(since["datalog"]["daily_bytes"])
     assert full["datalog"]["daily_bytes"] > 0
+
+
+def test_main_writes_shell(tmp_path, restore_config):
+    """main() end to end: the written page carries the design shell, the
+    substituted payload, and no external resource references."""
+    import analyze_ups
+    agent = _write_multiday_agent(tmp_path / "agent")
+    out = tmp_path / "dash.html"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out),
+                      "--no-browser", "--quiet", "--no-snapshot"])
+    html = out.read_text(encoding="utf-8")
+    for token in ["panel-lv", "panel-kw", "panel-cad", "__chartsDebug",
+                  "Per-metric Statistics", "preset-pill", "lightbox"]:
+        assert token in html, f"missing shell token: {token}"
+    assert "__DASH_DATA__" not in html
+    assert "<script src" not in html and "<link " not in html

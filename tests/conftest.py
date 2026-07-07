@@ -1,16 +1,17 @@
 """Pytest fixtures for the E2E suites.
 
 Hermetic: a session fixture synthesizes a small DataLog + energylog in a temp
-dir, runs the real analyzer pipeline to a temp dashboard.html, and serves that
-to one shared headless Chromium — so the browser tests no longer depend on real
-PCSS logs being present. Set STATEOFUPS_E2E_REAL=1 to test the generated
-output/dashboard.html instead (output/ is gitignored, so it must exist locally
-from a prior analyze_ups.py run).
+dir (including a sampling gap and two voltage anomalies so the gap-shading,
+marker, and health-pill paths are exercised), runs the real analyzer pipeline
+to a temp dashboard.html, and serves that to one shared headless Chromium — so
+the browser tests do not depend on real PCSS logs. Set STATEOFUPS_E2E_REAL=1
+to test the generated output/dashboard.html instead (output/ is gitignored, so
+it must exist locally from a prior analyze_ups.py run).
 
 Fixtures:
-  anim_data       — the page's ANIM_DATA contract (session)
-  runner          — a fresh TestRunner over the shared page (function)
-  fresh_runner    — reloads the page first (pristine state), then a TestRunner
+  dashboard_path       — the dark-theme dashboard HTML (session)
+  light_dashboard_path — a light-theme build for the theme suite (session)
+  dash                 — the shared page, reset in place before every test
 """
 from __future__ import annotations
 
@@ -33,10 +34,8 @@ from pcss.common import EPOCH_2010  # noqa: E402  (single source of truth)
 # entirely instead of erroring at import time.
 try:
     from harness import (  # noqa: E402
-        DASHBOARD,
-        TestRunner,
-        assert_expected_speeds,
-        stash_full_lengths,
+        DASHBOARD,  # noqa: E402
+        PANELS,
         wait_ready,
     )
     from playwright.sync_api import sync_playwright  # noqa: E402
@@ -46,7 +45,9 @@ except ImportError:
 
 def _write_synthetic_agent(agent: Path) -> Path:
     """Create a minimal but realistic DataLog + energylog so the generated
-    dashboard exercises all 8 animation groups (lv/bv/ul/bc/pw/hm/kw/rt)."""
+    dashboard exercises every panel: 2 days at 20-min cadence with one 2-hour
+    gap and two out-of-envelope voltage samples mid-series (the last sample
+    stays healthy so the KPI severities are deterministic)."""
     agent.mkdir(parents=True, exist_ok=True)
     (agent / "energylog").mkdir(exist_ok=True)
 
@@ -54,8 +55,14 @@ def _write_synthetic_agent(agent: Path) -> Path:
     start = datetime(2026, 5, 1, 0, 0, 0)
     dl_lines = ["Date and Time\tLine Voltage\tBattery Voltage\tUPS Load\tBattery Capacity"]
     for i in range(144):  # 2 days @ 20 min
+        if 60 <= i < 66:
+            continue                      # one 2-hour sampling gap
         t = start + timedelta(minutes=20 * i)
         lv = 120.0 + (i % 5) - 2          # 118..122
+        if i == 30:
+            lv = 130.5                    # above the 126 V envelope
+        if i == 100:
+            lv = 108.0                    # below the 114 V envelope
         bv = 27.0 + (i % 3) * 0.2
         ul = 15.0 + (i % 7)
         bc = 100.0 if i % 11 else 96.0
@@ -76,19 +83,34 @@ def _write_synthetic_agent(agent: Path) -> Path:
     return agent
 
 
+def _build_dashboard(tmp_path_factory, theme: str) -> Path:
+    """Run the real pipeline against the synthetic agent with an explicit
+    config file (hermetic: a developer's local config.toml must not leak into
+    the tests) and return the written HTML path."""
+    agent = _write_synthetic_agent(tmp_path_factory.mktemp(f"agent-{theme}"))
+    out_dir = tmp_path_factory.mktemp(f"out-{theme}")
+    out = out_dir / "dashboard.html"
+    conf = out_dir / "config.toml"
+    conf.write_text(f'[dashboard]\ntheme = "{theme}"\n', encoding="utf-8")
+    import analyze_ups
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out), "--config", str(conf),
+                      "--no-browser", "--quiet", "--no-snapshot"])
+    assert out.exists(), "synthetic dashboard was not written"
+    return out
+
+
 @pytest.fixture(scope="session")
 def dashboard_path(tmp_path_factory) -> Path:
     if os.environ.get("STATEOFUPS_E2E_REAL") == "1":
         if not DASHBOARD.exists():
             pytest.skip(f"real dashboard missing at {DASHBOARD}; run analyze_ups.py")
         return DASHBOARD
-    agent = _write_synthetic_agent(tmp_path_factory.mktemp("agent"))
-    out = tmp_path_factory.mktemp("out") / "dashboard.html"
-    import analyze_ups
-    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out),
-                      "--no-browser", "--quiet", "--no-snapshot"])
-    assert out.exists(), "synthetic dashboard was not written"
-    return out
+    return _build_dashboard(tmp_path_factory, "dark")
+
+
+@pytest.fixture(scope="session")
+def light_dashboard_path(tmp_path_factory) -> Path:
+    return _build_dashboard(tmp_path_factory, "light")
 
 
 @pytest.fixture(scope="session")
@@ -101,39 +123,26 @@ def _browser():
 
 @pytest.fixture(scope="session")
 def _page(_browser, dashboard_path):
-    page = _browser.new_page(viewport={"width": 1920, "height": 2800})
+    page = _browser.new_page(viewport={"width": 1600, "height": 2400})
     page.goto(dashboard_path.resolve().as_uri())
     wait_ready(page)
+    # Generator-vs-test alignment guard: the page must have rendered exactly
+    # the panels the harness parametrizes over.
+    keys = sorted(page.evaluate("__chartsDebug.panelKeys()"))
+    assert keys == sorted(PANELS), f"page panels {keys} != harness PANELS {sorted(PANELS)}"
     return page
 
 
-@pytest.fixture(scope="session")
-def anim_data(_page) -> dict:
-    ad = TestRunner(_page).get_anim_data()
-    assert ad, "could not extract ANIM_DATA from the page"
-    assert_expected_speeds(ad)
-    stash_full_lengths(_page, ad)
-    return ad
-
-
 @pytest.fixture
-def runner(_page, anim_data) -> TestRunner:
-    """A TestRunner over a page reset to its pristine state (full data, nothing
-    playing) so the per-group tests are order-independent — they can run in any
-    sequence and across xdist workers (which share one page per worker) without
-    a prior test's leftover paused/partial panel contaminating this one.
-
-    Reset is done in-page via ``__animDebug.resetAll()`` rather than a full
-    ``page.reload()``: it's ~50ms vs ~2s and avoids reload races, which is what
-    keeps the parametrized suite fast on low-core CI runners (where reloads
-    can't be parallelized away) and flake-free."""
-    _page.evaluate("window.__animDebug.resetAll()")
-    _page.wait_for_timeout(80)   # let the restyle redraws land
-    return TestRunner(_page)
-
-
-@pytest.fixture
-def fresh_runner(runner) -> TestRunner:
-    """Back-compat alias. ``runner`` already reloads to a pristine page, so the
-    suites that historically asked for a "fresh" page get the same fixture."""
-    return runner
+def dash(_page):
+    """The shared page, reset to its pristine state (full window, nothing
+    pinned or hidden, lightbox closed) so the tests are order-independent —
+    they can run in any sequence and across xdist workers (which share one
+    page per worker) without a prior test's leftover zoom contaminating this
+    one. Reset is done in-page via ``__chartsDebug.resetAll()`` rather than a
+    full ``page.reload()``: it is far cheaper, which is what keeps the
+    parallel suite fast on low-core CI runners."""
+    _page.evaluate("window.__chartsDebug.resetAll()")
+    _page.mouse.move(0, 0)
+    _page.wait_for_timeout(50)
+    return _page

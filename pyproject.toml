@@ -12,7 +12,6 @@ license = { text = "MIT" }
 dependencies = [
     "pandas>=3.0",
     "numpy>=2.3",
-    "plotly>=6.0",
     "requests>=2.32",
     "beautifulsoup4>=4.13",
     "pystray>=0.19",

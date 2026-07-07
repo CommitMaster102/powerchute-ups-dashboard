@@ -12,7 +12,7 @@ PCSS logs are written in three places under `C:\Program Files\APC\PowerChute Ser
 
 The PCSS GUI shows current values but does not show history over time, and has no way to report how fast the logs grow on disk. This analyzer provides two things:
 
-1. **UPS state over time** — a Plotly dashboard with voltage / load / battery time series, a sample-interval histogram, and a latest-readings table.
+1. **UPS state over time** — a dark, card-based dashboard (KPI header row, health pill, and 12 chart cards grouped into Power Quality / Battery Health / Energy & Cost / Logs & Storage / Reference sections). Charts are self-contained inline SVG rendered by `pcss/charts.js` — no chart library, no network access — with hover tooltips, a shared zoomable time window across the sample panels, and per-card PNG/CSV export.
 2. **Log growth rate** — each run appends a snapshot to `output/size_history.csv`, then plots the growth curve and projects it forward.
 
 The second is useful because PCSS exposes data-log retention and sample-interval settings; the size history provides measured data for choosing those values instead of estimating them.
@@ -61,7 +61,7 @@ python -m venv .venv
 
 ## Configuration
 
-Optional `config.toml` (auto-loaded from the repo root, or `--config PATH`) overrides the built-in defaults — copy `config.example.toml` to start. It holds the PCSS agent path, the Coopesantos/PCSS tariff rates (update when the quarterly rate changes), the CO₂ factor, voltage/load thresholds, the runtime curve, and an opt-in `[alerts]` switch.
+Optional `config.toml` (auto-loaded from the repo root, or `--config PATH`) overrides the built-in defaults — copy `config.example.toml` to start. It holds the PCSS agent path, the Coopesantos/PCSS tariff rates (update when the quarterly rate changes), the CO₂ factor, voltage/load thresholds, the KPI status-pill cut points (battery charge and estimated runtime), the runtime curve, the dashboard theme and UPS model name (`[dashboard] theme = "dark" | "light"`, `model`), and an opt-in `[alerts]` switch.
 
 ## Scheduled daily run (Windows)
 
@@ -83,25 +83,25 @@ Unregister-ScheduledTask -TaskName 'stateOfUPS Daily Analyzer' -Confirm:$false
 
 ## Tests
 
-Tests are **pytest** under `tests/` (math + tray unit tests, plus browser-driven E2E of the replay controls). The E2E fixture is hermetic — it synthesizes data and builds a temp dashboard, so no real PCSS logs are needed.
+Tests are **pytest** under `tests/` (math + tray + payload-contract unit tests, plus browser-driven E2E of the chart engine: render, tooltips and pinning, zoom/pan/wheel, the synced time window and presets, PNG/CSV export, the lightbox, the load reveal, themes, and offline-ness). The E2E fixture is hermetic — it synthesizes data and builds a temp dashboard, so no real PCSS logs are needed.
 
 ```
-# Fast unit tests (no browser) — the everyday loop, ~0.6 s:
+# Fast unit tests (no browser) — the everyday loop, ~2 s:
 .venv\Scripts\python.exe -m pytest tests -m "not e2e"
 
-# Whole suite in parallel — unit + all 43 browser items, < 32 s end-to-end:
+# Whole suite in parallel — unit + all browser suites, well under 32 s:
 .venv\Scripts\python.exe -m pytest tests -n auto --dist worksteal --reruns 2 --reruns-delay 1
 
 # Browser E2E only:
 .venv\Scripts\python.exe -m pytest tests -m e2e -n auto --dist worksteal
 
-# A single suite / one test / one group:
-.venv\Scripts\python.exe -m pytest tests\e2e_pause_freeze.py
-.venv\Scripts\python.exe -m pytest "tests\e2e_isolation.py::test_isolation[lv]"
+# A single suite / one test / one panel:
+.venv\Scripts\python.exe -m pytest tests\e2e_zoom.py
+.venv\Scripts\python.exe -m pytest "tests\e2e_render.py::test_panel_renders_svg[lv]"
 .venv\Scripts\python.exe -m pytest tests\test_math.py -k tiered
 ```
 
-**Speed:** each E2E suite is parametrized **per animation group** (so `pytest-xdist`'s `-n auto` spreads ~43 short browser checks across cores instead of looping 8 groups serially in one test), and every E2E test resets the page in place between tests (`__animDebug.resetAll()` — restore full data + idle, no full reload) so it is order-independent under parallel workers and stays fast even on low-core CI. `--reruns` (pytest-rerunfailures) absorbs the rare browser-timing flake. On a many-core machine the full suite finishes in under 32 seconds; the unit-only run is sub-second.
+**Speed:** the render/tooltip/sync suites are parametrized **per chart panel** (so `pytest-xdist`'s `-n auto` spreads the short browser checks across cores), and every E2E test resets the page in place between tests (`__chartsDebug.resetAll()` — full time window, nothing pinned or hidden, no full reload) so it is order-independent under parallel workers and stays fast even on low-core CI. `--reruns` (pytest-rerunfailures) absorbs the rare browser-timing flake. On a many-core machine the full suite finishes in seconds; the unit-only run is ~2 s.
 
 **CI** (`.github/workflows/ci.yml`, Windows) always runs lint + types + the unit suite on a code change (docs-only changes skip even that). The slow browser suite is **opt-in**, because it's expensive: it runs only when a pull request carries the **`e2e`** label (add the label to trigger a run) or when the workflow is dispatched manually (Actions → Run workflow). Ordinary pushes don't run it. The lint/unit job installs only `.[lint,test]`, so it never downloads Playwright.
 
@@ -123,27 +123,30 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 | File | What it is |
 |---|---|
 | `analyze_ups.py` | CLI orchestrator. Loads logs, computes stats, builds the dashboard. |
-| `pcss/` | The package: `config`, `common`, `loaders`, `stats`, `dashboard`, `animation` (+ `animation.js`). |
+| `pcss/` | The package: `config`, `common`, `loaders`, `stats`, `dashboard` (+ `charts.js`, the SVG chart engine). |
 | `tray_status.py` | System-tray battery icon; reads the PCSS web UI. |
 | `config.example.toml` | Template config; copy to `config.toml`. |
 | `run_analyzer.bat` / `run_tray.bat` | Double-click launchers. |
 | `register_scheduled_task.ps1` / `scheduled_run.ps1` | Set up and run a guarded daily analyzer task (Windows Task Scheduler). |
 | `pyproject.toml` / `requirements.txt` | Packaging + deps (ruff/mypy/pytest config in pyproject). |
-| `tests/` | pytest: `test_math.py`, `test_pipeline.py`, `test_tray.py`, `test_animation_slicing.py`, `conftest.py` (hermetic fixture), `harness.py`, one per-group-parametrized `e2e_*.py` per browser suite. |
+| `ROADMAP.md` | Candidate future features, each with the technical challenges it has to solve. |
+| `tests/` | pytest: `test_math.py`, `test_pipeline.py`, `test_tray.py`, `test_chart_payload.py`, `conftest.py` (hermetic fixture), `harness.py`, one `e2e_*.py` per browser suite (render, tooltip, zoom, sync, export, lightbox, reveal, theme, offline). |
 | `output/dashboard.html` | Latest dashboard. Overwritten each run. |
 | `output/size_history.csv` | Append-only growth log. Do not delete; more snapshots improve the projection. |
 
-## Dashboard layout (7 rows × 2 cols = 14 panels)
+## Dashboard layout
 
-| Row | Left | Right |
-|---|---|---|
-| 1 | Line Voltage (V) — anomalies marked red, normal envelope shaded | Battery Voltage (V) |
-| 2 | UPS Load (%) — 80% threshold line | Battery Capacity (%) |
-| 3 | Power consumption (W) from energylog (5-min granularity) | Hour-of-day power heatmap (W per hour×date) |
-| 4 | Cumulative kWh + cost (dual y-axis) | Daily kWh bar chart |
-| 5 | Estimated runtime curve (W → min) + current point as red star | Sample-interval histogram |
-| 6 | Log-size growth (multi-line) | Projected DataLog size (1 yr) |
-| 7 | Per-metric statistics table (min/mean/median/p95/max) | Latest readings + cost summary + anomaly counts |
+A header (UPS model, sample counts, data-staleness badge, health pill) and a five-card KPI row (Line Voltage, UPS Load, Battery Charge, Est. Runtime, Power Draw — each with a 3-day sparkline and an OK/WARN/ALERT pill driven by the configured thresholds) sit above five titled sections on a 12-column card grid:
+
+| Section | Cards |
+|---|---|
+| Power Quality | Line Voltage (anomalies marked red, normal envelope shaded, DataLog gaps marked on the axis) · UPS Load (80% threshold line) · Power Draw (5-min energylog) · Hourly Power Map (hour×date heatmap) |
+| Battery Health | Battery Voltage (raw + 8h rolling mean + degradation trend line) · Battery Charge · Estimated Runtime (curve + current operating point as a star) |
+| Energy & Cost | Cumulative kWh + cost (dual y-axis) · Daily kWh bars |
+| Logs & Storage | Log-size growth (multi-line) · Projected DataLog size (1 yr) · Sample Cadence (interval distribution) |
+| Reference | Per-metric statistics table (min/mean/median/p95/max) · Latest readings + energy/files/growth/anomaly summary |
+
+**Interactions** (`pcss/charts.js`, no dependencies): hover any chart for a crosshair tooltip and click to pin it; the crosshair mirrors the hovered timestamp across the six sample panels. Zoom and pan are strictly per chart — on the hovered chart, drag always selects a zoom range, `Shift`+drag pans, mouse-wheel zooms around the cursor, double-click (or the `reset` pill) restores; arrow keys pan, `+`/`-` zoom, `0` resets. The `All · 30 d · 7 d · 24 h` pills next to the Power Quality header are the one deliberate global control: they set every time chart's window, each anchored to its own newest sample. Each card's hover menu exports PNG or CSV and expands the chart into a lightbox. Charts draw in once while the page loads (skipped under `prefers-reduced-motion` or `?noanim=1`).
 
 ## What gets analyzed
 
@@ -170,7 +173,9 @@ The project is kept **ruff-clean and mypy-clean**. Both are installed by the `de
 
 ## Notes
 
-- **DataLog sample interval is set in PCSS, not here.** Default is 20 min. The sample-interval histogram (row 5, right) shows the interval PCSS actually uses.
+- **DataLog sample interval is set in PCSS, not here.** Default is 20 min. The Sample Cadence card shows the interval PCSS actually uses.
+- **The dashboard is fully offline.** All charts are inline SVG generated by the embedded `pcss/charts.js`; the page loads no external scripts, styles, or fonts (the E2E suite asserts zero network requests).
+- **Timestamps in the chart payload are epoch-ms with the log's wall-clock time encoded as if UTC**, and the chart engine formats labels with UTC getters only — so labels always match the log no matter the viewer's browser timezone. `tests/test_chart_payload.py` pins this contract.
 - **EventLog is binary.** Only its size is read; contents are not parsed. Events are visible in the PCSS UI.
 - **`size_history.csv` is the long-running record.** It is retained across PCSS log rotations (default 1-month retention), so trends remain visible after PCSS truncates its own logs.
 - **Empirical growth rate (measured 2026-04-28 → 2026-05-01):** ~7.9 KB/day across all three logs combined → ~2.9 MB/year. PCSS defaults (1-month retention, 20-min interval) are appropriate for this workload; no need to tune them.

@@ -21,6 +21,17 @@ voltage_normal_low  = 114.0  # NEC ±5% of 120V
 voltage_normal_high = 126.0
 high_load_pct       = 80.0
 datalog_expected_interval_min = 20.0
+# KPI status-pill cut points (dashboard header row).
+battery_charge_warn_pct = 90.0  # WARN below this % charge
+battery_charge_crit_pct = 50.0  # ALERT below this % charge
+runtime_warn_min        = 15.0  # WARN below this many estimated minutes
+runtime_crit_min        = 7.0   # ALERT below this many estimated minutes
+
+[dashboard]
+# Dashboard color theme: "dark" (the designed default) or "light".
+theme = "dark"
+# UPS model name shown in the dashboard header.
+model = "APC BX2000M-LM"
 
 [runtime_curve]          # empirical BX2000M-LM: watts -> minutes of runtime
 watts   = [0, 100, 150, 250, 500, 600, 800, 1200]

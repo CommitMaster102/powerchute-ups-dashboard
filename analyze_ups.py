@@ -2,7 +2,7 @@
 
 Thin orchestrator over the `pcss` package: load the three PCSS logs, compute
 stats / anomalies / energy / cross-validation, snapshot file sizes, build the
-Plotly dashboard, and write/open the HTML.
+SVG dashboard page, and write/open the HTML.
 
 Run with no arguments to reproduce the classic behavior (console summary +
 output/dashboard.html, opens browser). See `--help` for flags.
@@ -18,7 +18,6 @@ from pathlib import Path
 import pandas as pd
 
 from pcss import config
-from pcss.animation import _inject_controls_into_html
 from pcss.common import fmt_bytes
 from pcss.dashboard import build_dashboard
 from pcss.loaders import (
@@ -280,12 +279,10 @@ def main(argv: list[str] | None = None) -> int:
         say(f"  Wrote JSON summary to {args.json}")
 
     section("DASHBOARD")
-    fig, animations = build_dashboard(
+    html = build_dashboard(
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
         stats_table, gaps, voltage_anomalies, high_load, crossval,
     )
-    html = fig.to_html(include_plotlyjs="cdn", full_html=True)
-    html = _inject_controls_into_html(html, animations)
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
     if args.no_browser:

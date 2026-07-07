@@ -1,13 +1,11 @@
 """Convenience wrapper: run the E2E (browser) suites via pytest.
 
-The suites are pytest tests now (see conftest.py + e2e_*.py). This just shells
+The suites are pytest tests (see conftest.py + e2e_*.py). This just shells
 pytest for the `e2e` marker so the old `python tests/run_e2e.py` entry point
 keeps working. Equivalent to:  pytest tests -m e2e
 Pass extra pytest args through, e.g.:  python tests/run_e2e.py -n auto -q
 
-Each e2e_*.py is also runnable on its own (its __main__ uses its own browser):
-    python tests/e2e_pause_freeze.py
-or via pytest:  pytest tests/e2e_pause_freeze.py
+A single suite runs via pytest:  pytest tests/e2e_zoom.py
 """
 import os
 import subprocess
