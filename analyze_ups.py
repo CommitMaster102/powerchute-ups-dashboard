@@ -54,6 +54,7 @@ from pcss.stats import (
     detect_voltage_anomalies,
     estimate_runtime,
     forecast_period_cost,
+    grid_quality_trend,
     reconcile_bills,
     self_test_sag_trend,
 )
@@ -428,6 +429,29 @@ def main(argv: list[str] | None = None) -> int:
     if alert_path:
         say(f"  [alert] appended to {alert_path}")
 
+    # Grid-quality trend (roadmap item 28): the envelope violations and
+    # interruption episodes above, aggregated per calendar month with a rate
+    # per recorded day so gap-heavy months read honestly. `episodes` is the
+    # resolved authoritative-or-inferred frame from just above, so the
+    # interruption counts share the dashboard episode strips' precedence.
+    grid_quality = grid_quality_trend(datalog_df, gaps, episodes)
+
+    section("GRID QUALITY TREND")
+    if grid_quality.empty:
+        say("  No data to trend grid quality yet.")
+    else:
+        say(f"  Events visible at the {config.DATALOG_EXPECTED_INTERVAL_MIN:.0f}-min "
+            "sampling cadence; short events between samples are missed.")
+        for row in grid_quality.itertuples(index=False):
+            rate_txt = (f"{row.events_per_recorded_day:.2f}/recorded day"
+                        if pd.notna(row.events_per_recorded_day) else "rate n/a")
+            say(f"    {row.month}: sags={row.sag_count}  swells={row.swell_count}  "
+                f"interruptions={row.interruption_count}  "
+                f"({row.recorded_days:.1f} recorded days, {rate_txt})")
+            if row.worst_event_ts is not None:
+                say(f"      worst: {row.worst_event_v:.1f} V "
+                    f"({row.worst_event_direction}) at {row.worst_event_ts}")
+
     section("CROSS-VALIDATION (DataLog vs energylog)")
     crossval = cross_validate_load(datalog_df, energy_df) if not energy_df.empty else {}
     if crossval:
@@ -501,7 +525,8 @@ def main(argv: list[str] | None = None) -> int:
         _write_json_summary(args.json, sizes, dl_stats, hist_stats, energy_summary,
                             voltage_anomalies, high_load, on_battery, gaps, crossval,
                             archive_df, archive_added, battery,
-                            events_df, ev_status, ev_spans, forecast, reconciled_bills)
+                            events_df, ev_status, ev_spans, forecast, reconciled_bills,
+                            grid_quality)
         say(f"  Wrote JSON summary to {args.json}")
 
     events_summary = None
@@ -519,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
         events_summary, staleness, forecast, reconciled_bills, annotations_df,
         calibration, self_tests=self_tests, baseline=baseline,
+        grid_quality=grid_quality,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
@@ -567,11 +593,35 @@ def _bills_for_json(reconciled: pd.DataFrame) -> list[dict]:
     ]
 
 
+def _grid_quality_for_json(gq: pd.DataFrame) -> dict:
+    """The per-month grid-quality trend (roadmap item 28) for --json — only
+    meaningful (and only called) once at least one month has data, so the
+    key is simply absent otherwise. The cadence-honesty label rides this
+    machine-readable surface too: cadence_min carries the configured
+    datalog_expected_interval_min and the note says these are events visible
+    at that cadence, the same caveat the console and the dashboard state. A
+    NaN means "no events in that direction this month" (or "no span to rate
+    against") and becomes null rather than a non-standard NaN token."""
+    records = []
+    for row in gq.itertuples(index=False):
+        d = row._asdict()
+        for k, v in d.items():
+            if isinstance(v, float) and pd.isna(v):
+                d[k] = None
+        records.append(d)
+    return {
+        "cadence_min": config.DATALOG_EXPECTED_INTERVAL_MIN,
+        "note": ("events visible at the sampling cadence; "
+                 "short events between samples are missed"),
+        "months": records,
+    }
+
+
 def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
                         voltage_anomalies, high_load, on_battery, gaps, crossval,
                         archive_df, archive_added, battery,
                         events_df, ev_status, ev_spans, forecast=None,
-                        reconciled_bills=None) -> None:
+                        reconciled_bills=None, grid_quality=None) -> None:
     """Structured machine-readable summary for external tooling (--json)."""
     energy_json = {k: energy_summary.get(k) for k in
                    ("total_kwh", "total_cost_pcss", "total_cost_tiered", "total_co2_kg",
@@ -612,6 +662,8 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
     }
     if reconciled_bills is not None and not reconciled_bills.empty:
         summary["bills"] = _bills_for_json(reconciled_bills)
+    if grid_quality is not None and not grid_quality.empty:
+        summary["grid_quality"] = _grid_quality_for_json(grid_quality)
     Path(path).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
 
 

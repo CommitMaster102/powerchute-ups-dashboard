@@ -43,31 +43,7 @@ Shipped so far (details in the archive at the bottom):
 | 16 | Runtime-curve calibration from observed discharges | `pcss/stats.py` (`calibrate_runtime_curve`) |
 | 18 | Self-test detection and battery health under load | `pcss/stats.py` (`detect_self_tests`, `self_test_sag_trend`) |
 | 19 | Baseline-deviation energy alerts | `pcss/stats.py` (`detect_baseline_deviations`, `weekday_weekend_profiles`) |
-
-## Data and analysis
-
-### 28. Grid-quality trend
-
-`detect_voltage_anomalies` finds out-of-envelope samples, but nothing
-aggregates them over time. Per-month counts of sags, swells, and
-interruptions — with mean depth and the worst event — would answer whether
-the Coopesantos supply is getting better or worse, a question no current
-view addresses.
-
-Challenges:
-
-- Normalization: months with sampling gaps under-count events, so the trend
-  must report rates per recorded day, using `detect_gaps` output to compute
-  the recorded time.
-- Classification: envelope violations split into sag and swell by direction;
-  interruptions come from item 6 episodes or the authoritative EventLog
-  spans. The split thresholds belong under `[thresholds]`.
-- Cadence honesty: 20-minute samples miss short events entirely (the item 6
-  caveat), so this is a trend of events visible at the sampling cadence and
-  must be labeled as such.
-- Presentation: a reference-table block is the cheap first step; a dedicated
-  bar panel is a new key that must join `PANELS` in `tests/harness.py` with
-  the conftest render assertion, so the table should prove the value first.
+| 28 | Grid-quality trend | `pcss/stats.py` (`grid_quality_trend`) |
 
 ## Dashboard and interaction
 
@@ -1038,3 +1014,49 @@ Challenges:
   (`markers`, the anomalies section, `_maybe_write_alerts`).
 - Honest labeling again: this flags deviation from the recorded baseline,
   not faults; the wording must not overclaim.
+
+### 28. Grid-quality trend
+
+SHIPPED: `grid_quality_trend` in `pcss/stats.py` classifies the
+`detect_voltage_anomalies` envelope violations by direction — a sample below
+the `[thresholds]` low envelope bound is a sag, one above the high bound a
+swell (the same envelope keys, no new configuration) — merges consecutive
+out-of-envelope samples in the same direction into one event, and counts the
+caller's already-resolved interruption episodes (the authoritative EventLog
+spans when the log parses, otherwise the item 6 inference — the same
+precedence the dashboard episode strips apply, passed in rather than
+re-implemented) into one row per calendar month: sag, swell, and
+interruption counts, recorded days (the month's covered span minus the
+`detect_gaps` gap time falling inside it), events per recorded day so
+gap-heavy months read honestly, mean depth per direction (per event, each
+event's deepest sample's deviation beyond the violated bound), and the worst
+event (timestamp, voltage, direction). Only the reference-table presentation
+shipped, per the roadmap's own "the table should prove the value first": a
+"Grid Quality Trend" table on the dashboard (`_grid_quality_table_html` in
+`pcss/dashboard.py`, localized via `_STRINGS_ES`) rendered only when at
+least one month has samples, a console "GRID QUALITY TREND" section, and a
+`grid_quality` key in the `--json` summary. Every surface labels the counts
+as events visible at the sampling cadence, naming the interval from
+`datalog_expected_interval_min` rather than hardcoding 20. No new chart
+panel, no new `PANELS` key. `tests/test_gridquality.py`.
+
+`detect_voltage_anomalies` finds out-of-envelope samples, but nothing
+aggregates them over time. Per-month counts of sags, swells, and
+interruptions — with mean depth and the worst event — would answer whether
+the Coopesantos supply is getting better or worse, a question no current
+view addresses.
+
+Challenges:
+
+- Normalization: months with sampling gaps under-count events, so the trend
+  must report rates per recorded day, using `detect_gaps` output to compute
+  the recorded time.
+- Classification: envelope violations split into sag and swell by direction;
+  interruptions come from item 6 episodes or the authoritative EventLog
+  spans. The split thresholds belong under `[thresholds]`.
+- Cadence honesty: 20-minute samples miss short events entirely (the item 6
+  caveat), so this is a trend of events visible at the sampling cadence and
+  must be labeled as such.
+- Presentation: a reference-table block is the cheap first step; a dedicated
+  bar panel is a new key that must join `PANELS` in `tests/harness.py` with
+  the conftest render assertion, so the table should prove the value first.

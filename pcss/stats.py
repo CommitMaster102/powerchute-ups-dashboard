@@ -229,6 +229,141 @@ def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = N
     return pd.DataFrame(episodes)
 
 
+_GRID_QUALITY_COLUMNS = [
+    "month", "sag_count", "swell_count", "interruption_count",
+    "recorded_days", "events_per_recorded_day",
+    "sag_mean_depth_v", "swell_mean_depth_v",
+    "worst_event_ts", "worst_event_v", "worst_event_direction",
+]
+
+
+def grid_quality_trend(datalog_df: pd.DataFrame, gaps: pd.DataFrame | None = None,
+                       episodes: pd.DataFrame | None = None,
+                       voltage_low: float | None = None,
+                       voltage_high: float | None = None) -> pd.DataFrame:
+    """Aggregate grid-quality events per calendar month (roadmap item 28).
+
+    The envelope violations that ``detect_voltage_anomalies`` reports one
+    sample at a time are classified here by direction — a sample below
+    ``voltage_low`` is a sag, one above ``voltage_high`` is a swell (the same
+    ``[thresholds]`` envelope keys, no new configuration) — and merged into
+    events: consecutive out-of-envelope samples in the same direction count
+    as one event, not one event per sample. A NaN sample or a direction
+    change starts a new event. An event belongs to the month of its first
+    sample. ``episodes`` is the caller's already-resolved interruptions frame
+    (the authoritative EventLog spans when the log parsed, otherwise the
+    ``detect_on_battery_episodes`` inference — exactly the precedence the
+    dashboard episode strips already apply; this function only needs a
+    ``start`` column and never re-implements that choice), and each episode
+    counts as one interruption in the month its start falls in.
+
+    Normalization: a month with sampling gaps under-counts events, so each
+    row also reports the month's recorded time — the span from the month's
+    first to its last sample, minus the ``detect_gaps`` gap time falling
+    inside that span — and the total event rate per recorded day. A month
+    with a single sample has no span at all and reports a NaN rate rather
+    than dividing by zero.
+
+    Mean depth is per event and per direction: each event's depth is its
+    deepest sample's deviation in volts beyond the violated envelope bound,
+    and the month's mean is taken across its events (NaN when the month has
+    no events in that direction). The worst event is the month's single most
+    deviant sample — its timestamp, voltage, and direction — or None values
+    when the month had only interruptions.
+
+    Cadence honesty (the item 6 caveat): the DataLog's sampling cadence
+    misses short events entirely, so these are counts of events visible at
+    that cadence, not of all grid events; every surface that shows this
+    result must say so, naming the configured
+    ``datalog_expected_interval_min``.
+
+    Returns one row per month that has samples (empty months are absent),
+    in time order, with the columns in ``_GRID_QUALITY_COLUMNS``.
+    """
+    if voltage_low is None:
+        voltage_low = config.VOLTAGE_NORMAL_LOW
+    if voltage_high is None:
+        voltage_high = config.VOLTAGE_NORMAL_HIGH
+    empty = pd.DataFrame(columns=_GRID_QUALITY_COLUMNS)
+    if datalog_df.empty or "Line Voltage" not in datalog_df.columns:
+        return empty
+    df = datalog_df.dropna(subset=["ts"]).sort_values("ts").reset_index(drop=True)
+    if df.empty:
+        return empty
+    lv = df["Line Voltage"]
+    direction = pd.Series(
+        np.where(lv.notna() & (lv < voltage_low), "sag",
+                 np.where(lv.notna() & (lv > voltage_high), "swell", "")),
+        index=df.index)
+
+    # One record per event: runs of consecutive samples in the same
+    # direction, the run-grouping pattern the episode detectors above use.
+    runs = direction.ne(direction.shift()).cumsum()
+    out_mask = direction != ""
+    events: list[dict] = []
+    if out_mask.any():
+        for _, grp in df[out_mask].groupby(runs[out_mask]):
+            dirn = str(direction.loc[grp.index[0]])
+            volts = grp["Line Voltage"]
+            if dirn == "sag":
+                worst_idx = volts.idxmin()
+                depth = float(voltage_low - volts.min())
+            else:
+                worst_idx = volts.idxmax()
+                depth = float(volts.max() - voltage_high)
+            events.append({
+                "month": f"{grp['ts'].iloc[0]:%Y-%m}",
+                "direction": dirn,
+                "depth_v": depth,
+                "worst_v": float(volts.loc[worst_idx]),
+                "worst_ts": grp["ts"].loc[worst_idx],
+            })
+
+    interruption_months: list[str] = []
+    if episodes is not None and not episodes.empty and "start" in episodes.columns:
+        interruption_months = [f"{pd.Timestamp(s):%Y-%m}"
+                               for s in episodes["start"].dropna()]
+
+    rows: list[dict] = []
+    for period, sub in df.groupby(df["ts"].dt.to_period("M"), sort=True):
+        month = str(period)
+        first, last = sub["ts"].iloc[0], sub["ts"].iloc[-1]
+        span_days = (last - first).total_seconds() / 86400.0
+        gap_days = 0.0
+        if gaps is not None and not gaps.empty:
+            for g_from, g_to in gaps[["from", "to"]].itertuples(index=False, name=None):
+                overlap = (min(pd.Timestamp(g_to), last)
+                           - max(pd.Timestamp(g_from), first)).total_seconds()
+                if overlap > 0:
+                    gap_days += overlap / 86400.0
+        recorded_days = max(0.0, span_days - gap_days)
+
+        month_events = [e for e in events if e["month"] == month]
+        sags = [e for e in month_events if e["direction"] == "sag"]
+        swells = [e for e in month_events if e["direction"] == "swell"]
+        n_interruptions = interruption_months.count(month)
+        n_total = len(sags) + len(swells) + n_interruptions
+        rate = n_total / recorded_days if recorded_days > 0 else float("nan")
+
+        worst = max(month_events, key=lambda e: e["depth_v"]) if month_events else None
+        rows.append({
+            "month": month,
+            "sag_count": len(sags),
+            "swell_count": len(swells),
+            "interruption_count": n_interruptions,
+            "recorded_days": recorded_days,
+            "events_per_recorded_day": rate,
+            "sag_mean_depth_v": (float(np.mean([e["depth_v"] for e in sags]))
+                                 if sags else float("nan")),
+            "swell_mean_depth_v": (float(np.mean([e["depth_v"] for e in swells]))
+                                   if swells else float("nan")),
+            "worst_event_ts": worst["worst_ts"] if worst else None,
+            "worst_event_v": worst["worst_v"] if worst else None,
+            "worst_event_direction": worst["direction"] if worst else None,
+        })
+    return pd.DataFrame(rows, columns=_GRID_QUALITY_COLUMNS)
+
+
 def weekday_weekend_profiles(energy_df: pd.DataFrame) -> dict[str, pd.Series]:
     """Mean power by hour of day, split into weekday and weekend, from the
     energylog's full history — this is the definition of "what a normal day

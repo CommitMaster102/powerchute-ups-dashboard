@@ -32,6 +32,7 @@ from pcss.stats import (
     detect_self_tests,
     estimate_runtime,
     forecast_period_cost,
+    grid_quality_trend,
     weekday_weekend_profiles,
 )
 
@@ -227,6 +228,21 @@ _STRINGS_ES = {
         "día se desvía de la referencia registrada",
     "days deviate from the recorded baseline":
         "días se desvían de la referencia registrada",
+    "Grid Quality Trend": "Tendencia de calidad de red",
+    "events visible at the {n}-min sampling cadence; short events between samples are missed":
+        "eventos visibles a la cadencia de muestreo de {n} min; "
+        "los eventos cortos entre muestras no se detectan",
+    "Month": "Mes",
+    "Sags": "Caídas",
+    "Swells": "Subidas",
+    "Interruptions": "Interrupciones",
+    "Recorded days": "Días registrados",
+    "Events/day": "Eventos/día",
+    "Mean sag depth": "Profundidad media de caída",
+    "Mean swell depth": "Profundidad media de subida",
+    "Worst event": "Peor evento",
+    "sag": "caída",
+    "swell": "subida",
 }
 
 
@@ -988,6 +1004,52 @@ def _bills_table_html(reconciled: pd.DataFrame | None) -> str:
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 
+def _grid_quality_table_html(gq: pd.DataFrame | None) -> str:
+    """Grid-quality trend table (roadmap item 28): one row per calendar
+    month with the sag/swell/interruption counts, the per-recorded-day event
+    rate (so a gap-heavy month reads honestly), the mean depth per direction,
+    and the worst event. A direction with no events this month shows an em
+    dash rather than a NaN. Only rendered once at least one month has data
+    (build_dashboard gates the whole block on that), and the card subtitle
+    carries the cadence-honesty wording — these are events visible at the
+    sampling cadence, not all grid events."""
+    if gq is None or gq.empty:
+        return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
+    head_cols = [_L("Month"), _L("Sags"), _L("Swells"), _L("Interruptions"),
+                 _L("Recorded days"), _L("Events/day"),
+                 f"{_L('Mean sag depth')} V", f"{_L('Mean swell depth')} V",
+                 _L("Worst event")]
+    head = "".join(f'<th class="{"tl" if i == 0 else "tr"}">{_esc(c)}</th>'
+                   for i, c in enumerate(head_cols))
+    rows = []
+    cols = ["month", "sag_count", "swell_count", "interruption_count",
+            "recorded_days", "events_per_recorded_day",
+            "sag_mean_depth_v", "swell_mean_depth_v",
+            "worst_event_ts", "worst_event_v", "worst_event_direction"]
+    for (month, sags, swells, interruptions, recorded_days, rate,
+         sag_depth, swell_depth, worst_ts, worst_v, worst_dir) in gq[
+             cols].itertuples(index=False, name=None):
+        rate_txt = f"{rate:.2f}" if pd.notna(rate) else "—"
+        sag_txt = f"{sag_depth:.1f}" if pd.notna(sag_depth) else "—"
+        swell_txt = f"{swell_depth:.1f}" if pd.notna(swell_depth) else "—"
+        worst_txt = (f"{worst_v:.1f} V · {_L(worst_dir)} · {worst_ts:%Y-%m-%d %H:%M}"
+                     if worst_ts is not None else "—")
+        cells = "".join([
+            f'<td class="tl hi">{_esc(month)}</td>',
+            f'<td class="tr">{sags}</td>',
+            f'<td class="tr">{swells}</td>',
+            f'<td class="tr">{interruptions}</td>',
+            f'<td class="tr">{recorded_days:.1f}</td>',
+            f'<td class="tr">{rate_txt}</td>',
+            f'<td class="tr">{sag_txt}</td>',
+            f'<td class="tr">{swell_txt}</td>',
+            f'<td class="tr">{_esc(worst_txt)}</td>',
+        ])
+        rows.append(f"<tr>{cells}</tr>")
+    return (f'<table class="stats-table"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>')
+
+
 def _stats_table_html(stats_table: pd.DataFrame) -> str:
     if stats_table.empty:
         return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
@@ -1243,7 +1305,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     annotations: pd.DataFrame | None = None,
                     calibration: dict | None = None,
                     self_tests: pd.DataFrame | None = None,
-                    baseline: dict | None = None) -> str:
+                    baseline: dict | None = None,
+                    grid_quality: pd.DataFrame | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
@@ -1256,6 +1319,13 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         forecast = forecast_period_cost(energy_summary)
     if baseline is None:
         baseline = detect_baseline_deviations(energy_df)
+    if grid_quality is None:
+        # The `on_battery` frame passed in here is already the caller's
+        # resolved choice between the authoritative EventLog spans and the
+        # DataLog inference (analyze_ups.py makes it once for the episode
+        # strips), so reusing it keeps the interruption counts on the same
+        # precedence without re-implementing it.
+        grid_quality = grid_quality_trend(datalog_df, gaps=gaps, episodes=on_battery)
 
     bv_panel, bv_slope = _panel_bv(datalog_df, pal)
     rt_panel, latest_w, latest_rt = _panel_rt(energy_df, pal, calibration)
@@ -1442,6 +1512,28 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             '  </div>'
         )
 
+    # The Grid Quality Trend table (roadmap item 28) only exists once at
+    # least one month has samples — with none, this stays "" so the page is
+    # unchanged. The subtitle states the cadence caveat with the configured
+    # interval: these are events visible at the sampling cadence, not all
+    # grid events.
+    grid_quality_block = ""
+    if grid_quality is not None and not grid_quality.empty:
+        cadence_note = _L(
+            "events visible at the {n}-min sampling cadence; "
+            "short events between samples are missed"
+        ).format(n=f"{config.DATALOG_EXPECTED_INTERVAL_MIN:g}")
+        grid_quality_block = (
+            '  <div class="grid12">\n'
+            '    <div class="card table-card s12">\n'
+            f'      <div class="card-title">{_esc(_L("Grid Quality Trend"))}</div>\n'
+            f'      <div class="card-sub" style="margin-bottom:12px">'
+            f'{_esc(cadence_note)}</div>\n'
+            f'      {_grid_quality_table_html(grid_quality)}\n'
+            '    </div>\n'
+            '  </div>'
+        )
+
     def _card(key, span_, title, sub, zoomable, sub_color=None, anomaly_nav=0):
         return _chart_card(key, span_, title, sub, zoomable, sub_color,
                            sr_text=_sr_text(panels.get(key)), anomaly_nav=anomaly_nav)
@@ -1498,6 +1590,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
   </div>
 {periods_block}
 {bills_block}
+{grid_quality_block}
   {_section_head(_L('Logs & Storage'), growth_note)}
   <div class="grid12">
     {_card('growth', 6, _L('Log File Growth'), 'KB', True)}
