@@ -164,6 +164,8 @@ _STRINGS_ES = {
     "metric(s) near limits": "métrica(s) cerca del límite",
     "battery replace": "reemplazo de batería",
     "battery trend": "tendencia de batería",
+    "battery age": "antigüedad de la batería",
+    "since": "desde",
     "replace": "reemplazo",
     "crosses": "cruza",
     "not enough history to project replace-by":
@@ -268,6 +270,20 @@ def _episode_spans(eps: pd.DataFrame) -> list[list[int]]:
     if eps is None or eps.empty:
         return []
     return [[a, b] for a, b in zip(_ms_list(eps["start"]), _ms_list(eps["end"]), strict=True)]
+
+
+def _annotation_markers(annotations: pd.DataFrame | None) -> list[dict]:
+    """Battery lifecycle annotations (roadmap item 26) as a top-level payload
+    list: one {x, label} dict per entry, x being the epoch-ms midnight of the
+    entry's date under the same naive-local-as-UTC encoding every timestamp
+    on this payload uses. charts.js draws each as a dashed vertical marker on
+    every time-axis panel. A blank label (the loader allows one) falls back
+    to the entry's kind so the marker is never unlabeled."""
+    if annotations is None or annotations.empty:
+        return []
+    xs = _ms_list(pd.to_datetime(annotations["date"]))
+    return [{"x": x, "label": (lbl or kind)} for x, kind, lbl in
+            zip(xs, annotations["kind"], annotations["label"], strict=True)]
 
 
 # ======================================================================
@@ -1141,13 +1157,14 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     events_summary: dict | None = None,
                     staleness: dict | None = None,
                     forecast: dict | None = None,
-                    bill_reconciliation: pd.DataFrame | None = None) -> str:
+                    bill_reconciliation: pd.DataFrame | None = None,
+                    annotations: pd.DataFrame | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
         on_battery = pd.DataFrame()
     if battery is None:
-        battery = battery_replace_projection(datalog_df)
+        battery = battery_replace_projection(datalog_df, annotations=annotations)
     if forecast is None:
         forecast = forecast_period_cost(energy_summary)
 
@@ -1193,6 +1210,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         "palette": pal,
         "gaps": _gap_spans(gaps),
         "episodes": _episode_spans(on_battery),
+        "annotations": _annotation_markers(annotations),
         "panels": panels,
         "sparks": sparks,
         # Chart-side UI strings ride the payload so the Python and JS string
@@ -1230,6 +1248,12 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                   f"{_L('not enough history to project replace-by')}")
     else:
         bv_sub = f"{bv_slope:+.4f} V/{_L('day')} · {_L('aging') if bv_slope < 0 else _L('stable')}"
+    # Battery lifecycle annotations (roadmap item 26): once a battery_replaced
+    # boundary is in play, name the battery's age alongside whatever the fit
+    # itself reports above — segmentation and age are separate facts.
+    if battery.get("battery_age_days") is not None:
+        bv_sub += (f" · {_L('battery age')} {battery['battery_age_days']:.0f} {_L('days')} "
+                   f"({_L('since')} {battery['battery_installed_on']:%Y-%m-%d})")
     rt_sub = (f"{latest_w:.0f}W → {latest_rt:.0f} min" if latest_rt is not None
               else _L("runtime curve"))
     kw_sub = f"kWh · ₡ (₡{config.PCSS_FLAT_RATE:g}/kWh)"

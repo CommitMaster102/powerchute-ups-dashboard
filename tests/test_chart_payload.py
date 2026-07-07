@@ -20,6 +20,7 @@ import pytest
 import pcss.config as cfg
 from pcss.dashboard import (
     PALETTES,
+    _annotation_markers,
     _build_kpis,
     _gap_spans,
     _heatmap_pivot,
@@ -91,6 +92,35 @@ def test_gap_spans_shape():
 
 def test_gap_spans_empty():
     assert _gap_spans(pd.DataFrame()) == []
+
+
+# ---------------------------------------------------------------- annotation markers (item 26)
+def test_annotation_markers_shape_and_epoch_ms():
+    annotations = pd.DataFrame({
+        "date": [pd.Timestamp("2026-05-01").date()],
+        "kind": ["battery_replaced"],
+        "label": ["New battery installed"],
+    })
+    markers = _annotation_markers(annotations)
+    assert len(markers) == 1
+    expected = int(datetime(2026, 5, 1, tzinfo=UTC).timestamp() * 1000)
+    assert markers[0]["x"] == expected
+    assert markers[0]["label"] == "New battery installed"
+
+
+def test_annotation_markers_blank_label_falls_back_to_kind():
+    annotations = pd.DataFrame({
+        "date": [pd.Timestamp("2026-05-01").date()],
+        "kind": ["ups_moved"],
+        "label": [""],
+    })
+    markers = _annotation_markers(annotations)
+    assert markers[0]["label"] == "ups_moved"
+
+
+def test_annotation_markers_empty_or_none():
+    assert _annotation_markers(None) == []
+    assert _annotation_markers(pd.DataFrame(columns=["date", "kind", "label"])) == []
 
 
 # ---------------------------------------------------------------- panel builders
@@ -360,6 +390,50 @@ def test_on_battery_episodes_in_payload_and_health():
     assert len(payload["episodes"]) == 1
     assert payload["episodes"][0][1] - payload["episodes"][0][0] == 40 * 60 * 1000
     assert "1 on-battery" in html
+
+
+def test_build_dashboard_annotations_default_empty():
+    """With no annotations argument, the payload carries an empty list — the
+    page is unchanged for anyone who never creates annotations.csv."""
+    html = build_dashboard(**_smoke_inputs())
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert payload["annotations"] == []
+
+
+def test_build_dashboard_annotations_in_payload():
+    inputs = _smoke_inputs()
+    inputs["annotations"] = pd.DataFrame({
+        "date": [pd.Timestamp("2026-05-01").date()],
+        "kind": ["battery_replaced"],
+        "label": ["New battery installed"],
+    })
+    html = build_dashboard(**inputs)
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert len(payload["annotations"]) == 1
+    expected = int(datetime(2026, 5, 1, tzinfo=UTC).timestamp() * 1000)
+    assert payload["annotations"][0]["x"] == expected
+    assert payload["annotations"][0]["label"] == "New battery installed"
+
+
+def test_build_dashboard_annotations_feed_default_battery_projection():
+    """When build_dashboard computes its own battery projection (battery=None,
+    the default), it must pass the annotations through so the fit segments at
+    a battery_replaced boundary and the Battery Voltage subtitle names the
+    battery's age — the same information a direct battery_replace_projection
+    call with the same annotations would carry."""
+    inputs = _smoke_inputs()
+    long_df = _datalog(n=90 * 72)
+    long_df["Battery Voltage"] = 27.4 - 0.01 * np.arange(len(long_df)) / 72.0
+    inputs["datalog_df"] = long_df
+    boundary_date = long_df["ts"].iloc[30 * 72].date()
+    inputs["annotations"] = pd.DataFrame({
+        "date": [boundary_date], "kind": ["battery_replaced"], "label": ["new battery"],
+    })
+    html = build_dashboard(**inputs)
+    assert "battery age" in html
+    assert f"{boundary_date:%Y-%m-%d}" in html
 
 
 def test_battery_replace_projection_in_subtitle_and_health():

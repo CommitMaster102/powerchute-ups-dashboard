@@ -10,6 +10,9 @@ credentials.txt
 # Personal bill data for reconciliation (roadmap item 29); never commit
 bills.csv
 
+# Personal battery lifecycle notes (roadmap item 26); never commit
+annotations.csv
+
 # Local source backups
 backup/
 

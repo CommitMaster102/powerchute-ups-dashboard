@@ -39,6 +39,7 @@ Shipped so far (details in the archive at the bottom):
 | 17 | Tariff history with effective dates | `pcss/config.py` (`tariff_rates_for`), `pcss/stats.py` (`compute_energy_summary`) |
 | 27 | End-of-period cost forecast | `pcss/stats.py` (`forecast_period_cost`) |
 | 29 | Bill reconciliation | `pcss/loaders.py` (`load_bills`), `pcss/stats.py` (`reconcile_bills`) |
+| 26 | Battery lifecycle annotations | `pcss/loaders.py` (`load_annotations`), `pcss/stats.py` (`latest_battery_replacement`, `battery_replace_projection`) |
 
 ## Data and analysis
 
@@ -112,32 +113,6 @@ Challenges:
   (`markers`, the anomalies section, `_maybe_write_alerts`).
 - Honest labeling again: this flags deviation from the recorded baseline,
   not faults; the wording must not overclaim.
-
-### 26. Battery lifecycle annotations and replacement tracking
-
-The archive is designed to outlive PCSS's own rotation, which means it will
-eventually span battery replacements — and both the replace-by projection
-(item 7) and the planned runtime calibration (item 16) fit trends that
-assume a single battery. A `battery_installed_on` date, and more generally a
-small annotations file of dated entries (battery replaced, new appliance on
-the UPS, UPS moved), would segment those fits at replacement boundaries and
-draw labeled vertical markers across the time panels so the archive's
-history stays interpretable years later.
-
-Challenges:
-
-- Fit segmentation: `battery_replace_projection` in `pcss/stats.py` must fit
-  only samples after the newest replacement date and report the battery's
-  age alongside the projection; the same boundary applies to item 16's
-  calibration when it lands.
-- Where annotations live: config is for settings, and `output/` holds
-  generated files. A user-owned `annotations.csv` (or a `[[annotations]]`
-  list in `config.toml`) that the analyzer reads and never writes keeps the
-  entries authoritative, and like `size_history.csv` they must never be
-  truncated.
-- Rendering: a labeled vertical marker is a new small shape in
-  `pcss/charts.js` next to the existing point markers, and it must stay
-  legible next to the gap and episode strips on a busy axis.
 
 ### 28. Grid-quality trend
 
@@ -894,3 +869,64 @@ Challenges:
   consumption" must not read as if a household meter exists.
 - Synergy with item 17: a real bill pins the effective rates for its period,
   so reconciliation data can seed or verify the tariff history.
+
+### 26. Battery lifecycle annotations and replacement tracking
+
+SHIPPED: a user-owned `annotations.csv` (`date`, `kind`, `label`, header row
+required) next to `config.toml`, path configurable via
+`[paths] annotations_file` (`pcss/config.py`'s `ANNOTATIONS_FILE`,
+defaulting to `annotations.csv` in the repo root). `pcss/loaders.py`'s
+`load_annotations` reads it defensively, the same pattern as `load_bills`
+(item 29): a missing file silently disables the feature, a missing required
+column ignores the whole file, and a row with an unparseable date or a
+blank `kind` is reported by line number and skipped — the analyzer never
+crashes on this file and never writes it. `kind` is freeform text; the only
+one the analyzer treats specially is `battery_replaced`, resolved by the new
+reusable `pcss/stats.py` helper `latest_battery_replacement` — the newest
+`battery_replaced` entry at or before the data's newest sample, so a
+replacement dated later than the analyzed data marks no boundary yet.
+`battery_replace_projection` now accepts an `annotations` argument: when a
+boundary resolves, the fit runs only on samples at or after it (a trend
+fit spanning a replacement would otherwise blend two different batteries'
+degradation into one meaningless slope), and the result carries
+`battery_installed_on` and `battery_age_days` regardless of the projection's
+own status — reported in the console `BATTERY REPLACE-BY PROJECTION`
+section, the Battery Voltage card subtitle (`pcss/dashboard.py`, localized
+via `_STRINGS_ES`), and `--json`. With no qualifying annotation, every
+number is unchanged from before this feature existed. Every annotation
+(including kinds other than `battery_replaced`) rides the dashboard payload
+as a top-level `annotations` list (epoch-ms per the timezone contract) and
+renders as a small dashed vertical marker with its label near the top of
+every time-axis panel in `pcss/charts.js`, re-positioning under zoom/pan and
+disappearing outside the window exactly like the existing point markers,
+visually distinct from the red gap strips and amber episode strips.
+`annotations.example.csv` documents the shape; `annotations.csv` itself is
+gitignored, like `bills.csv`. `tests/test_annotations.py`,
+`tests/test_battery.py`, `tests/test_chart_payload.py`,
+`tests/e2e_render.py::test_annotation_marker_present`. Item 16's runtime
+calibration, when it lands, is expected to reuse the same
+`latest_battery_replacement` boundary rather than duplicating it.
+
+The archive is designed to outlive PCSS's own rotation, which means it will
+eventually span battery replacements — and both the replace-by projection
+(item 7) and the planned runtime calibration (item 16) fit trends that
+assume a single battery. A `battery_installed_on` date, and more generally a
+small annotations file of dated entries (battery replaced, new appliance on
+the UPS, UPS moved), would segment those fits at replacement boundaries and
+draw labeled vertical markers across the time panels so the archive's
+history stays interpretable years later.
+
+Challenges:
+
+- Fit segmentation: `battery_replace_projection` in `pcss/stats.py` must fit
+  only samples after the newest replacement date and report the battery's
+  age alongside the projection; the same boundary applies to item 16's
+  calibration when it lands.
+- Where annotations live: config is for settings, and `output/` holds
+  generated files. A user-owned `annotations.csv` (or a `[[annotations]]`
+  list in `config.toml`) that the analyzer reads and never writes keeps the
+  entries authoritative, and like `size_history.csv` they must never be
+  truncated.
+- Rendering: a labeled vertical marker is a new small shape in
+  `pcss/charts.js` next to the existing point markers, and it must stay
+  legible next to the gap and episode strips on a busy axis.

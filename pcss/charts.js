@@ -282,6 +282,27 @@
                         fill: "rgba(243,193,75,.55)", class: "ep-strip" }, plot);
       });
     }
+    // Battery lifecycle annotations (roadmap item 26): a dashed vertical
+    // line with a short label near the top of the plot area, on every
+    // time-axis panel — distinct from the red gap strips and the amber
+    // episode strips along the x-axis, so "the battery was replaced here"
+    // reads apart from "the log has a gap here" at a glance. Re-derives its
+    // position from the current window on every render, so it re-positions
+    // under zoom/pan and disappears once it scrolls outside xd, the same as
+    // the point markers below.
+    if (DATA.annotations && DATA.annotations.length && spec.xkind !== "linear") {
+      DATA.annotations.forEach(a => {
+        if (a.x < xd[0] || a.x > xd[1]) return;
+        const x = sx(a.x);
+        svgEl("line", { x1: x, x2: x, y1: p.t, y2: p.t + ih, stroke: C.violet,
+                        "stroke-width": 1.5, "stroke-dasharray": "3 3",
+                        "vector-effect": "non-scaling-stroke", class: "annotation-marker" }, plot);
+        const t = svgEl("text", { x: x + 4, y: p.t + 11, "font-size": 11, fill: C.violet,
+                                  "font-family": "ui-monospace,monospace",
+                                  class: "annotation-label" }, svg);
+        t.textContent = a.label;
+      });
+    }
     // Threshold lines.
     (spec.hlines || []).forEach(l => {
       const y = syL(l.y);

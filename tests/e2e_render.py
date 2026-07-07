@@ -68,3 +68,15 @@ def test_anomaly_markers_present(dash):
         "Array.from(document.querySelectorAll('#panel-lv svg line'))"
         ".filter(l => l.getAttribute('stroke-width') === '2').length")
     assert red >= 4
+
+
+def test_annotation_marker_present(dash):
+    """The synthetic fixture (tests/conftest.py) writes one battery_replaced
+    annotation inside the synthesized DataLog's range; a dashed vertical
+    marker with the entry's label must render on a time-axis panel."""
+    labels = dash.locator("#panel-lv svg text.annotation-label")
+    assert labels.count() >= 1
+    assert labels.first.text_content().strip() == "New battery installed"
+    lines = dash.evaluate(
+        "document.querySelectorAll('#panel-lv svg line.annotation-marker').length")
+    assert lines >= 1

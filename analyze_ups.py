@@ -30,6 +30,7 @@ from pcss.eventlog import (
 from pcss.loaders import (
     append_datalog_archive,
     history_summary,
+    load_annotations,
     load_bills,
     load_datalog,
     load_datalog_archive,
@@ -320,6 +321,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"implied rate CRC {row.implied_rate_crc_per_kwh:,.2f}/kWh   "
                 f"vs tariff CRC {row.tariff_low:g}/{row.tariff_high:g} ({row.rate_tag})")
 
+    # Battery lifecycle annotations (roadmap item 26): a user-owned
+    # annotations.csv is opt-in and, missing, disables the feature with no
+    # warning at all. A malformed row is reported here unconditionally (the
+    # same pattern as the bills.csv warnings above), and the recognized
+    # "battery_replaced" kind segments the replace-by projection below.
+    annotations_df, annotation_warnings = load_annotations()
+    for msg in annotation_warnings:
+        print(f"  [warn] {msg}")
+
     section("ANOMALIES & EVENTS")
     voltage_anomalies = detect_voltage_anomalies(datalog_df)
     say(f"  Voltage out of {config.VOLTAGE_NORMAL_LOW}-{config.VOLTAGE_NORMAL_HIGH}V envelope: "
@@ -409,9 +419,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         say("  No power data yet.")
 
-    battery = battery_replace_projection(datalog_df)
+    battery = battery_replace_projection(datalog_df, annotations=annotations_df)
 
     section("BATTERY REPLACE-BY PROJECTION")
+    if battery.get("battery_installed_on") is not None:
+        say(f"  Battery installed: {battery['battery_installed_on']} "
+            f"(age {battery['battery_age_days']:.0f} days)")
     if battery["status"] == "projected":
         say(f"  Trend (rolling-median fit): {battery['slope_v_per_day']:+.4f} V/day")
         say(f"  Crosses {battery['threshold_v']:g} V around {battery['replace_date']:%Y-%m-%d} "
@@ -451,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     html = build_dashboard(
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
         stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
-        events_summary, staleness, forecast, reconciled_bills,
+        events_summary, staleness, forecast, reconciled_bills, annotations_df,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")

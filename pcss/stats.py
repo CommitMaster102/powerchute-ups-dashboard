@@ -229,8 +229,37 @@ def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = N
     return pd.DataFrame(episodes)
 
 
+def latest_battery_replacement(annotations: pd.DataFrame | None,
+                               as_of: pd.Timestamp | datetime) -> pd.Timestamp | None:
+    """The newest `battery_replaced` entry in a user-owned annotations.csv
+    (roadmap item 26) whose date is at or before `as_of` — typically the
+    newest sample in the frame being fit. A `battery_replaced` entry dated
+    later than the data being analyzed marks no boundary yet (a battery
+    replacement planned for next month must not truncate today's fit down to
+    nothing), so it is excluded rather than treated as the newest one.
+
+    Reused as-is by `battery_replace_projection`'s fit segmentation below,
+    and intended for roadmap item 16's runtime calibration to reuse the same
+    boundary once it lands. Returns None when `annotations` is empty/None or
+    holds no qualifying `battery_replaced` entry.
+    """
+    if annotations is None or annotations.empty:
+        return None
+    if "kind" not in annotations.columns or "date" not in annotations.columns:
+        return None
+    replaced = annotations.loc[annotations["kind"] == "battery_replaced", "date"]
+    if replaced.empty:
+        return None
+    dates = pd.to_datetime(replaced)
+    dates = dates[dates <= pd.Timestamp(as_of)]
+    if dates.empty:
+        return None
+    return dates.max()
+
+
 def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = None,
-                               min_days: float | None = None) -> dict:
+                               min_days: float | None = None,
+                               annotations: pd.DataFrame | None = None) -> dict:
     """Project when the resting battery voltage crosses the replace threshold.
 
     Fits a line to the rolling median of Battery Voltage (the median damps
@@ -238,19 +267,40 @@ def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = Non
     extrapolates to ``threshold_v``. Below ``min_days`` of history the honest
     answer is "not enough history": a slope over a few weeks is noise.
 
+    ``annotations`` is a user-owned annotations.csv frame (roadmap item 26,
+    ``pcss.loaders.load_annotations``). When it holds a ``battery_replaced``
+    entry that is not dated later than the newest sample here
+    (``latest_battery_replacement``), the fit runs only on samples at or
+    after that date — a trend fit spanning a battery replacement would
+    otherwise blend two different batteries' degradation into one
+    meaningless slope — and the result carries the replaced-on date plus the
+    battery's age in days. With no qualifying annotation, behavior is
+    unchanged from before this feature existed.
+
     Returns a dict with ``status`` ("insufficient_history", "stable", or
     "projected"), ``slope_v_per_day``, ``replace_date``, ``days_to_replace``,
-    and ``threshold_v``.
+    ``threshold_v``, ``battery_installed_on`` (date or None), and
+    ``battery_age_days`` (float or None).
     """
     if threshold_v is None:
         threshold_v = config.BATTERY_REPLACE_VOLTAGE_V
     if min_days is None:
         min_days = config.BATTERY_TREND_MIN_DAYS
     out: dict = {"status": "insufficient_history", "slope_v_per_day": None,
-                 "replace_date": None, "days_to_replace": None, "threshold_v": threshold_v}
+                 "replace_date": None, "days_to_replace": None, "threshold_v": threshold_v,
+                 "battery_installed_on": None, "battery_age_days": None}
     if df.empty or "Battery Voltage" not in df.columns:
         return out
     bv = df.dropna(subset=["Battery Voltage"])
+    if bv.empty:
+        return out
+    boundary = latest_battery_replacement(annotations, bv["ts"].iloc[-1])
+    if boundary is not None:
+        bv = bv[bv["ts"] >= boundary].reset_index(drop=True)
+        out["battery_installed_on"] = boundary.date()
+        if not bv.empty:
+            out["battery_age_days"] = float(
+                (bv["ts"].iloc[-1] - boundary).total_seconds() / 86400)
     if len(bv) < 10:
         return out
     span_days = (bv["ts"].iloc[-1] - bv["ts"].iloc[0]).total_seconds() / 86400

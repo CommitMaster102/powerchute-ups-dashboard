@@ -96,6 +96,18 @@ def _write_synthetic_agent(agent: Path) -> Path:
     return agent
 
 
+def _write_synthetic_annotations(out_dir: Path) -> Path:
+    """One battery_replaced entry inside the synthesized DataLog's range
+    (2026-05-01 through 2026-05-02), so the annotation-marker render path
+    (roadmap item 26) is exercised in the E2E build."""
+    p = out_dir / "annotations.csv"
+    p.write_text(
+        "date,kind,label\n2026-05-02,battery_replaced,New battery installed\n",
+        encoding="utf-8",
+    )
+    return p
+
+
 def _build_dashboard(tmp_path_factory, theme: str) -> Path:
     """Run the real pipeline against the synthetic agent with an explicit
     config file (hermetic: a developer's local config.toml must not leak into
@@ -104,9 +116,13 @@ def _build_dashboard(tmp_path_factory, theme: str) -> Path:
     agent = _write_synthetic_agent(tmp_path_factory.mktemp(f"agent-{theme}"))
     out_dir = tmp_path_factory.mktemp(f"out-{theme}")
     out = out_dir / "dashboard.html"
+    annotations = _write_synthetic_annotations(out_dir)
     conf = out_dir / "config.toml"
-    conf.write_text(f'[dashboard]\ntheme = "{theme}"\n\n[archive]\nenabled = false\n',
-                    encoding="utf-8")
+    conf.write_text(
+        f'[dashboard]\ntheme = "{theme}"\n\n[archive]\nenabled = false\n\n'
+        f"[paths]\nannotations_file = '{annotations.as_posix()}'\n",
+        encoding="utf-8",
+    )
     import analyze_ups
     analyze_ups.main(["--agent-dir", str(agent), "-o", str(out), "--config", str(conf),
                       "--no-browser", "--quiet", "--no-snapshot"])

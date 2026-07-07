@@ -191,6 +191,66 @@ def load_bills(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
 
 
 # ======================================================================
+# Battery lifecycle annotations (roadmap item 26) — a user-owned
+# annotations.csv
+# ======================================================================
+_ANNOTATIONS_COLUMNS = ["date", "kind", "label"]
+
+
+def load_annotations(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
+    """Load the user-owned annotations.csv: date (YYYY-MM-DD), kind (freeform
+    text; the analyzer only ever recognizes "battery_replaced" as a
+    fit-segmentation boundary), label (a short note shown on the dashboard's
+    time panels), header row required.
+
+    This file holds hand-entered personal notes, so it is read defensively,
+    the same pattern as `load_bills` (roadmap item 29). A missing file simply
+    disables the feature — annotating lifecycle events is opt-in, not a
+    required habit — and returns an empty frame with no warnings at all. A
+    file missing one of the required columns is reported and ignored in
+    full. A row with an unparseable date, or a blank kind, is reported
+    (naming the line and, where possible, the offending value) and skipped;
+    the analyzer never crashes on this file. A blank label is kept as an
+    empty string rather than skipped — the dashboard falls back to the
+    entry's kind when there is no label to show. The file is only ever read
+    here, never written.
+    """
+    path = path or config.ANNOTATIONS_FILE
+    if not path.exists():
+        return pd.DataFrame(columns=_ANNOTATIONS_COLUMNS), []
+
+    warnings: list[str] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        missing = set(_ANNOTATIONS_COLUMNS) - set(reader.fieldnames or [])
+        if missing:
+            warnings.append(
+                f"annotations file {path}: missing required column(s) "
+                f"{', '.join(sorted(missing))}; the file is ignored")
+            return pd.DataFrame(columns=_ANNOTATIONS_COLUMNS), warnings
+
+        rows: list[dict] = []
+        for line_no, row in enumerate(reader, start=2):  # header occupies line 1
+            raw_date = (row.get("date") or "").strip()
+            try:
+                entry_date = date.fromisoformat(raw_date)
+            except ValueError:
+                warnings.append(
+                    f"annotations file line {line_no}: invalid date "
+                    f"{raw_date!r} (expected YYYY-MM-DD); row skipped")
+                continue
+            kind = (row.get("kind") or "").strip()
+            if not kind:
+                warnings.append(
+                    f"annotations file line {line_no} ({raw_date}): missing "
+                    "kind; row skipped")
+                continue
+            label = (row.get("label") or "").strip()
+            rows.append({"date": entry_date, "kind": kind, "label": label})
+    return pd.DataFrame(rows, columns=_ANNOTATIONS_COLUMNS), warnings
+
+
+# ======================================================================
 # DataLog archive (persistent measurements beyond PCSS's retention window)
 # ======================================================================
 def _dedup_datalog(df: pd.DataFrame) -> pd.DataFrame:

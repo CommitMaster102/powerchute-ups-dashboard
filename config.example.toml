@@ -17,6 +17,17 @@ pcss_agent = 'C:\Program Files\APC\PowerChute Serial Shutdown\agent'
 # ever reads this file; it is personal data, like credentials.txt, and is
 # gitignored.
 bills_file = 'bills.csv'
+# Path to a user-owned CSV of dated lifecycle entries — battery replaced, a
+# new appliance added, the UPS moved — for the battery replace-by
+# projection's fit segmentation and labeled markers on the dashboard's time
+# panels (roadmap item 26). Columns: date (YYYY-MM-DD), kind (freeform text;
+# the analyzer only ever recognizes "battery_replaced" as a fit-segmentation
+# boundary), label (a short note shown on the marker). See
+# annotations.example.csv for the exact shape. Defaults to annotations.csv
+# in the repo root; a missing file simply disables the feature. The analyzer
+# only ever reads this file; it is personal data, like credentials.txt and
+# bills.csv, and is gitignored.
+annotations_file = 'annotations.csv'
 
 [tariff]                 # CRC per kWh; Coopesantos T-RE Residencial.
 coopesantos_low  = 78.17 # first `tier_limit_kwh` per billing period
