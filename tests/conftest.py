@@ -90,8 +90,10 @@ def _write_synthetic_agent(agent: Path) -> Path:
 
     # energylog: ';'-delimited, dot-decimal, ts = seconds since 2010 LOCAL,
     # 5-min cadence. Two files cross the June/July billing boundary so the
-    # period-comparison panel has two periods; June 27 2026 is a Saturday and
-    # June 28 a Sunday, so the weekday/weekend panel gets both profiles.
+    # period-comparison panel has two periods. June 27-28 2026 are a Saturday
+    # and a Sunday (both the weekend side of the weekday/weekend panel) while
+    # June 29-30 are a Monday and a Tuesday (the weekday side), so the panel
+    # gets both profiles.
     for month_start, month_label, n in [
         (start, "2026-06", 4 * 288),                   # Jun 27-30
         (datetime(2026, 7, 1, 0, 0, 0), "2026-07", 2 * 288),   # Jul 1-2
@@ -108,9 +110,12 @@ def _write_synthetic_agent(agent: Path) -> Path:
 
     # Copy the real, personal-data-free EventLog fixture into the synthetic
     # agent so the event timeline panel (roadmap item 20) has events to render
-    # and the parser runs inside the E2E build. Its events span a different
-    # month than the synthetic DataLog above, which is fine: the ev panel owns
-    # its own local time axis and is not in the crosshair-sync group.
+    # and the parser runs inside the E2E build. Its events (2026-06-06 to
+    # 2026-07-06) overlap the synthetic DataLog window above deliberately, so
+    # its fixed 2026-06-29 outage falls inside that window and drives the
+    # authoritative on-battery episode strip (see this function's docstring).
+    # The ev panel still owns its own local time axis and is not in the
+    # crosshair-sync group.
     fixture_eventlog = Path(__file__).resolve().parent / "fixtures" / "EventLog"
     if fixture_eventlog.exists():
         shutil.copyfile(fixture_eventlog, agent / "EventLog")

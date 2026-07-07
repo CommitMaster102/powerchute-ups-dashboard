@@ -163,7 +163,7 @@ def test_load_config_new_roadmap_keys(tmp_path, restore_config):
 
 def test_webhook_enabled_defaults_false(restore_config):
     # Roadmap item 23: the webhook channel is off unless a config explicitly
-    # turns it on -- and it also needs a URL in the keyring, which is checked
+    # turns it on — and it also needs a URL in the keyring, which is checked
     # by the tray, not here.
     c = restore_config
     assert c.WEBHOOK_ENABLED is False

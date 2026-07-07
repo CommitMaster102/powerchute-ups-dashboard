@@ -62,7 +62,7 @@ KEYRING_SERVICE = "stateOfUPS-PCSS"
 # (roadmap item 23). It is stored under this "username" purely to reuse the
 # keyring's (service, username) -> secret shape; it is not an actual account.
 WEBHOOK_KEYRING_USERNAME = "webhook-url"
-# Scratch log for a tray-triggered analyzer run (item 24) -- overwritten on
+# Scratch log for a tray-triggered analyzer run (item 24) — overwritten on
 # every run, not history like tray_status.log or the scheduled-run log.
 TRAY_RUN_LOG = OUTPUT / "tray_run.log"
 # The once-a-day marker scheduled_run.ps1 writes on a successful run; read
@@ -512,7 +512,7 @@ def tail_of_log(log_path: Path, max_lines: int = 6, max_chars: int = 300) -> str
 def _run_analyzer_worker(icon: Icon, gate: SingleFlightRun) -> None:
     """Runs on a background thread: spawns the analyzer, waits for it, and
     reports completion via a toast. This is the thin pystray-facing wiring
-    around the pure helpers above -- it is not unit-tested (it spawns a real
+    around the pure helpers above — it is not unit-tested (it spawns a real
     process and touches a real Icon), so it stays as small as possible.
     """
     try:

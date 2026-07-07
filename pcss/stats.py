@@ -566,7 +566,7 @@ def detect_self_tests(datalog_df: pd.DataFrame, dip_pct: float | None = None,
     (or Battery Capacity) samples yields a record with that field NaN rather
     than raising.
 
-    Returns one row per detected test: ``ts`` (the test's own timestamp --
+    Returns one row per detected test: ``ts`` (the test's own timestamp —
     the event time, or the first sample showing the capacity drop),
     ``dip_start``/``dip_end`` (the DataLog window used for measurement),
     ``capacity_drop_pct``, ``sag_v``, and ``source`` (``"event"`` or

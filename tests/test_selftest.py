@@ -4,12 +4,12 @@
 The Battery Charge card's sawtooth comes from the UPS's periodic
 self-tests. `detect_self_tests` in `pcss/stats.py` finds them from the
 DataLog's capacity-dip shape (a drop corroborated by line voltage staying
-inside its normal envelope -- the opposite corroboration
+inside its normal envelope — the opposite corroboration
 `detect_on_battery_episodes` uses), or from parsed EventLog events once the
 exact self-test event id is known (`pcss.eventlog.SELF_TEST_EVENT_IDS`,
-still empty as of this writing). Each detected test carries a voltage sag --
-the resting Battery Voltage just before the dip minus the minimum inside it
--- which `self_test_sag_trend` fits against time the same way
+still empty as of this writing). Each detected test carries a voltage sag —
+the resting Battery Voltage just before the dip minus the minimum inside it —
+which `self_test_sag_trend` fits against time the same way
 `battery_replace_projection` fits the resting-voltage slope, with the same
 honesty floor (`battery_trend_min_days`). `battery_replace_projection` also
 accepts the detected tests to mask their windows out of its own fit.
@@ -197,7 +197,7 @@ def test_empty_frame():
 # ====================================================================== detector: event-id precedence
 def test_event_id_precedence_over_shape(monkeypatch):
     """Once SELF_TEST_EVENT_IDS names a real id, the event route replaces
-    the shape heuristic entirely for that call -- even a shape-detectable
+    the shape heuristic entirely for that call — even a shape-detectable
     dip elsewhere in the same DataLog is not independently reported."""
     monkeypatch.setattr(ev, "SELF_TEST_EVENT_IDS", ("9.9.9.9",))
     start = pd.Timestamp("2026-03-01 00:00")
@@ -368,7 +368,7 @@ def test_build_dashboard_spanish_self_test_subtitle(monkeypatch):
 
 def test_build_dashboard_explicit_self_tests_argument_used_over_default():
     """When self_tests is passed explicitly, build_dashboard must not
-    recompute it from datalog_df -- a caller's own detection (for example
+    recompute it from datalog_df — a caller's own detection (for example
     event-based) wins."""
     df = _datalog(20)     # flat: the auto shape-detector would find nothing
     tests = pd.DataFrame({

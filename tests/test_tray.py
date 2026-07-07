@@ -141,7 +141,7 @@ def test_alert_watcher_starts_at_end_of_file(tmp_path):
 
 def test_alert_watcher_delivers_every_new_line_in_one_poll(tmp_path):
     # A single analyzer run can append two lines in the same run (an
-    # event-driven anomaly alert, then the weekly digest) -- both must be
+    # event-driven anomaly alert, then the weekly digest) — both must be
     # delivered, in order, not just the last one (the bug this test guards
     # against: poll() used to return only lines[-1], silently dropping the
     # anomaly line whenever the digest also fired the same run).

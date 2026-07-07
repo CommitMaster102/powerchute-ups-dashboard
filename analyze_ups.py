@@ -588,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     # already completed successfully. If only the append failed, the marker
     # is untouched and the digest is retried next run; if the append
     # succeeded but the marker write then failed, the digest fires again next
-    # run too -- a rare, acceptable duplicate line in alerts.log, not a
+    # run too — a rare, acceptable duplicate line in alerts.log, not a
     # crash.
     try:
         digest_path = _maybe_write_weekly_digest(energy_summary, forecast, voltage_anomalies,

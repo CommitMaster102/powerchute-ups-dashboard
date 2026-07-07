@@ -63,7 +63,7 @@ def test_preset_pills_anchor_each_panel(dash):
 
 
 def test_preset_longer_than_history_clamps(dash):
-    # The synthetic history is ~2 days; 30 d must leave the short panels at
+    # The synthetic history is ~4 days; 30 d must leave the short panels at
     # full range instead of producing an out-of-range window.
     dash.click(".preset-pill[data-days='30']")
     dash.wait_for_timeout(80)

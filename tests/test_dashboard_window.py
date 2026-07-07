@@ -359,7 +359,7 @@ def test_analyze_cmp_previous_period_truncated_when_window_crosses_month(
     spanning April 20 -> June 4 windowed to the last 15 days (May 20 ->
     June 4) crosses the April/May.../May/June boundary, so the cmp panel's
     previous-period series (May) starts partway through May instead of at
-    its own day-0 -- while the unwindowed run starts that same series at
+    its own day-0 — while the unwindowed run starts that same series at
     day 0, because before this fix dash_energy_summary was just the
     full-history energy_summary regardless of max_days."""
     import analyze_ups

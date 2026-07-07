@@ -94,7 +94,7 @@ def test_set_webhook_url_keyring_unavailable_logs_and_returns_false(monkeypatch,
 def test_load_tray_config_reads_config_toml_regardless_of_cwd(monkeypatch, tmp_path):
     # The tray can be launched from any CWD (a pythonw shortcut, a Task
     # Scheduler job at logon), so the config.toml lookup must anchor to
-    # SCRIPT_DIR, not the process's current working directory -- otherwise
+    # SCRIPT_DIR, not the process's current working directory — otherwise
     # [alerts] webhook_enabled silently stays False with no symptom.
     script_dir = tmp_path / "install"
     script_dir.mkdir()
@@ -262,7 +262,7 @@ def test_notify_alert_skips_webhook_thread_when_disabled(monkeypatch):
 
     assert icon.notifications
     # The gate now runs before the thread spawn: a fully-disabled webhook
-    # channel does no extra work at all -- no thread, no daemon overhead.
+    # channel does no extra work at all — no thread, no daemon overhead.
     assert spawned == []
 
 

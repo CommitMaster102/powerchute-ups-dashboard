@@ -362,7 +362,7 @@ SHIPPED (first tranche): every chart box carries `role="img"`,
 (span, latest, minimum, maximum); focusing a panel targets the keyboard
 shortcuts without hover. The remaining idea — an arrow-key
 step-through-samples mode for reading the tooltip without a pointer — is a
-real feature on its own and continues as item 21 on the active list.
+real feature on its own and shipped as item 21 (see its archive entry below).
 
 The dashboard is mouse-first. Keyboard focus for panels (the keyboard
 shortcuts currently require hovering), ARIA labels on the SVG charts, and a
@@ -408,8 +408,8 @@ SHIPPED (toast route): `AlertWatcher` in `tray_status.py` tails
 `output/alerts.log` from its end (history never re-notifies), tolerates
 rotation, applies a 30-minute cooldown, and raises a tray notification for
 new lines; the analyzer's alert trigger now also includes on-battery
-episodes. The remote channel (webhook or email) continues as item 23 on the
-active list.
+episodes. The remote channel (webhook or email) shipped as item 23 (see its
+archive entry below).
 
 `[alerts]` currently appends a line to `output/alerts.log`. A notification
 that a human actually sees — a Windows toast from the scheduled run, or an

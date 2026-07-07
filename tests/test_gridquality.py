@@ -208,9 +208,9 @@ def test_recorded_days_zero_gives_nan_rate_not_a_crash():
 
 # ---------------------------------------------------------------- mean depth / worst event
 def test_mean_sag_depth_averages_per_event_not_per_sample():
-    # Event 1: two samples deep at 10 V below the low bound (mean of the
-    # samples would be the same either way here, so this alone doesn't
-    # discriminate) -- event 2 is a single 4 V-deep sample. Two events ->
+    # Event 1 is two samples deep at 10 V below the low bound (the sample
+    # mean would be the same either way here, so this alone does not
+    # discriminate); event 2 is a single 4 V-deep sample. With two events the
     # mean depth is (10 + 4) / 2 = 7, not the 5-sample mean.
     df = _dl([120.0, 104.0, 104.0, 120.0, 110.0, 120.0])
     gq = grid_quality_trend(df)

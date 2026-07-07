@@ -489,7 +489,7 @@ def test_main_does_not_write_a_digest_when_weekly_digest_is_off(tmp_path, monkey
 def test_main_survives_a_marker_write_failure_and_logs_a_warning(tmp_path, monkeypatch, capsys):
     """A failure in the marker write (disk full, an AV lock, ...) must not
     crash the run: main() completes normally (dashboard written, exit 0)
-    with a clear warning logged -- even though the digest line already
+    with a clear warning logged — even though the digest line already
     landed in alerts.log, a known, acceptable duplicate on the next run
     (the marker never advanced), not a crash."""
     import analyze_ups
