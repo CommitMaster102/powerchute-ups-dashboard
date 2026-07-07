@@ -25,6 +25,7 @@ import pandas as pd
 
 from pcss import config
 from pcss.common import fmt_age_hours, fmt_bytes, fmt_crc
+from pcss.eventlog import EVENT_DEFAULT_VISIBLE, categorize_event
 from pcss.stats import (
     _billing_period_bounds,
     battery_replace_projection,
@@ -245,6 +246,15 @@ _STRINGS_ES = {
     "swell": "subida",
     "Showing the last {n} days; older history remains in output/archive/.":
         "Mostrando los últimos {n} días; el historial anterior permanece en output/archive/.",
+    "Event Timeline": "Cronología de eventos",
+    "events by category": "eventos por categoría",
+    "categories": "categorías",
+    "Power": "Corriente",
+    "Battery": "Batería",
+    "Shutdown": "Apagado",
+    "Communication": "Comunicación",
+    "Monitoring": "Monitoreo",
+    "Other": "Otros",
 }
 
 
@@ -698,6 +708,51 @@ def _panel_cad(datalog_df, pal) -> dict | None:
     }
 
 
+# Event timeline categories (roadmap item 20): the display order and the
+# English category label localized through _L. The palette color per category
+# is resolved from the passed palette in _panel_ev. Kept beside the panel
+# builder so the payload the renderer consumes carries localized row labels,
+# exactly as every other panel bakes its localized series names.
+_EVENT_CATEGORY_ORDER = ("power", "battery", "shutdown", "communication", "monitoring", "other")
+_EVENT_CATEGORY_LABEL = {
+    "power": "Power", "battery": "Battery", "shutdown": "Shutdown",
+    "communication": "Communication", "monitoring": "Monitoring", "other": "Other",
+}
+
+
+def _panel_ev(events_df, pal) -> dict | None:
+    """Event timeline: one categorical row per event category, one dot per
+    occurrence, time on the x axis (roadmap item 20).
+
+    Each event crosses the boundary as an epoch-ms integer (the naive local
+    wall-clock encoded as if UTC, the shared timezone contract) carrying its
+    category, ObjectId, and resolved name, so the client renders the dot, the
+    hover tooltip, and the machine-standard CSV export from this one payload.
+    Rows ship the power, battery, and shutdown categories visible and the
+    communication and monitoring housekeeping hidden — about 95 percent of
+    recorded events are that churn (the roadmap noise point) — and the legend
+    toggles them. A category with no events in the frame gets no row. Returns
+    None when there are no events, so the client-side empty-state note
+    renders.
+    """
+    if events_df is None or events_df.empty:
+        return None
+    cat_color = {
+        "power": pal["red"], "battery": pal["amber"], "shutdown": pal["violet"],
+        "communication": pal["blue"], "monitoring": pal["teal"], "other": pal["faint"],
+    }
+    xs = _ms_list(events_df["ts"])
+    cats = [categorize_event(str(oid)) for oid in events_df["oid"]]
+    events = [{"x": x, "cat": c, "oid": str(oid), "name": str(name)}
+              for x, c, oid, name in
+              zip(xs, cats, events_df["oid"], events_df["name"], strict=True)]
+    present = set(cats)
+    rows = [{"cat": c, "label": _L(_EVENT_CATEGORY_LABEL[c]), "color": cat_color[c],
+             "visible": c in EVENT_DEFAULT_VISIBLE}
+            for c in _EVENT_CATEGORY_ORDER if c in present]
+    return {"kind": "events", "vb": [820, 250], "rows": rows, "events": events}
+
+
 # ======================================================================
 # KPI row + health pill
 # ======================================================================
@@ -871,6 +926,16 @@ def _sr_text(spec) -> str:
             return empty
         return (f"{len(spec.get('days', []))} {_L('days by 24 hours')}. "
                 f"{_L('Mean power from')} {min(z):g} {_L('to')} {max(z):g} {unit}.")
+    if spec.get("kind") == "events":
+        evs = spec.get("events") or []
+        if not evs:
+            return empty
+        xs = [e["x"] for e in evs]
+        t0 = datetime.fromtimestamp(min(xs) / 1000, tz=UTC)
+        t1 = datetime.fromtimestamp(max(xs) / 1000, tz=UTC)
+        return (f"{len(evs)} {_L('Events')} · {len(spec.get('rows') or [])} "
+                f"{_L('categories')}. {_L('From')} {t0:%Y-%m-%d %H:%M} "
+                f"{_L('to')} {t1:%Y-%m-%d %H:%M}.")
     return empty
 
 
@@ -1309,7 +1374,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     self_tests: pd.DataFrame | None = None,
                     baseline: dict | None = None,
                     grid_quality: pd.DataFrame | None = None,
-                    dashboard_window_days: float | None = None) -> str:
+                    dashboard_window_days: float | None = None,
+                    events: pd.DataFrame | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
@@ -1348,6 +1414,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         "growth": _panel_growth(hist, pal),
         "proj": proj_panel,
         "cad": _panel_cad(datalog_df, pal),
+        "ev": _panel_ev(events, pal),
     }
 
     kpis, sparks, sevs = _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal)
@@ -1449,6 +1516,13 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     if n_flagged:
         daily_sub = f"{daily_sub} · {_count(n_flagged, _L('day deviates from the recorded baseline'), _L('days deviate from the recorded baseline'))}"
     proj_sub = f"≈ {proj_1yr_kb / 1024:.1f} MB / yr" if proj_1yr_kb else _L("current rate")
+    # Event timeline subtitle (roadmap item 20): the total event count and the
+    # "by category" framing, or the empty note when the EventLog did not parse
+    # or holds no events.
+    if events is not None and not events.empty:
+        ev_sub = f"{len(events)} {_L('Events')} · {_L('events by category')}"
+    else:
+        ev_sub = _L("no data")
     energy_note = (f"{energy_summary['total_kwh']:.1f} kWh · "
                    f"₡{energy_summary['total_cost_pcss']:,.0f} · "
                    f"₡{energy_summary['total_cost_tiered']:,.0f}") if energy_summary else _L("no data")
@@ -1615,6 +1689,9 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
   </div>
 
   {_section_head(_L('Reference'), _L('statistics · latest readings'))}
+  <div class="grid12">
+    {_card('ev', 12, _L('Event Timeline'), ev_sub, True)}
+  </div>
   <div class="grid12">
     <div class="card table-card s7">
       <div class="card-title" style="margin-bottom:12px">{_esc(_L('Per-metric Statistics'))}</div>

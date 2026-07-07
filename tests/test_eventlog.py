@@ -133,6 +133,46 @@ def test_unknown_oid_gets_numeric_label():
     assert ev.resolve_name("3.5.1.5.4.1", True, {}) == "On Battery"
 
 
+# ---------------------------------------------------------------- category mapping (item 20)
+def test_categorize_event_known_prefixes():
+    # The mains-outage family (On Battery, No Longer On Battery, Overload) is
+    # power; the battery family (Low Battery, Discharged, Time-on-battery) is
+    # battery; communication and monitoring split apart even though they share
+    # the 3.5.1.5.6 stem.
+    assert ev.categorize_event("3.5.1.5.4.1") == "power"      # On Battery
+    assert ev.categorize_event("3.5.1.5.4.2") == "power"      # No Longer On Battery
+    assert ev.categorize_event("3.5.1.5.4.5") == "power"      # Overload
+    assert ev.categorize_event("3.5.1.5.3.18") == "battery"   # Time On Battery Threshold
+    assert ev.categorize_event("3.5.1.5.3.3") == "battery"    # Low Battery
+    assert ev.categorize_event("3.5.1.5.3.19") == "shutdown"  # Graceful Shutdown Started
+    assert ev.categorize_event("3.5.1.5.6.1") == "communication"   # Communication Established
+    assert ev.categorize_event("3.5.1.5.6.2") == "communication"   # Communication Lost
+    assert ev.categorize_event("3.5.1.5.6.9") == "monitoring"      # Monitoring Stopped
+    assert ev.categorize_event("3.5.1.5.6.10") == "monitoring"     # Monitoring Started
+
+
+def test_categorize_event_segment_boundary_not_string_prefix():
+    # "3.5.1.5.6.10" must not be mis-read as the communication id
+    # "3.5.1.5.6.1" just because that is a string prefix of it; the longest
+    # segment-aligned match wins, so it stays monitoring.
+    assert ev.categorize_event("3.5.1.5.6.10") == "monitoring"
+    assert ev.categorize_event("3.5.1.5.6.1") == "communication"
+
+
+def test_categorize_event_unknown_falls_to_other():
+    assert ev.categorize_event("3.5.2.2.12") == "other"       # unnamed housekeeping churn
+    assert ev.categorize_event("9.9.9.9") == "other"
+    assert ev.categorize_event("") == "other"
+
+
+def test_event_default_visible_is_signal_categories():
+    # Power, battery, and shutdown ship visible; the communication/monitoring
+    # (and unknown "other") churn ships hidden — the roadmap noise point.
+    assert set(ev.EVENT_DEFAULT_VISIBLE) == {"power", "battery", "shutdown"}
+    for cat in ("communication", "monitoring", "other"):
+        assert cat not in ev.EVENT_DEFAULT_VISIBLE
+
+
 # ---------------------------------------------------------------- event archive
 def test_event_archive_idempotent(tmp_path):
     df, _ = load_eventlog(FIXTURE)

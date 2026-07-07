@@ -156,9 +156,15 @@
   }
   function autoXDomain(spec) {
     let lo = Infinity, hi = -Infinity;
-    (spec.series || []).forEach(s => {
-      if (s.x.length) { lo = Math.min(lo, s.x[0]); hi = Math.max(hi, s.x[s.x.length - 1]); }
-    });
+    if (spec.kind === "events") {
+      // The event timeline carries no series; its span is the extent of the
+      // event dots themselves.
+      (spec.events || []).forEach(e => { if (e.x < lo) lo = e.x; if (e.x > hi) hi = e.x; });
+    } else {
+      (spec.series || []).forEach(s => {
+        if (s.x.length) { lo = Math.min(lo, s.x[0]); hi = Math.max(hi, s.x[s.x.length - 1]); }
+      });
+    }
     if (!isFinite(lo)) { lo = 0; hi = 1; }
     if (lo === hi) { lo -= 1; hi += 1; }
     return [lo, hi];
@@ -507,6 +513,101 @@
     return svg;
   }
 
+  // Event timeline (roadmap item 20): the fourth chart shape. One categorical
+  // row per event category, one dot per occurrence, time on the x axis. The
+  // category row labels double as the legend — clicking one toggles its row
+  // via st.hidden (seeded from the payload's default-visible flags). Dots that
+  // would overlap in the same minute are lane-packed vertically within the row
+  // band so every one stays hoverable.
+  function renderEvents(view) {
+    const key = view.key, spec = view.spec, st = STATE[key];
+    const W = view.vb[0], H = view.vb[1];
+    const p = spec.pad || { l: 108, r: 16, t: 14, b: 26 };
+    const iw = W - p.l - p.r, ih = H - p.t - p.b;
+    const xd = xWindowFor(key, spec);
+    const rows = spec.rows || [];
+    const n = Math.max(1, rows.length);
+    const rowH = ih / n;
+    const sx = x => p.l + (x - xd[0]) / ((xd[1] - xd[0]) || 1) * iw;
+    const svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "xMidYMid meet" });
+    svg.style.width = "100%"; svg.style.height = "auto"; svg.style.display = "block";
+    const clipId = "clip-" + key + "-" + view.id;
+    const defs = svgEl("defs", {}, svg);
+    const clip = svgEl("clipPath", { id: clipId }, defs);
+    svgEl("rect", { x: p.l, y: 0, width: iw, height: H }, clip);
+
+    // Row separators + category labels (labels double as the legend toggles).
+    rows.forEach((r, i) => {
+      const y0 = p.t + i * rowH, yMid = y0 + rowH / 2;
+      svgEl("line", { x1: p.l, x2: W - p.r, y1: y0, y2: y0, stroke: C.rowline || C.grid,
+                      "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, svg);
+      const hidden = st.hidden.has(i);
+      const g = svgEl("g", { class: "ev-legend", "data-cat": r.cat, "data-row": i }, svg);
+      g.style.cursor = "pointer";
+      if (hidden) g.setAttribute("opacity", "0.4");
+      svgEl("circle", { cx: p.l - 16, cy: yMid, r: 4, fill: r.color }, g);
+      const t = svgEl("text", { x: p.l - 26, y: yMid + 4, "text-anchor": "end", "font-size": 11.5,
+                                fill: C.mut, "font-family": "ui-monospace,monospace" }, g);
+      t.textContent = r.label;
+      // Wide invisible hit target spanning the row's label gutter.
+      svgEl("rect", { x: 0, y: y0, width: p.l - 2, height: rowH, fill: "transparent" }, g);
+      g.addEventListener("click", ev => {
+        ev.stopPropagation();
+        if (st.hidden.has(i)) st.hidden.delete(i); else st.hidden.add(i);
+        if (st.hidden.size >= rows.length) st.hidden.delete(i);  // never hide every row
+        rerenderPanel(key);
+      });
+    });
+
+    // x ticks (time).
+    const spanMs = xd[1] - xd[0];
+    const nx = W > 600 ? 5 : 3;
+    for (let i = 0; i < nx; i++) {
+      const v = xd[0] + spanMs * i / (nx - 1);
+      const t = svgEl("text", { x: sx(v), y: H - 8,
+                                "text-anchor": i === 0 ? "start" : (i === nx - 1 ? "end" : "middle"),
+                                "font-size": 12, fill: C.faint, "font-family": "ui-monospace,monospace" }, svg);
+      t.textContent = fmtTick(v, spanMs);
+    }
+
+    const plot = svgEl("g", { "clip-path": "url(#" + clipId + ")" }, svg);
+    // Dots per visible row, lane-packed so same-minute events stay separable.
+    const dotR = 3.4, laneGap = 9;
+    const dots = [];
+    rows.forEach((r, i) => {
+      if (st.hidden.has(i)) return;
+      const y0 = p.t + i * rowH, yMid = y0 + rowH / 2;
+      const evs = (spec.events || []).filter(e => e.cat === r.cat && e.x >= xd[0] && e.x <= xd[1])
+        .sort((a, b) => a.x - b.x);
+      const lanes = [];
+      evs.forEach(e => {
+        const cx = sx(e.x);
+        let lane = 0;
+        while (lane < lanes.length && cx - lanes[lane] < 2 * dotR + 1) lane++;
+        lanes[lane] = cx;
+        const off = (lane % 2 === 0 ? 1 : -1) * Math.ceil(lane / 2) * laneGap;
+        const cy = Math.max(y0 + dotR + 1, Math.min(y0 + rowH - dotR - 1, yMid + off));
+        svgEl("circle", { cx, cy, r: dotR, fill: r.color, stroke: C.panel, "stroke-width": 1,
+                          class: "ev-dot" }, plot);
+        dots.push({ cx, cy, e, color: r.color, label: r.label });
+      });
+    });
+
+    const overlay = svgEl("g", { class: "chart-overlay", "clip-path": "url(#" + clipId + ")" }, svg);
+    view.svg = svg;
+    view.geom = { W, H, p, iw, ih, xd, sx, spanMs, rowH };
+    view.overlay = overlay;
+    view.evDots = dots;
+    return svg;
+  }
+
+  function eventsTooltipHTML(dot) {
+    return '<div class="tt-ts">' + fmtFull(dot.e.x) + "</div>" +
+      '<div class="tt-row"><span class="tt-dot" style="background:' + dot.color + '"></span>' +
+      '<span class="tt-name">' + dot.e.name + "</span>" +
+      '<span class="tt-val">' + dot.label + "</span></div>";
+  }
+
   function renderSparkline(container, spark) {
     const W = 130, H = 34, pd = 3;
     const xs = spark.x, ys = spark.y;
@@ -539,6 +640,7 @@
     let svg;
     if (spec.kind === "bar") svg = renderBar(view);
     else if (spec.kind === "heatmap") svg = renderHeatmap(view);
+    else if (spec.kind === "events") svg = renderEvents(view);
     else svg = renderLine(view);
     view.container.replaceChildren(svg);
   }
@@ -552,10 +654,12 @@
   }
   function timePanels() {
     // Every panel with a time x-axis: these zoom locally, and the range
-    // presets (plus the setWindow test hook) address them all at once.
+    // presets (plus the setWindow test hook) address them all at once. The
+    // event timeline (kind "events") has a time x-axis too, so it joins.
     return Object.keys(STATE).filter(k => {
       const s = STATE[k].spec;
-      return s && s.kind === "line" && s.xkind !== "linear" && STATE[k].views.length > 0;
+      return s && (s.kind === "line" || s.kind === "events") &&
+        s.xkind !== "linear" && STATE[k].views.length > 0;
     });
   }
   function setWindow(t0, t1) {
@@ -769,6 +873,28 @@
     }
   }
 
+  // Event timeline hover: snap to the nearest dot in 2D (dots are lane-packed
+  // vertically within a row so x alone is not enough), show the name-and-time
+  // tooltip, and ring the dot. Shared by mouse hover and the touch tap.
+  function hoverEventsAt(view, pt, clientX, clientY) {
+    const key = view.key;
+    const dots = view.evDots || [];
+    let best = null, bestD = 1e9;
+    for (const dt of dots) {
+      const dx = pt.x - dt.cx, dy = pt.y - dt.cy, d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = dt; }
+    }
+    if (!best || bestD > 13 * 13) { hideHover(key); return; }
+    LAST_HOVER[key] = { ts: best.e.x, name: best.e.name, oid: best.e.oid, cat: best.e.cat };
+    if (clientX != null) {
+      ttLive.innerHTML = eventsTooltipHTML(best);
+      placeTooltip(ttLive, clientX, clientY);
+    }
+    view.overlay.replaceChildren();
+    svgEl("circle", { cx: best.cx, cy: best.cy, r: 6, fill: "none", stroke: "#fff",
+                      "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }, view.overlay);
+  }
+
   // ------------------------------------------------------------------
   // Pointer gestures: hover, drag (zoom-select / pan), wheel, dblclick
   // ------------------------------------------------------------------
@@ -863,6 +989,8 @@
         placeTooltip(ttLive, ev.clientX, ev.clientY);
         view.overlay.replaceChildren();
         svgEl("rect", { x: g.p.l + c * g.cw, y: g.p.t + r * g.ch, width: g.cw, height: g.ch, fill: "none", stroke: "#fff", "stroke-width": 1.2, "vector-effect": "non-scaling-stroke" }, view.overlay);
+      } else if (spec.kind === "events") {
+        hoverEventsAt(view, pt, ev.clientX, ev.clientY);
       }
     });
 
@@ -949,6 +1077,8 @@
             const ts = g.xd[0] + (pt.x - g.p.l) / g.iw * (g.xd[1] - g.xd[0]);
             hoverLineAt(key, ts, ev.clientX, ev.clientY, false);
           }
+        } else if (ev.pointerType === "touch" && spec.kind === "events") {
+          hoverEventsAt(view, pt, ev.clientX, ev.clientY);
         }
         togglePin(key, ev);
         return;
@@ -985,7 +1115,9 @@
     }, { passive: false });
   }
   function zoomCapable(spec) {
-    return spec && spec.kind === "line" && spec.xkind !== "linear";
+    // Time-axis line panels and the event timeline zoom/pan; linear-axis and
+    // categorical-value panels (bar, heatmap) do not.
+    return spec && (spec.kind === "line" || spec.kind === "events") && spec.xkind !== "linear";
   }
   function currentWindow(key, spec) {
     const st = STATE[key];
@@ -1145,6 +1277,19 @@
     } else if (spec.kind === "heatmap") {
       csv = "day," + Array.from({ length: 24 }, (_, h) => p2(h) + ":00").join(",") + "\n";
       spec.days.forEach((dl, r) => { csv += dl + "," + spec.z[r].map(v => v == null ? "" : v).join(",") + "\n"; });
+    } else if (spec.kind === "events") {
+      // Machine-standard en-US: the stable category key (not the localized
+      // row label), the ObjectId, and the resolved event name. Hidden
+      // category rows are excluded, matching the line panel's hidden-series
+      // behavior.
+      const hiddenCats = new Set();
+      (spec.rows || []).forEach((r, i) => { if (st.hidden.has(i)) hiddenCats.add(r.cat); });
+      csv = "time,category,event id,event name\n";
+      (spec.events || []).slice().sort((a, b) => a.x - b.x).forEach(e => {
+        if (hiddenCats.has(e.cat)) return;
+        csv += fmtFull(e.x) + ",\"" + String(e.cat).replace(/"/g, '""') + "\",\"" +
+          String(e.oid).replace(/"/g, '""') + "\",\"" + String(e.name).replace(/"/g, '""') + "\"\n";
+      });
     }
     if (csv) download("ups-" + key + ".csv", new Blob([csv], { type: "text/csv" }));
   }
@@ -1285,7 +1430,9 @@
     LAST_PRESET = null;
     Object.keys(STATE).forEach(k => {
       STATE[k].zoom = null;
-      STATE[k].hidden.clear();
+      // Re-seed the default filter rather than clearing it, so the event
+      // timeline's housekeeping-off default survives a between-test reset.
+      STATE[k].hidden = defaultHidden(STATE[k].spec);
       STATE[k].anomIdx = null;
       delete LAST_HOVER[k];
     });
@@ -1313,6 +1460,19 @@
     resetAll,
   };
 
+  // The set of row indices hidden by default. For the event timeline this is
+  // the payload's default filter (communication/monitoring housekeeping off);
+  // every other panel starts with nothing hidden. resetAll re-applies this so
+  // the default filter survives a between-test reset instead of being cleared
+  // to "everything visible".
+  function defaultHidden(spec) {
+    const s = new Set();
+    if (spec && spec.kind === "events") {
+      (spec.rows || []).forEach((r, i) => { if (!r.visible) s.add(i); });
+    }
+    return s;
+  }
+
   // ------------------------------------------------------------------
   // Init
   // ------------------------------------------------------------------
@@ -1323,14 +1483,15 @@
       if (!cont) return;
       if (!spec || (spec.kind === "line" && !(spec.series || []).some(s => s.x.length)) ||
         (spec.kind === "bar" && !(spec.data || []).length) ||
-        (spec.kind === "heatmap" && !(spec.days || []).length)) {
+        (spec.kind === "heatmap" && !(spec.days || []).length) ||
+        (spec.kind === "events" && !(spec.events || []).length)) {
         const d = htmlEl("div", "chart-empty", cont);
         d.textContent = S.empty || "no data in the analyzed window";
         STATE[key] = { spec: spec || { kind: "empty" }, zoom: null, hidden: new Set(), views: [], title: cont.dataset.title || key };
         return;
       }
       const view = { key, id: "grid", container: cont, spec, vb: spec.vb || [460, 250] };
-      STATE[key] = { spec, zoom: null, hidden: new Set(), views: [view], title: cont.dataset.title || key };
+      STATE[key] = { spec, zoom: null, hidden: defaultHidden(spec), views: [view], title: cont.dataset.title || key };
       renderView(view);
       attachInteractions(view);
       updateResetPill(key);

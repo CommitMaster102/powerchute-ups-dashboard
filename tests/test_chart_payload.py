@@ -28,6 +28,7 @@ from pcss.dashboard import (
     _panel_bv,
     _panel_cad,
     _panel_cmp,
+    _panel_ev,
     _panel_hm,
     _panel_kw,
     _panel_lv,
@@ -55,6 +56,26 @@ def _datalog(n=60, start="2026-05-01 00:00", lv=120.0, ul=15.0, bc=100.0, bv=27.
 def _energy(n=60, start="2026-05-01 00:00", power=250.0):
     ts = pd.date_range(start, periods=n, freq="5min")
     return pd.DataFrame({"ts": ts, "power_w": np.full(n, power), "interval_sec": 300})
+
+
+def _events():
+    """A small events frame in the shape load_eventlog returns: one power
+    event, one battery event, and two communication events (housekeeping)."""
+    rows = [
+        ("2026-06-25 14:20:00", "3.5.1.5.4.1", "On Battery"),
+        ("2026-06-25 14:40:00", "3.5.1.5.4.2", "No Longer On Battery"),
+        ("2026-06-25 15:00:00", "3.5.1.5.3.18", "Time On Battery Threshold Exceeded"),
+        ("2026-06-26 08:00:00", "3.5.1.5.6.2", "Communication Lost"),
+        ("2026-06-26 08:05:00", "3.5.1.5.6.1", "Communication Established"),
+    ]
+    ts = pd.to_datetime([r[0] for r in rows])
+    return pd.DataFrame({
+        "ts": ts,
+        "ts_ms": _ms_list(ts),
+        "oid": [r[1] for r in rows],
+        "active": [True] * len(rows),
+        "name": [r[2] for r in rows],
+    })
 
 
 # ---------------------------------------------------------------- timestamp contract
@@ -121,6 +142,84 @@ def test_annotation_markers_blank_label_falls_back_to_kind():
 def test_annotation_markers_empty_or_none():
     assert _annotation_markers(None) == []
     assert _annotation_markers(pd.DataFrame(columns=["date", "kind", "label"])) == []
+
+
+# ---------------------------------------------------------------- event timeline panel (item 20)
+def test_panel_ev_none_on_empty():
+    assert _panel_ev(None, PAL) is None
+    assert _panel_ev(pd.DataFrame(columns=["ts", "ts_ms", "oid", "active", "name"]), PAL) is None
+
+
+def test_panel_ev_shape_rows_and_events():
+    panel = _panel_ev(_events(), PAL)
+    assert panel["kind"] == "events"
+    # One dot per event occurrence, carrying the fields the CSV export needs
+    # (timestamp, category, event id, event name).
+    assert len(panel["events"]) == 5
+    e0 = panel["events"][0]
+    assert set(e0) >= {"x", "cat", "oid", "name"}
+    assert e0["oid"] == "3.5.1.5.4.1"
+    assert e0["cat"] == "power"
+    assert e0["name"] == "On Battery"
+    # One row per category present, ordered signal-first.
+    cats = [r["cat"] for r in panel["rows"]]
+    assert cats == ["power", "battery", "communication"]
+    # Categories with no events do not get a row.
+    assert "monitoring" not in cats and "shutdown" not in cats
+
+
+def test_panel_ev_event_timestamps_are_epoch_ms():
+    """Event timestamps cross the boundary as epoch-ms ints encoding the naive
+    local wall-clock as if UTC, the same contract every other panel uses."""
+    panel = _panel_ev(_events(), PAL)
+    expected = int(datetime(2026, 6, 25, 14, 20, tzinfo=UTC).timestamp() * 1000)
+    assert panel["events"][0]["x"] == expected
+    assert all(isinstance(e["x"], int) for e in panel["events"])
+
+
+def test_panel_ev_default_filter_flags():
+    """Power and battery rows ship visible; the communication churn ships
+    hidden (the roadmap noise point). The legend toggles the rest."""
+    panel = _panel_ev(_events(), PAL)
+    visible = {r["cat"]: r["visible"] for r in panel["rows"]}
+    assert visible["power"] is True
+    assert visible["battery"] is True
+    assert visible["communication"] is False
+
+
+def test_panel_ev_rows_are_localizable(monkeypatch):
+    """Category display names ride the payload (rows[].label) and translate
+    when the dashboard language is Spanish, like every other chart label."""
+    en = {r["cat"]: r["label"] for r in _panel_ev(_events(), PAL)["rows"]}
+    assert en["power"] == "Power"
+    monkeypatch.setattr(cfg, "DASHBOARD_LANGUAGE", "es")
+    es = {r["cat"]: r["label"] for r in _panel_ev(_events(), PAL)["rows"]}
+    assert es["power"] != "Power"  # translated, whatever the chosen wording
+
+
+def test_build_dashboard_events_panel_in_payload():
+    inputs = _smoke_inputs()
+    inputs["events"] = _events()
+    html = build_dashboard(**inputs)
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert "ev" in payload["panels"]
+    ev = payload["panels"]["ev"]
+    assert ev is not None and ev["kind"] == "events"
+    assert len(ev["events"]) == 5
+    assert "panel-ev" in html
+
+
+def test_build_dashboard_events_panel_none_without_events():
+    """With no events (the default), the ev panel key is still present so the
+    page and the PANELS render assertion stay stable, but its value is None
+    and the client-side empty-state note renders."""
+    html = build_dashboard(**_smoke_inputs())
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert "ev" in payload["panels"]
+    assert payload["panels"]["ev"] is None
+    assert "panel-ev" in html
 
 
 # ---------------------------------------------------------------- panel builders
@@ -370,7 +469,7 @@ def test_build_dashboard_html_smoke():
     payload = json.loads(m.group(1).replace("<\\/", "</"))
     assert sorted(payload["panels"]) == sorted(
         ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "cmp", "wk",
-         "growth", "proj", "cad"])
+         "growth", "proj", "cad", "ev"])
     assert payload["theme"] in ("dark", "light")
     assert payload["meta"]["last_sample_ms"] is not None
 

@@ -53,6 +53,50 @@ FALLBACK_NAMES = {
     "3.5.1.5.6.10": "Monitoring Started",
 }
 
+# Event categories for the timeline panel (roadmap item 20). Each key is an
+# ObjectId prefix; an event's category is the value of the longest prefix that
+# aligns to the id's dot-separated segments, so a specific id such as the
+# graceful-shutdown "3.5.1.5.3.19" can override the broader battery family it
+# otherwise falls under. Communication and monitoring share the "3.5.1.5.6"
+# stem but split apart because their leaf ids are listed individually. Any id
+# matching no prefix is "other". Categories: power (mains outages and
+# overload), battery (low battery, discharge, time-on-battery), shutdown,
+# communication, monitoring, and other.
+EVENT_CATEGORIES = {
+    "3.5.1.5.4": "power",            # On Battery, No Longer On Battery, Overload
+    "3.5.1.5.3": "battery",          # Low Battery, Discharged, Needs Replacing, ...
+    "3.5.1.5.3.19": "shutdown",      # Graceful Shutdown Started
+    "3.5.1.5.6.1": "communication",  # Communication Established
+    "3.5.1.5.6.2": "communication",  # Communication Lost
+    "3.5.1.5.6.9": "monitoring",     # Monitoring Stopped
+    "3.5.1.5.6.10": "monitoring",    # Monitoring Started
+}
+
+# The categories shown by default on the event timeline. About 95 percent of
+# recorded events are Monitoring and Communication churn from PC boots (plus
+# unnamed "other" housekeeping ids), so those ship hidden and the legend
+# toggles them on; the signal categories — power, battery, and shutdown —
+# ship visible.
+EVENT_DEFAULT_VISIBLE = ("power", "battery", "shutdown")
+
+
+def categorize_event(oid: str) -> str:
+    """Map an event ObjectId to its timeline category.
+
+    Matching is by the longest EVENT_CATEGORIES prefix that aligns to the
+    id's dot-separated segments — an exact match, or a prefix followed by a
+    dot — so a string prefix that crosses a segment boundary (for example
+    "3.5.1.5.6.1" against "3.5.1.5.6.10") never matches. An id matching no
+    prefix returns "other".
+    """
+    best_cat = "other"
+    best_len = -1
+    for prefix, cat in EVENT_CATEGORIES.items():
+        if (oid == prefix or oid.startswith(prefix + ".")) and len(prefix) > best_len:
+            best_cat, best_len = cat, len(prefix)
+    return best_cat
+
+
 # The pair that brackets a mains outage.
 ON_BATTERY_OID = "3.5.1.5.4.1"
 OFF_BATTERY_OID = "3.5.1.5.4.2"

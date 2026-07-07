@@ -610,11 +610,15 @@ def main(argv: list[str] | None = None) -> int:
         dash_gaps, dash_voltage_anomalies = gaps, voltage_anomalies
         dash_high_load, dash_episodes = high_load, episodes
         dash_energy_summary, dash_self_tests = energy_summary, self_tests
+        dash_events = events_df
         dashboard_window_days = None
     else:
         dash_datalog_df = _window_df(datalog_df, "ts", dash_cutoff)
         dash_energy_df = _window_df(energy_df, "ts", dash_cutoff)
         dash_hist = _window_df(hist, "timestamp", dash_cutoff)
+        # The event timeline (roadmap item 20) is a per-sample surface too, so
+        # it follows the same window as the DataLog/energylog frames.
+        dash_events = _window_df(events_df, "ts", dash_cutoff)
         # gaps/high-load episodes/on-battery episodes are spans: keep an
         # entry whose end reaches into the window even if it started before
         # the cutoff, so the still-visible portion renders instead of the
@@ -637,6 +641,7 @@ def main(argv: list[str] | None = None) -> int:
         battery, events_summary, staleness, forecast, reconciled_bills, annotations_df,
         calibration, self_tests=dash_self_tests, baseline=baseline,
         grid_quality=grid_quality, dashboard_window_days=dashboard_window_days,
+        events=dash_events,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")

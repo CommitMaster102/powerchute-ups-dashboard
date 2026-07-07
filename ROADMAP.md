@@ -45,30 +45,9 @@ Shipped so far (details in the archive at the bottom):
 | 19 | Baseline-deviation energy alerts | `pcss/stats.py` (`detect_baseline_deviations`, `weekday_weekend_profiles`) |
 | 28 | Grid-quality trend | `pcss/stats.py` (`grid_quality_trend`) |
 | 25 | Payload budget (`max_days` window) | `analyze_ups.py` (`_dashboard_window`, `_window_df`) |
+| 20 | Event timeline panel | `pcss/charts.js` (`renderEvents`), `pcss/eventlog.py` (`categorize_event`), `pcss/dashboard.py` (`_panel_ev`) |
 
 ## Dashboard and interaction
-
-### 20. Event timeline panel
-
-Parsed events (item 5) currently surface as amber strips and reference-table
-counts. A dedicated card — one row per event category, a dot per occurrence,
-time on the x axis — would make the month's story readable at a glance:
-outages, low-battery warnings, communication drops, monitoring gaps.
-
-Challenges:
-
-- A new chart shape: categorical rows over a time axis is a fourth renderer
-  in `pcss/charts.js` next to line, bar, and heatmap; it needs its own hover
-  path and CSV export shape, and the panel key must join `PANELS` in
-  `tests/harness.py` with the conftest assertion that the page renders it.
-- The E2E fixture agent has no EventLog; either the synthetic agent copies
-  `tests/fixtures/EventLog` (real, personal-data-free) or the panel must be
-  exempt from the render assertion. Copying the fixture is simpler and also
-  exercises the parser inside the E2E build.
-- Noise: about 95 percent of recorded events are daily Monitoring and
-  Communication churn from PC boots. The panel needs a default filter (power
-  and battery categories on, housekeeping off) with the legend toggling the
-  rest.
 
 ### 21. Keyboard sample step-through (the open remainder of item 12)
 
@@ -1100,3 +1079,57 @@ Challenges:
   still intact on disk — should be weighed first; it may be all a personal
   dashboard ever needs (the ponytail question: does the fancy version need
   to exist at all?).
+
+### 20. Event timeline panel
+
+SHIPPED: a fourth chart shape, `renderEvents` in `pcss/charts.js`, drawing
+one categorical row per event category with a dot per occurrence and time on
+the x axis. Event ids map to a small category set — power (mains outages and
+overload), battery, shutdown, communication, monitoring, and other — through
+`EVENT_CATEGORIES` and `categorize_event` in `pcss/eventlog.py`, keyed by the
+longest dot-segment-aligned ObjectId prefix so a specific id (the graceful
+shutdown `3.5.1.5.3.19`) can override its family and a string prefix crossing
+a segment boundary (`3.5.1.5.6.1` against `3.5.1.5.6.10`) never mis-matches;
+unknown ids fall to "other". `_panel_ev` in `pcss/dashboard.py` builds the
+`ev` payload — one dot per event carrying its epoch-ms timestamp (the shared
+naive-local-as-UTC contract), category, ObjectId, and resolved name, plus one
+row per category present with a localized label (`_STRINGS_ES`) and a default
+visibility flag. The panel joins the standard time-window machinery (presets,
+drag-zoom, shift-pan, wheel, double-click reset, permalink hash) but not the
+crosshair-sync group, since its y axis is categorical. The default filter
+ships power, battery, and shutdown visible and the communication/monitoring
+housekeeping hidden (`EVENT_DEFAULT_VISIBLE`) — about 95 percent of events are
+that churn — with the category row labels doubling as the legend that toggles
+the rest; `resetAll` re-seeds the default rather than clearing it. Overlapping
+same-minute dots are lane-packed vertically within their row so every one
+stays hoverable; hover snaps to the nearest dot in 2D and shows a tooltip with
+the event's name, timestamp, and category (click pins, Esc unpins). The CSV
+export is machine-standard en-US with timestamp, category, event id, and event
+name columns; PNG export and the lightbox work like any panel. The `ev` key
+joins `PANELS` and `TIME_PANELS` in `tests/harness.py` (the conftest render
+assertion covers it), and `tests/conftest.py` copies the real
+`tests/fixtures/EventLog` into the synthetic agent — dated to overlap the
+DataLog window — so the panel has events and the parser runs inside the E2E
+build. `tests/test_eventlog.py` (category mapping), `tests/test_chart_payload.py`
+(payload shape, epoch-ms timestamps, default-filter flags, localization), and
+`tests/e2e_events.py` (default filter, per-dot tooltip, CSV columns).
+
+Parsed events (item 5) currently surface as amber strips and reference-table
+counts. A dedicated card — one row per event category, a dot per occurrence,
+time on the x axis — would make the month's story readable at a glance:
+outages, low-battery warnings, communication drops, monitoring gaps.
+
+Challenges:
+
+- A new chart shape: categorical rows over a time axis is a fourth renderer
+  in `pcss/charts.js` next to line, bar, and heatmap; it needs its own hover
+  path and CSV export shape, and the panel key must join `PANELS` in
+  `tests/harness.py` with the conftest assertion that the page renders it.
+- The E2E fixture agent has no EventLog; either the synthetic agent copies
+  `tests/fixtures/EventLog` (real, personal-data-free) or the panel must be
+  exempt from the render assertion. Copying the fixture is simpler and also
+  exercises the parser inside the E2E build.
+- Noise: about 95 percent of recorded events are daily Monitoring and
+  Communication churn from PC boots. The panel needs a default filter (power
+  and battery categories on, housekeeping off) with the legend toggling the
+  rest.

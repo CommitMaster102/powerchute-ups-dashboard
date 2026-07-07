@@ -18,16 +18,21 @@ from playwright.sync_api import Page
 DASHBOARD = Path(__file__).resolve().parent.parent / "output" / "dashboard.html"
 
 # Panel keys, kept in sync with the payload built by pcss/dashboard.py
-# (the conftest session fixture asserts the page agrees).
+# (the conftest session fixture asserts the page agrees). "ev" is the event
+# timeline (roadmap item 20), a categorical-row time panel.
 PANELS = ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "cmp", "wk",
-          "growth", "proj", "cad"]
+          "growth", "proj", "cad", "ev"]
 
 # The crosshair-sync group: hovering any of these mirrors the crosshair at
-# the same timestamp on the others. Zoom and pan are strictly per panel.
+# the same timestamp on the others. Zoom and pan are strictly per panel. The
+# event timeline "ev" is deliberately NOT here — its y axis is a category
+# list, not a shared value scale, so a mirrored crosshair would be meaningless.
 SYNC_PANELS = ["lv", "ul", "pw", "bv", "bc", "kw"]
 
 # Every panel with a time x-axis (local zoom; presets address all of them).
-TIME_PANELS = [*SYNC_PANELS, "growth"]
+# "ev" zooms and pans locally like the others even though it is not a line
+# panel, so it joins here.
+TIME_PANELS = [*SYNC_PANELS, "growth", "ev"]
 
 # Panels by chart kind (drives tooltip/export parametrization).
 LINE_PANELS = ["lv", "ul", "pw", "bv", "bc", "rt", "kw", "cmp", "wk", "growth", "proj"]

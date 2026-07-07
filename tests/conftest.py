@@ -16,6 +16,7 @@ Fixtures:
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -44,17 +45,25 @@ except ImportError:
 
 
 def _write_synthetic_agent(agent: Path) -> Path:
-    """Create a minimal but realistic DataLog + energylog so the generated
-    dashboard exercises every panel: 2 days at 20-min cadence with one 2-hour
-    gap and two out-of-envelope voltage samples mid-series (the last sample
-    stays healthy so the KPI severities are deterministic)."""
+    """Create a minimal but realistic DataLog + energylog + EventLog so the
+    generated dashboard exercises every panel.
+
+    The window spans 2026-06-27 (a Saturday) through 2026-06-30 at 20-minute
+    cadence, chosen to overlap the real EventLog fixture copied in below — in
+    particular its 2026-06-29 outage — so the authoritative on-battery episode
+    falls inside the DataLog window and renders as an amber strip. It carries
+    one 2-hour sampling gap and two out-of-envelope voltage samples mid-series
+    (the last sample stays healthy so the KPI severities are deterministic),
+    plus a corroborated voltage collapse that keeps the two anomaly clusters
+    the anomaly-jump suite expects.
+    """
     agent.mkdir(parents=True, exist_ok=True)
     (agent / "energylog").mkdir(exist_ok=True)
 
-    # DataLog: TSV, Spanish-locale decimals, 20-min cadence over ~2 days.
-    start = datetime(2026, 5, 1, 0, 0, 0)
+    # DataLog: TSV, Spanish-locale decimals, 20-min cadence over ~4 days.
+    start = datetime(2026, 6, 27, 0, 0, 0)
     dl_lines = ["Date and Time\tLine Voltage\tBattery Voltage\tUPS Load\tBattery Capacity"]
-    for i in range(144):  # 2 days @ 20 min
+    for i in range(288):  # 4 days @ 20 min
         if 60 <= i < 66:
             continue                      # one 2-hour sampling gap
         t = start + timedelta(minutes=20 * i)
@@ -67,8 +76,11 @@ def _write_synthetic_agent(agent: Path) -> Path:
         ul = 15.0 + (i % 7)
         bc = 100.0 if i % 11 else 96.0
         if i in (120, 121):
-            # One corroborated on-battery episode: line voltage collapses
-            # while the battery capacity falls (exercises the ep-strip path).
+            # A corroborated on-battery episode in the DataLog inference path:
+            # line voltage collapses while the battery capacity falls. The
+            # authoritative EventLog outage on 2026-06-29 supersedes it for the
+            # episode strips, but this keeps the inference and anomaly-cluster
+            # paths exercised.
             lv = 0.5
             bc = 90.0 if i == 120 else 84.0
         vals = f"{lv:.1f}\t{bv:.1f}\t{ul:.1f}\t{bc:.1f}".replace(".", ",")  # Spanish decimals
@@ -76,13 +88,12 @@ def _write_synthetic_agent(agent: Path) -> Path:
     (agent / "DataLog").write_text("\n".join(dl_lines) + "\n", encoding="utf-8")
 
     # energylog: ';'-delimited, dot-decimal, ts = seconds since 2010 LOCAL,
-    # 5-min cadence over ~2 days (2 distinct dates -> heatmap has >=2 rows).
-    # A second file covers the tail of April so the period-comparison panel
-    # has two billing periods; May 1 2026 is a Friday and May 2 a Saturday,
-    # so the weekday/weekend panel gets both profiles.
+    # 5-min cadence. Two files cross the June/July billing boundary so the
+    # period-comparison panel has two periods; June 27 2026 is a Saturday and
+    # June 28 a Sunday, so the weekday/weekend panel gets both profiles.
     for month_start, month_label, n in [
-        (start - timedelta(days=2), "2026-04", 576),   # Apr 29-30
-        (start, "2026-05", 576),                       # May 1-2
+        (start, "2026-06", 4 * 288),                   # Jun 27-30
+        (datetime(2026, 7, 1, 0, 0, 0), "2026-07", 2 * 288),   # Jul 1-2
     ]:
         el = [f"# $month={month_label}", "# $interval=300", "# $calculatedMaxLoad=1400.0"]
         for i in range(n):  # @ 5 min
@@ -93,16 +104,25 @@ def _write_synthetic_agent(agent: Path) -> Path:
             el.append(f"{secs:.0f};null;{load:.1f};{power:.1f}")
         (agent / "energylog" / f"{month_label}.log").write_text(
             "\n".join(el) + "\n", encoding="utf-8")
+
+    # Copy the real, personal-data-free EventLog fixture into the synthetic
+    # agent so the event timeline panel (roadmap item 20) has events to render
+    # and the parser runs inside the E2E build. Its events span a different
+    # month than the synthetic DataLog above, which is fine: the ev panel owns
+    # its own local time axis and is not in the crosshair-sync group.
+    fixture_eventlog = Path(__file__).resolve().parent / "fixtures" / "EventLog"
+    if fixture_eventlog.exists():
+        shutil.copyfile(fixture_eventlog, agent / "EventLog")
     return agent
 
 
 def _write_synthetic_annotations(out_dir: Path) -> Path:
     """One battery_replaced entry inside the synthesized DataLog's range
-    (2026-05-01 through 2026-05-02), so the annotation-marker render path
+    (2026-06-27 through 2026-06-30), so the annotation-marker render path
     (roadmap item 26) is exercised in the E2E build."""
     p = out_dir / "annotations.csv"
     p.write_text(
-        "date,kind,label\n2026-05-02,battery_replaced,New battery installed\n",
+        "date,kind,label\n2026-06-29,battery_replaced,New battery installed\n",
         encoding="utf-8",
     )
     return p
