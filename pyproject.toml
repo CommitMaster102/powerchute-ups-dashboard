@@ -17,6 +17,9 @@ dependencies = [
     "pystray>=0.19",
     "Pillow>=11.0",
     "keyring>=25",
+    # Generic Java-deserialization reader for the binary EventLog (pure
+    # Python). The loader degrades gracefully when it is absent.
+    "javaobj-py3>=0.4",
 ]
 
 [project.optional-dependencies]

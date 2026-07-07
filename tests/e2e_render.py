@@ -52,6 +52,15 @@ def test_gap_shading_present(dash):
     assert strips >= 1
 
 
+def test_on_battery_shading_present(dash):
+    # The synthetic DataLog has one corroborated on-battery episode (voltage
+    # collapse + capacity drop); the DataLog panels mark it with an amber
+    # strip just above the gap strip.
+    strips = dash.evaluate(
+        "document.querySelectorAll('#panel-lv svg rect.ep-strip').length")
+    assert strips >= 1
+
+
 def test_anomaly_markers_present(dash):
     """The synthetic DataLog has two out-of-envelope samples; each renders as
     an X marker made of two red diagonal strokes on the Line Voltage panel."""

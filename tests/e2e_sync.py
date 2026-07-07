@@ -21,6 +21,20 @@ def test_crosshair_mirrors_across_group(dash):
         "document.querySelector('#panel-growth svg .chart-overlay').childNodes.length") == 0
 
 
+def test_heatmap_highlights_hovered_day(dash):
+    """Hovering a sync time panel outlines the matching day row (and hour
+    cell) in the Hourly Power Map, so a spike in Power Draw is easy to locate
+    in the day-by-hour view."""
+    hover_panel(dash, "lv", fx=0.3)
+    marks = dash.evaluate(
+        "document.querySelector('#panel-hm svg .chart-overlay').childNodes.length")
+    assert marks >= 2, "heatmap did not highlight the hovered day and hour"
+    dash.mouse.move(0, 0)
+    dash.wait_for_timeout(80)
+    assert dash.evaluate(
+        "document.querySelector('#panel-hm svg .chart-overlay').childNodes.length") == 0
+
+
 def test_setwindow_hook_addresses_all_time_panels(dash):
     """__chartsDebug.setWindow (the preset/test path) clamps to each panel's
     own span — panels the window doesn't cover fall back to full range."""

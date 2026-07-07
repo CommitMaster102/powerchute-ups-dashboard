@@ -389,6 +389,65 @@ def _is_already_connected(html: str) -> bool:
 
 
 # ----------------------------------------------------------------------
+# Alert watching
+# ----------------------------------------------------------------------
+class AlertWatcher:
+    """Tails the analyzer's alerts.log and reports new lines for a tray toast.
+
+    Windows toasts from a scheduled, non-interactive task are unreliable, so
+    the notification lives here: the tray is a long-lived interactive process
+    and simply watches the file the analyzer appends to (config [alerts]
+    enabled). The watcher starts at the current end of the file so historic
+    alerts never re-notify, tolerates truncation or rotation by resetting its
+    offset, and applies a cooldown so a repeated anomaly does not toast on
+    every analyzer run.
+    """
+
+    def __init__(self, path: Path, cooldown_sec: float = 1800.0):
+        self.path = Path(path)
+        self.cooldown_sec = cooldown_sec
+        try:
+            self._offset = self.path.stat().st_size
+        except OSError:
+            self._offset = 0
+        # Negative infinity so the very first alert always notifies, whatever
+        # clock the caller passes in.
+        self._last_notify = float("-inf")
+
+    def poll(self, now: float | None = None) -> str | None:
+        """Return the newest unseen alert line when a toast is due, else None.
+
+        New lines that arrive inside the cooldown window are consumed
+        silently (the offset still advances), which is what keeps one noisy
+        anomaly from notifying on every run.
+        """
+        if now is None:
+            now = time.time()
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return None
+        if size < self._offset:
+            self._offset = 0
+        if size == self._offset:
+            return None
+        try:
+            with self.path.open("r", encoding="utf-8") as f:
+                f.seek(self._offset)
+                new_text = f.read()
+        except OSError:
+            return None
+        self._offset = size
+        lines = [ln.strip() for ln in new_text.splitlines() if ln.strip()]
+        if not lines:
+            return None
+        if now - self._last_notify < self.cooldown_sec:
+            return None
+        self._last_notify = now
+        return lines[-1]
+
+
+# ----------------------------------------------------------------------
 # Status parsing
 # ----------------------------------------------------------------------
 @dataclass
@@ -639,6 +698,7 @@ def main():
     cfg = load_credentials()
     client = PCSSClient(cfg["url"], cfg["username"], cfg["password"])
     state = State()
+    watcher = AlertWatcher(OUTPUT / "alerts.log")
     icon: Icon
 
     # Serializes all use of the shared requests.Session. The poll loop and the
@@ -681,6 +741,15 @@ def main():
                 icon.update_menu()
         except Exception:
             pass
+        # New analyzer alerts become a toast. Fire-and-forget: notification
+        # failure must never disturb the polling loop.
+        try:
+            alert = watcher.poll()
+            if alert:
+                icon.notify(alert, "UPS — alerta")
+                log(f"Toast: {alert}")
+        except Exception as e:
+            log(f"Alert toast failed: {e}")
 
     def poll_loop():
         while True:

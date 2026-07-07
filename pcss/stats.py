@@ -2,6 +2,8 @@
 cross-validation over the loaded PCSS data."""
 from __future__ import annotations
 
+import calendar
+
 import numpy as np
 import pandas as pd
 
@@ -98,6 +100,62 @@ def detect_voltage_anomalies(df: pd.DataFrame) -> pd.DataFrame:
     return sub.reset_index(drop=True)
 
 
+def detect_on_battery_episodes(df: pd.DataFrame, voltage_max: float | None = None,
+                               min_capacity_drop_pct: float | None = None) -> pd.DataFrame:
+    """Infer on-battery episodes from the DataLog without the EventLog.
+
+    A sample whose line voltage sits below ``voltage_max`` is a mains-loss
+    candidate; consecutive candidates form one episode. An episode is kept
+    only when the battery capacity fell by at least ``min_capacity_drop_pct``
+    from just before the episode to its lowest in-episode reading — a lone
+    0 V sample with a flat capacity is treated as a logging artifact. When
+    the frame has no capacity column at all there is nothing to corroborate
+    against, so episodes are reported with an unknown (NaN) drop instead.
+
+    Honest labeling: the 20-minute DataLog cadence misses most short outages
+    entirely, so this detects "episodes visible at the sampling cadence",
+    not all outages. Returns one row per episode: start, end, duration_min,
+    min_voltage, capacity_drop_pct.
+    """
+    if voltage_max is None:
+        voltage_max = config.ON_BATTERY_VOLTAGE_V
+    if min_capacity_drop_pct is None:
+        min_capacity_drop_pct = config.ON_BATTERY_CAPACITY_DROP_PCT
+    if df.empty or "Line Voltage" not in df.columns:
+        return pd.DataFrame()
+    lv = df["Line Voltage"]
+    candidate = lv.notna() & (lv < voltage_max)
+    if not candidate.any():
+        return pd.DataFrame()
+    has_capacity = "Battery Capacity" in df.columns and df["Battery Capacity"].notna().any()
+    runs = candidate.ne(candidate.shift()).cumsum()
+    episodes = []
+    for _, group in df[candidate].groupby(runs[candidate]):
+        start, end = group["ts"].iloc[0], group["ts"].iloc[-1]
+        # Like the high-load detector, each sample stands for one sampling
+        # interval, so a k-sample episode spans k intervals, not k-1.
+        duration_min = ((end - start).total_seconds() / 60
+                        + config.DATALOG_EXPECTED_INTERVAL_MIN)
+        drop = float("nan")
+        if has_capacity:
+            first_pos = df.index.get_loc(group.index[0])
+            before = df["Battery Capacity"].iloc[:first_pos].dropna()
+            base = float(before.iloc[-1]) if not before.empty else None
+            in_ep = group["Battery Capacity"].dropna()
+            if base is None and not in_ep.empty:
+                base = float(in_ep.iloc[0])
+            if base is not None and not in_ep.empty:
+                drop = base - float(in_ep.min())
+            if not (drop >= min_capacity_drop_pct):
+                continue        # not corroborated (also skips NaN drops)
+        episodes.append({
+            "start": start, "end": end, "duration_min": duration_min,
+            "min_voltage": float(group["Line Voltage"].min()),
+            "capacity_drop_pct": drop,
+        })
+    return pd.DataFrame(episodes)
+
+
 def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = None,
                               min_duration_sec: int = 600) -> pd.DataFrame:
     """
@@ -132,10 +190,85 @@ def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = N
     return pd.DataFrame(episodes)
 
 
+def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = None,
+                               min_days: float | None = None) -> dict:
+    """Project when the resting battery voltage crosses the replace threshold.
+
+    Fits a line to the rolling median of Battery Voltage (the median damps
+    the sawtooth that capacity self-tests carve into the raw readings) and
+    extrapolates to ``threshold_v``. Below ``min_days`` of history the honest
+    answer is "not enough history": a slope over a few weeks is noise.
+
+    Returns a dict with ``status`` ("insufficient_history", "stable", or
+    "projected"), ``slope_v_per_day``, ``replace_date``, ``days_to_replace``,
+    and ``threshold_v``.
+    """
+    if threshold_v is None:
+        threshold_v = config.BATTERY_REPLACE_VOLTAGE_V
+    if min_days is None:
+        min_days = config.BATTERY_TREND_MIN_DAYS
+    out: dict = {"status": "insufficient_history", "slope_v_per_day": None,
+                 "replace_date": None, "days_to_replace": None, "threshold_v": threshold_v}
+    if df.empty or "Battery Voltage" not in df.columns:
+        return out
+    bv = df.dropna(subset=["Battery Voltage"])
+    if len(bv) < 10:
+        return out
+    span_days = (bv["ts"].iloc[-1] - bv["ts"].iloc[0]).total_seconds() / 86400
+    if span_days < min_days:
+        return out
+    # Rolling median over roughly eight hours at the 20-minute cadence.
+    med = bv["Battery Voltage"].rolling(window=24, min_periods=3, center=True).median()
+    mask = med.notna()
+    days = (bv["ts"] - bv["ts"].iloc[0]).dt.total_seconds().to_numpy() / 86400.0
+    slope, intercept = np.polyfit(days[mask.to_numpy()], med[mask].to_numpy(dtype=float), 1)
+    out["slope_v_per_day"] = float(slope)
+    # A slope smaller than a millivolt per day would take decades to matter;
+    # report the battery as stable rather than projecting a fantasy date.
+    if slope >= -1e-3:
+        out["status"] = "stable"
+        return out
+    v_now = intercept + slope * days[-1]
+    days_to = max(0.0, (threshold_v - v_now) / slope)
+    out["status"] = "projected"
+    out["days_to_replace"] = float(days_to)
+    out["replace_date"] = bv["ts"].iloc[-1] + pd.Timedelta(days=days_to)
+    return out
+
+
+def _billing_period_start(ts: pd.Timestamp, start_day: int) -> pd.Timestamp:
+    """Date on which ts's billing period began.
+
+    A start day beyond a month's length clamps to that month's last day (a
+    cycle anchored on the 31st begins on Feb 28 in February).
+    """
+    y, m = ts.year, ts.month
+    day = min(start_day, calendar.monthrange(y, m)[1])
+    if ts.day >= day:
+        return pd.Timestamp(y, m, day)
+    y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+    return pd.Timestamp(y, m, min(start_day, calendar.monthrange(y, m)[1]))
+
+
+def _billing_period_bounds(label: str, start_day: int) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """(start, end) of a period label — 'YYYY-MM' calendar or 'YYYY-MM-DD'."""
+    if len(label) == 7:
+        start = pd.Timestamp(label + "-01")
+        return start, start + pd.offsets.MonthBegin(1)
+    start = pd.Timestamp(label)
+    y, m = (start.year + 1, 1) if start.month == 12 else (start.year, start.month + 1)
+    return start, pd.Timestamp(y, m, min(start_day, calendar.monthrange(y, m)[1]))
+
+
 def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     """
     Total kWh, total cost (PCSS flat-rate AND Coopesantos tiered), total CO2
-    plus per-day and per-month breakdowns.
+    plus per-day and per-billing-period breakdowns. With the default
+    billing_cycle_start_day of 1 the periods are calendar months (labeled
+    'YYYY-MM'); any other start day groups by Coopesantos billing period
+    (labeled by the period's start date) and the tier limit applies per
+    period. Periods the recorded span does not fully cover carry
+    partial=True so an incomplete tier split is never mistaken for a bill.
     """
     if edf.empty or "power_w" not in edf.columns:
         return {}
@@ -150,7 +283,11 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     s["wh"] = s["power_w"] * (sample_interval / 3600.0)
     s["kwh"] = s["wh"] / 1000.0
     s["date"] = s["ts"].dt.date
-    s["month"] = s["ts"].dt.to_period("M").astype(str)
+    start_day = int(getattr(config, "BILLING_CYCLE_START_DAY", 1))
+    if start_day <= 1:
+        s["month"] = s["ts"].dt.to_period("M").astype(str)
+    else:
+        s["month"] = [f"{_billing_period_start(t, start_day):%Y-%m-%d}" for t in s["ts"]]
 
     total_kwh = float(s["kwh"].sum())
     daily = s.groupby("date")["kwh"].sum().reset_index()
@@ -158,6 +295,15 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     monthly["cost_pcss"] = monthly["kwh"] * config.PCSS_FLAT_RATE
     monthly["cost_tiered"] = monthly["kwh"].apply(compute_tiered_cost)
     monthly["co2_kg"] = monthly["kwh"] * config.CO2_KG_PER_KWH
+    # A period is partial when the recorded span starts after it begins or
+    # ends before it does (one sampling interval of tolerance).
+    first_ts, last_ts = s["ts"].iloc[0], s["ts"].iloc[-1]
+    tol = pd.Timedelta(seconds=1.5 * float(np.median(np.asarray(sample_interval))))
+    partials = []
+    for label in monthly["month"]:
+        p_start, p_end = _billing_period_bounds(str(label), start_day)
+        partials.append(bool(first_ts > p_start + tol or last_ts < p_end - tol))
+    monthly["partial"] = partials
 
     return {
         "samples": s,

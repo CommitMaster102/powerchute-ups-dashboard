@@ -8,10 +8,15 @@
 pcss_agent = 'C:\Program Files\APC\PowerChute Serial Shutdown\agent'
 
 [tariff]                 # CRC per kWh; Coopesantos T-RE Residencial.
-coopesantos_low  = 78.17 # first `tier_limit_kwh` per month
+coopesantos_low  = 78.17 # first `tier_limit_kwh` per billing period
 coopesantos_high = 126.51
 tier_limit_kwh   = 200.0
 pcss_flat        = 126.51 # single rate PCSS itself reports with
+# Day of the month the Coopesantos billing cycle starts on. 1 groups costs by
+# calendar month; any other day groups by billing period (labeled by the
+# period's start date) and applies the tier limit per period. Periods the
+# recorded data does not fully cover are marked as partial.
+billing_cycle_start_day = 1
 
 [grid]
 co2_kg_per_kwh = 0.098    # Costa Rica grid intensity (Low Carbon Power 2024)
@@ -26,18 +31,47 @@ battery_charge_warn_pct = 90.0  # WARN below this % charge
 battery_charge_crit_pct = 50.0  # ALERT below this % charge
 runtime_warn_min        = 15.0  # WARN below this many estimated minutes
 runtime_crit_min        = 7.0   # ALERT below this many estimated minutes
+# On-battery episode inference: a line-voltage sample below on_battery_voltage_v
+# is a mains-loss candidate, kept only when the battery capacity fell by at
+# least on_battery_capacity_drop_pct in the same window. The 20-minute DataLog
+# cadence misses most short outages; this detects episodes visible at that
+# cadence, not all outages.
+on_battery_voltage_v         = 50.0
+on_battery_capacity_drop_pct = 1.0
+# Battery replace-by projection. 25.6 V is 2.13 V per cell across the 12 cells
+# of the 24 V lead-acid pack — the bottom of the float band. The projection
+# stays silent until the history spans battery_trend_min_days, because a slope
+# over a few weeks is noise.
+battery_replace_voltage_v = 25.6
+battery_trend_min_days    = 60.0
 
 [dashboard]
 # Dashboard color theme: "dark" (the designed default) or "light".
 theme = "dark"
 # UPS model name shown in the dashboard header.
 model = "APC BX2000M-LM"
+# Page language: "en" or "es". Number formatting stays en-US in both (the CSV
+# export is machine-standard).
+language = "en"
+# Auto-refresh interval in minutes for a dashboard left open on a monitor
+# (emits a meta refresh matched to your scheduled-task cadence). 0 disables
+# it. The permalink hash keeps the view state across the reload.
+refresh_minutes = 0
 
 [runtime_curve]          # empirical BX2000M-LM: watts -> minutes of runtime
 watts   = [0, 100, 150, 250, 500, 600, 800, 1200]
 minutes = [60, 40, 30, 15, 5, 3.5, 2, 0]
 
 [alerts]
-# Opt-in. When true, a run that finds voltage anomalies or sustained high-load
-# episodes appends one line to output/alerts.log. Off by default.
+# Opt-in. When true, a run that finds voltage anomalies, sustained high-load
+# episodes, or inferred on-battery episodes appends one line to
+# output/alerts.log. The tray icon watches that file and raises a Windows
+# toast for new lines (30-minute cooldown). Off by default.
 enabled = false
+
+[archive]
+# PCSS keeps roughly one month of DataLog samples. When enabled (the default),
+# each analyzer run appends the freshly loaded rows to monthly partitions
+# under output/archive/ and merges the archive back in, so charts and trends
+# span the whole recorded life of the UPS. --no-snapshot skips the append.
+enabled = true

@@ -30,6 +30,11 @@ COOPESANTOS_LOW_RATE = 78.17
 COOPESANTOS_HIGH_RATE = 126.51
 # What PCSS itself uses (single-rate mode — set to the high tier):
 PCSS_FLAT_RATE = 126.51
+# Day of the month the Coopesantos billing cycle starts on. The tier limit
+# applies per billing period, so with a mid-month cycle the calendar-month
+# grouping can drift from the bill near the tier boundary. 1 keeps the
+# classic calendar-month grouping.
+BILLING_CYCLE_START_DAY = 1
 # Costa Rica grid CO2 intensity (Low Carbon Power 2024 dataset):
 CO2_KG_PER_KWH = 0.098
 
@@ -44,6 +49,23 @@ VOLTAGE_NORMAL_HIGH = 126.0
 
 # Sustained-high-load threshold for anomaly detection (matches PCSS umbral).
 HIGH_LOAD_PCT = 80.0
+
+# On-battery episode inference: a line-voltage sample below
+# ON_BATTERY_VOLTAGE_V is a mains-loss candidate, and an episode is kept when
+# the battery capacity fell by at least ON_BATTERY_CAPACITY_DROP_PCT across
+# the same window (corroboration trades recall for precision — a lone 0 V
+# sample with a flat capacity reads as a logging artifact).
+ON_BATTERY_VOLTAGE_V = 50.0
+ON_BATTERY_CAPACITY_DROP_PCT = 1.0
+
+# Battery replace-by projection. The BX2000M-LM carries a
+# 24 V lead-acid pack (12 cells); 25.6 V is 2.13 V per cell, the bottom of
+# the float band — a pack resting below that at float no longer holds full
+# charge. The projection stays silent ("not enough history") until the
+# Battery Voltage history spans BATTERY_TREND_MIN_DAYS, because a slope over
+# a few weeks is dominated by noise and temperature.
+BATTERY_REPLACE_VOLTAGE_V = 25.6
+BATTERY_TREND_MIN_DAYS = 60.0
 
 # DataLog default sample interval (PCSS factory default).
 DATALOG_EXPECTED_INTERVAL_MIN = 20.0
@@ -60,6 +82,16 @@ RUNTIME_CRIT_MIN = 7.0
 DASHBOARD_THEME = "dark"
 # UPS model name shown in the dashboard header.
 DASHBOARD_MODEL = "APC BX2000M-LM"
+# Dashboard language: "en" or "es". The PCSS installation and the electric
+# bill are in Spanish; the string table lives in pcss/dashboard.py and the
+# chart-side labels ride the payload so the two sides cannot drift. Number
+# formatting stays en-US regardless (the CSV export is machine-standard).
+DASHBOARD_LANGUAGE = "en"
+# Auto-refresh interval in minutes for a dashboard left open on a monitor
+# (a meta refresh matched to the scheduled-task cadence). 0 disables it —
+# the page is a static snapshot by default. The permalink hash survives the
+# reload, so the restored view state is kept.
+DASHBOARD_REFRESH_MINUTES = 0.0
 
 # Opt-in alerting: when enabled (config [alerts] enabled=true), the analyzer
 # appends a line to ALERTS_LOG whenever the analyzed window has voltage
@@ -67,6 +99,14 @@ DASHBOARD_MODEL = "APC BX2000M-LM"
 # extension point (no SMTP dependency by default).
 ALERTS_ENABLED = False
 ALERTS_LOG = OUTPUT / "alerts.log"
+
+# DataLog archive: PCSS keeps roughly one month of DataLog samples and
+# discards older ones, so each analyzer run appends the freshly loaded rows
+# to monthly CSV partitions under ARCHIVE_DIR and the pipeline merges the
+# archive back in. The append is idempotent (exact duplicate rows are
+# dropped), and --no-snapshot skips it like the size-history snapshot.
+ARCHIVE_ENABLED = True
+ARCHIVE_DIR = OUTPUT / "archive"
 
 
 def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
@@ -81,10 +121,14 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     """
     global PCSS_AGENT, DATALOG, EVENTLOG, ENERGYLOG_DIR, DASHBOARD_HTML
     global COOPESANTOS_TIER_LIMIT_KWH, COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, PCSS_FLAT_RATE
+    global BILLING_CYCLE_START_DAY
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
+    global ON_BATTERY_VOLTAGE_V, ON_BATTERY_CAPACITY_DROP_PCT
+    global BATTERY_REPLACE_VOLTAGE_V, BATTERY_TREND_MIN_DAYS
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
-    global DASHBOARD_THEME, DASHBOARD_MODEL, ALERTS_ENABLED
+    global DASHBOARD_THEME, DASHBOARD_MODEL, DASHBOARD_REFRESH_MINUTES, DASHBOARD_LANGUAGE
+    global ALERTS_ENABLED, ARCHIVE_ENABLED
 
     if path is None:
         default = Path("config.toml")
@@ -112,10 +156,18 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     COOPESANTOS_HIGH_RATE = float(tariff.get("coopesantos_high", COOPESANTOS_HIGH_RATE))
     COOPESANTOS_TIER_LIMIT_KWH = float(tariff.get("tier_limit_kwh", COOPESANTOS_TIER_LIMIT_KWH))
     PCSS_FLAT_RATE = float(tariff.get("pcss_flat", PCSS_FLAT_RATE))
+    BILLING_CYCLE_START_DAY = max(1, min(31, int(
+        tariff.get("billing_cycle_start_day", BILLING_CYCLE_START_DAY))))
     CO2_KG_PER_KWH = float(grid.get("co2_kg_per_kwh", CO2_KG_PER_KWH))
     VOLTAGE_NORMAL_LOW = float(th.get("voltage_normal_low", VOLTAGE_NORMAL_LOW))
     VOLTAGE_NORMAL_HIGH = float(th.get("voltage_normal_high", VOLTAGE_NORMAL_HIGH))
     HIGH_LOAD_PCT = float(th.get("high_load_pct", HIGH_LOAD_PCT))
+    ON_BATTERY_VOLTAGE_V = float(th.get("on_battery_voltage_v", ON_BATTERY_VOLTAGE_V))
+    ON_BATTERY_CAPACITY_DROP_PCT = float(
+        th.get("on_battery_capacity_drop_pct", ON_BATTERY_CAPACITY_DROP_PCT))
+    BATTERY_REPLACE_VOLTAGE_V = float(
+        th.get("battery_replace_voltage_v", BATTERY_REPLACE_VOLTAGE_V))
+    BATTERY_TREND_MIN_DAYS = float(th.get("battery_trend_min_days", BATTERY_TREND_MIN_DAYS))
     DATALOG_EXPECTED_INTERVAL_MIN = float(th.get("datalog_expected_interval_min", DATALOG_EXPECTED_INTERVAL_MIN))
     BATTERY_CHARGE_WARN_PCT = float(th.get("battery_charge_warn_pct", BATTERY_CHARGE_WARN_PCT))
     BATTERY_CHARGE_CRIT_PCT = float(th.get("battery_charge_crit_pct", BATTERY_CHARGE_CRIT_PCT))
@@ -127,12 +179,18 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     if theme in ("dark", "light"):
         DASHBOARD_THEME = theme
     DASHBOARD_MODEL = str(dash.get("model", DASHBOARD_MODEL))
+    DASHBOARD_REFRESH_MINUTES = max(0.0, float(
+        dash.get("refresh_minutes", DASHBOARD_REFRESH_MINUTES)))
+    lang = str(dash.get("language", DASHBOARD_LANGUAGE)).lower()
+    if lang in ("en", "es"):
+        DASHBOARD_LANGUAGE = lang
 
     if rc.get("watts") and rc.get("minutes"):
         RUNTIME_CURVE_W = np.array(rc["watts"], dtype=float)
         RUNTIME_CURVE_MIN = np.array(rc["minutes"], dtype=float)
 
     ALERTS_ENABLED = bool(data.get("alerts", {}).get("enabled", ALERTS_ENABLED))
+    ARCHIVE_ENABLED = bool(data.get("archive", {}).get("enabled", ARCHIVE_ENABLED))
 
     DASHBOARD_HTML = Path(output) if output else (OUTPUT / "dashboard.html")
     return path

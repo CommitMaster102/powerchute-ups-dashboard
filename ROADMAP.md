@@ -1,19 +1,26 @@
 # Roadmap — candidate features and the challenges each one brings
 
 This file collects features that would be worth adding to the analyzer and the
-dashboard, together with the technical problems each one has to solve. Nothing
-here is committed work. Items are grouped by theme and roughly ordered by
-value for effort inside each group. When a feature touches the current
-architecture, the relevant files and symbols are named so the entry stays
-actionable later.
+dashboard, together with the technical problems each one has to solve. Items
+are grouped by theme and roughly ordered by value for effort inside each
+group. When a feature touches the current architecture, the relevant files and
+symbols are named so the entry stays actionable later.
 
-The three items in the first group were consciously deferred during the 2026-07
-dashboard redesign and can be added without reworking anything; the rest are
-new ideas.
+Status as of 2026-07-06: every item on this list has been implemented — each
+entry below carries a SHIPPED note describing where it landed. Item 5
+(EventLog parsing) was initially deferred for lack of binary samples, then
+unblocked the same day: the live EventLog on this machine turned out to
+contain no personal data, decodes with a generic grammar-level reader
+(javaobj-py3), and the id-to-name mapping ships inside PCSS's own jars.
 
 ## Deferred from the redesign (the architecture already supports these)
 
 ### 1. Permalink view state
+
+SHIPPED: `updateHash` / `restoreFromHash` in `pcss/charts.js` encode the
+active preset or each panel's non-default zoom window (base-36 epoch-ms) via
+`history.replaceState`; restore clamps through `applyWindow` and falls back
+silently. `tests/e2e_permalink.py` covers it.
 
 Encode the current view (per-panel zoom windows, active preset, theme) in the
 URL hash so a specific view can be bookmarked or reopened after a refresh.
@@ -37,6 +44,11 @@ Challenges:
 
 ### 2. Anomaly jump navigation
 
+SHIPPED: a flag button on the Line Voltage card (rendered only when anomalies
+exist) cycles through marker clusters — anomalies within twelve hours frame as
+one view, padded six hours each side (`jumpAnomaly` in `pcss/charts.js`,
+`tests/e2e_anomjump.py`).
+
 A control on the Line Voltage card (or in the header) that cycles the window
 through the detected anomalies: click, and the panel zooms to a few hours
 around the next out-of-envelope sample.
@@ -56,6 +68,10 @@ Challenges:
 
 ### 3. Heatmap linked to the crosshair
 
+SHIPPED: `_panel_hm` carries `dayKeys` (epoch-ms midnights) and
+`highlightHeatmap` in `pcss/charts.js` outlines the hovered day row and hour
+cell from the sync-group crosshair (covered in `tests/e2e_sync.py`).
+
 When the crosshair hovers a time panel, outline the matching day row (and
 optionally the hour cell) in the Hourly Power Map, so a spike in Power Draw is
 easy to locate in the day-by-hour view.
@@ -73,6 +89,13 @@ Challenges:
 ## Data and analysis
 
 ### 4. DataLog archiving beyond the PCSS retention window
+
+SHIPPED: `append_datalog_archive` / `load_datalog_archive` /
+`merge_datalog_frames` in `pcss/loaders.py` (monthly partitions under
+`output/archive/`, whole-row dedup so re-appends are no-ops, schema drift
+tolerated by concat-then-dedup); `[archive] enabled` config,
+`--no-snapshot` skips the append, and the dashboard opens on the 30-day
+preset once the merged history exceeds 45 days. `tests/test_archive.py`.
 
 PCSS keeps roughly one month of DataLog samples and discards older ones. The
 analyzer already preserves file-size history (`output/size_history.csv`), but
@@ -103,6 +126,22 @@ Challenges:
 
 ### 5. EventLog parsing
 
+SHIPPED: `pcss/eventlog.py` decodes the stream generically with javaobj-py3
+(the documented Java-serialization grammar — no APC class definitions, no
+hand-maintained offsets), resolves event names from the resource bundles
+inside the installed PCSS jars (so names track the installed version) with a
+built-in fallback table, and pairs On Battery / No Longer On Battery events
+into authoritative outage spans that replace the item-6 inference in the
+dashboard when available. Any failure — missing file, missing library,
+unparseable bytes — degrades to a status string and the analyzer continues.
+Parsed events are archived to `output/archive/events.csv`. The committed
+fixture is a real capture verified to contain no personal data (the stream
+holds only class names, ids, and timestamps). `tests/test_eventlog.py`.
+The original concern about needing samples from two PCSS versions was
+resolved by not hand-parsing at all: the grammar-level reader plus
+version-tracking bundles plus numeric labels for unknown ids make version
+drift a rendering detail instead of a parser break.
+
 The EventLog is written with Java object serialization (a binary format
 produced by Java's `ObjectOutputStream`); today only its file size is read.
 Parsed events would give the dashboard authoritative markers for outages,
@@ -124,6 +163,12 @@ Challenges:
 
 ### 6. Outage and on-battery episode detection from the data we already have
 
+SHIPPED: `detect_on_battery_episodes` in `pcss/stats.py` (low line voltage
+corroborated by a battery-capacity drop; thresholds under `[thresholds]`),
+listed in the console, shaded as amber `ep-strip` strips on the time panels,
+counted in the health pill, and included in the `[alerts]` trigger.
+`tests/test_episodes.py`.
+
 Short of parsing the EventLog, the analyzer can infer on-battery episodes:
 line voltage at or near zero, battery capacity falling between consecutive
 samples, or the runtime estimate dropping sharply. Detected episodes would be
@@ -144,6 +189,13 @@ Challenges:
 
 ### 7. Battery replace-by projection
 
+SHIPPED: `battery_replace_projection` in `pcss/stats.py` — a fit on the
+rolling median (immune to self-test dips) projected to
+`battery_replace_voltage_v` (default 25.6 V, 2.13 V per cell, documented in
+config.example.toml), silent below `battery_trend_min_days` of history. Shown
+in the Battery Voltage subtitle, the health pill, the console, and `--json`.
+`tests/test_battery.py`.
+
 The Battery Voltage card already fits a linear degradation trend. Extending
 the fit to answer "at the current slope, when does the resting voltage cross
 the replace threshold?" gives a concrete date instead of a slope, shown in the
@@ -163,6 +215,11 @@ Challenges:
 
 ### 8. Billing-cycle alignment for cost
 
+SHIPPED: `[tariff] billing_cycle_start_day` groups `compute_energy_summary`
+by billing period (start day clamped in short months), applies the tier limit
+per period, and labels partial periods. Day 1 reproduces the calendar-month
+grouping exactly. `tests/test_billing.py`.
+
 The cost summary currently groups energy by calendar month. Coopesantos bills
 on a cycle that does not necessarily start on the first of the month, so the
 tiered-cost figure can drift from the bill near the tier boundary. A
@@ -178,6 +235,11 @@ Challenges:
   building the right groups, not the arithmetic.
 
 ### 9. Comparison views
+
+SHIPPED: two new cards in Energy & Cost — `cmp` (cumulative kWh against
+day-offset-in-period, current billing period overlaid on the previous one)
+and `wk` (mean W by hour, weekday against weekend), both linear-axis line
+panels (`_panel_cmp` / `_panel_wk` in `pcss/dashboard.py`).
 
 Month-over-month energy (this month's cumulative kWh against last month's at
 the same day offset) and weekday-against-weekend daily profiles. Both answer
@@ -195,6 +257,13 @@ Challenges:
 ## Dashboard and interaction
 
 ### 10. Touch support
+
+SHIPPED: touch drags start pending and are claimed only on horizontal intent
+(vertical swipes keep scrolling), two fingers pinch-zoom around their
+midpoint, a tap synthesizes the hover and pins the tooltip, and
+`@media (pointer: coarse)` keeps the card tools visible. `tests/e2e_touch.py`
+drives it through CDP touch events, including the discriminating
+pinch-close-must-zoom-out case.
 
 The interactions are pointer-event based, so taps already hover and pin, but
 drag-to-zoom fights native scrolling on a touch screen, pinch zoom is not
@@ -215,6 +284,11 @@ Challenges:
 
 ### 11. Whole-page export
 
+SHIPPED: the pragmatic print-pipeline route — an `@media print` stylesheet
+(white page, hidden hover-only controls, cards kept whole across page
+breaks, colors preserved) plus a header "⎙ pdf" button that calls
+`window.print()`.
+
 A single "save as image / PDF" action for the whole dashboard, for sharing a
 snapshot. The per-card PNG export exists; the page-level version is a
 different problem.
@@ -230,6 +304,13 @@ Challenges:
   browser, which is acceptable for a personal tool.
 
 ### 12. Accessibility
+
+SHIPPED (first tranche): every chart box carries `role="img"`,
+`tabindex="0"`, and an aria-label with a Python-generated data summary
+(span, latest, minimum, maximum); focusing a panel targets the keyboard
+shortcuts without hover. The remaining idea — an arrow-key
+step-through-samples mode for reading the tooltip without a pointer — is a
+real feature on its own and stays open.
 
 The dashboard is mouse-first. Keyboard focus for panels (the keyboard
 shortcuts currently require hovering), ARIA labels on the SVG charts, and a
@@ -250,6 +331,12 @@ Challenges:
 
 ### 13. Spanish localization
 
+SHIPPED: `[dashboard] language = "en" | "es"` with a single translation
+table in `pcss/dashboard.py` (keyed by the English source strings, missing
+keys fall back to English); the chart-side labels ride the payload under
+`strings` so the two sides cannot drift, and number formatting stays en-US
+everywhere so the CSV export remains machine-standard.
+
 The PCSS installation and the electric bill are in Spanish; the dashboard is
 in English. A `[dashboard] language = "en" | "es"` key with a small string
 table in `pcss/dashboard.py` (and a mirrored table injected into
@@ -266,6 +353,12 @@ Challenges:
 ## Alerting and automation
 
 ### 14. Notifications
+
+SHIPPED (toast route): `AlertWatcher` in `tray_status.py` tails
+`output/alerts.log` from its end (history never re-notifies), tolerates
+rotation, applies a 30-minute cooldown, and raises a tray notification for
+new lines; the analyzer's alert trigger now also includes on-battery
+episodes. Email remains an open extension point (needs SMTP credentials).
 
 `[alerts]` currently appends a line to `output/alerts.log`. A notification
 that a human actually sees — a Windows toast from the scheduled run, or an
@@ -284,6 +377,12 @@ Challenges:
   cooldown or "new since last alert" comparison against the log is needed.
 
 ### 15. Auto-refreshing view
+
+SHIPPED (meta-refresh route): `[dashboard] refresh_minutes` (0 disables)
+emits a `<meta http-equiv="refresh">` matched to the scheduled-task cadence;
+the permalink hash from item 1 preserves the view state across the reload,
+and `--no-snapshot` already covers frequent refresh runs. The local-HTTP
+variant stays out until this proves too crude.
 
 The dashboard is a static snapshot. For a monitor that sits open on a second
 screen, the page could reload itself when a newer `dashboard.html` exists, or

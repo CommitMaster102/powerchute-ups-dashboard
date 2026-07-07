@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from harness import wait_ready
+from harness import PANELS, wait_ready
 
 pytestmark = pytest.mark.e2e
 
@@ -15,7 +15,7 @@ def test_reveal_completes_on_fresh_load(_browser, dashboard_path):
         # Not ready instantly (the sweep takes ~700 ms + stagger)...
         wait_ready(page)
         # ...but once ready, every panel is at full width (clip removed).
-        assert page.evaluate("__chartsDebug.panelKeys().length") == 12
+        assert page.evaluate("__chartsDebug.panelKeys().length") == len(PANELS)
     finally:
         page.close()
 
@@ -26,7 +26,7 @@ def test_noanim_skips_reveal(_browser, dashboard_path):
         page.goto(dashboard_path.resolve().as_uri() + "?noanim=1")
         page.wait_for_function("window.__chartsDebug && window.__chartsDebug.ready()",
                                timeout=5_000)
-        assert page.evaluate("document.querySelectorAll('.chart-box svg').length") >= 12
+        assert page.evaluate("document.querySelectorAll('.chart-box svg').length") >= len(PANELS)
     finally:
         page.close()
 

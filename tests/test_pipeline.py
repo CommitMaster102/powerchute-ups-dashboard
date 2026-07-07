@@ -30,6 +30,9 @@ def restore_config():
         "RUNTIME_CURVE_W", "RUNTIME_CURVE_MIN",
         "BATTERY_CHARGE_WARN_PCT", "BATTERY_CHARGE_CRIT_PCT",
         "RUNTIME_WARN_MIN", "RUNTIME_CRIT_MIN", "DASHBOARD_THEME", "DASHBOARD_MODEL",
+        "DASHBOARD_LANGUAGE", "DASHBOARD_REFRESH_MINUTES", "ARCHIVE_ENABLED",
+        "BILLING_CYCLE_START_DAY", "ON_BATTERY_VOLTAGE_V", "ON_BATTERY_CAPACITY_DROP_PCT",
+        "BATTERY_REPLACE_VOLTAGE_V", "BATTERY_TREND_MIN_DAYS",
     ]
     saved = {n: getattr(cfg, n) for n in names}
     yield cfg
@@ -135,6 +138,35 @@ def test_load_config_overrides(tmp_path, restore_config):
     assert out == c.DASHBOARD_HTML
 
 
+def test_load_config_new_roadmap_keys(tmp_path, restore_config):
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        '[dashboard]\nlanguage = "es"\nrefresh_minutes = 10\n'
+        "[tariff]\nbilling_cycle_start_day = 15\n"
+        "[thresholds]\non_battery_voltage_v = 40.0\nbattery_replace_voltage_v = 24.8\n"
+        "battery_trend_min_days = 45\n"
+        "[archive]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    c.load_config(conf)
+    assert c.DASHBOARD_LANGUAGE == "es"
+    assert pytest.approx(10.0) == c.DASHBOARD_REFRESH_MINUTES
+    assert c.BILLING_CYCLE_START_DAY == 15
+    assert pytest.approx(40.0) == c.ON_BATTERY_VOLTAGE_V
+    assert pytest.approx(24.8) == c.BATTERY_REPLACE_VOLTAGE_V
+    assert pytest.approx(45.0) == c.BATTERY_TREND_MIN_DAYS
+    assert c.ARCHIVE_ENABLED is False
+
+
+def test_load_config_rejects_unknown_language(tmp_path, restore_config):
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text('[dashboard]\nlanguage = "fr"\n', encoding="utf-8")
+    c.load_config(conf)
+    assert c.DASHBOARD_LANGUAGE == "en"
+
+
 def test_load_config_agent_dir_arg_wins(tmp_path, restore_config):
     c = restore_config
     agent = tmp_path / "viacli"
@@ -162,6 +194,14 @@ def _write_multiday_agent(agent):
     return agent
 
 
+def _hermetic_config(tmp_path):
+    """A config that keeps analyzer integration runs hermetic: without it, a
+    developer's real output/archive would merge into the analyzed frame."""
+    conf = tmp_path / "config.toml"
+    conf.write_text("[archive]\nenabled = false\n", encoding="utf-8")
+    return conf
+
+
 def test_since_filter_does_not_inflate_projection(tmp_path, restore_config):
     """The disk-growth projection is whole-file based, so it must be identical
     whether or not --since trims the analyzed window (audit regression guard)."""
@@ -169,7 +209,8 @@ def test_since_filter_does_not_inflate_projection(tmp_path, restore_config):
     agent = _write_multiday_agent(tmp_path / "agent")
     j_full = tmp_path / "full.json"
     j_since = tmp_path / "since.json"
-    common = ["--agent-dir", str(agent), "--no-browser", "--quiet", "--no-snapshot"]
+    common = ["--agent-dir", str(agent), "--no-browser", "--quiet", "--no-snapshot",
+              "--config", str(_hermetic_config(tmp_path))]
     analyze_ups.main([*common, "-o", str(tmp_path / "a.html"), "--json", str(j_full)])
     analyze_ups.main([*common, "-o", str(tmp_path / "b.html"), "--json", str(j_since),
                       "--since", "2026-05-05"])
@@ -186,7 +227,8 @@ def test_main_writes_shell(tmp_path, restore_config):
     agent = _write_multiday_agent(tmp_path / "agent")
     out = tmp_path / "dash.html"
     analyze_ups.main(["--agent-dir", str(agent), "-o", str(out),
-                      "--no-browser", "--quiet", "--no-snapshot"])
+                      "--no-browser", "--quiet", "--no-snapshot",
+                      "--config", str(_hermetic_config(tmp_path))])
     html = out.read_text(encoding="utf-8")
     for token in ["panel-lv", "panel-kw", "panel-cad", "__chartsDebug",
                   "Per-metric Statistics", "preset-pill", "lightbox"]:

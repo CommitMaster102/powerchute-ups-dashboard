@@ -26,10 +26,12 @@ from pcss.dashboard import (
     _ms_list,
     _panel_bv,
     _panel_cad,
+    _panel_cmp,
     _panel_hm,
     _panel_kw,
     _panel_lv,
     _panel_rt,
+    _panel_wk,
     build_dashboard,
 )
 from pcss.stats import estimate_runtime
@@ -145,12 +147,60 @@ def test_panel_cad_bins_expected_and_gap():
     assert colors["19-21m"] == PAL["teal"]
 
 
+def test_heatmap_daykeys_parallel_to_days():
+    """The heatmap's rows carry real dates (epoch-ms midnights) alongside the
+    display labels so the crosshair can find the hovered day's row."""
+    panel = _panel_hm(_heatmap_pivot(_energy(n=576)))     # 2 days at 5 min
+    assert len(panel["dayKeys"]) == len(panel["days"]) == 2
+    assert all(k % 86_400_000 == 0 for k in panel["dayKeys"])
+    assert panel["dayKeys"][1] - panel["dayKeys"][0] == 86_400_000
+
+
 def test_heatmap_nan_becomes_none():
     edf = _energy(n=30)                  # 2.5 h of samples -> most hours empty
     panel = _panel_hm(_heatmap_pivot(edf))
     flat = [v for row in panel["z"] for v in row]
     assert None in flat                  # NaN hours -> None (JSON-safe)
     assert any(v is not None for v in flat)
+
+
+# ---------------------------------------------------------------- comparison panels
+def test_panel_cmp_compares_last_two_periods():
+    from pcss.stats import compute_energy_summary
+    edf = pd.concat([_energy(n=288, start="2026-04-29 00:00"),
+                     _energy(n=288, start="2026-05-01 00:00")], ignore_index=True)
+    edf["interval_sec"] = 300
+    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    assert panel["xkind"] == "linear"
+    assert [s["name"] for s in panel["series"]] == ["2026-04", "2026-05"]
+    cur = panel["series"][1]
+    # Cumulative energy is monotonically non-decreasing.
+    assert all(b >= a for a, b in zip(cur["y"], cur["y"][1:], strict=False))
+    # Day offsets are within the period: April 29 sits at offset ~28 days.
+    assert panel["series"][0]["x"][0] == pytest.approx(28.0, abs=0.1)
+    assert cur["x"][0] == pytest.approx(0.0, abs=0.1)
+
+
+def test_panel_cmp_needs_two_periods():
+    from pcss.stats import compute_energy_summary
+    assert _panel_cmp(compute_energy_summary(_energy(60)), PAL) is None
+    assert _panel_cmp({}, PAL) is None
+
+
+def test_panel_wk_weekday_weekend_profiles():
+    # 2026-05-01 is a Friday (weekday, 200 W); 2026-05-02 a Saturday (400 W).
+    edf = pd.concat([_energy(n=288, start="2026-05-01 00:00", power=200.0),
+                     _energy(n=288, start="2026-05-02 00:00", power=400.0)],
+                    ignore_index=True)
+    panel = _panel_wk(edf, PAL)
+    assert [s["name"] for s in panel["series"]] == ["weekday", "weekend"]
+    assert panel["series"][0]["y"][0] == pytest.approx(200.0)
+    assert panel["series"][1]["y"][0] == pytest.approx(400.0)
+    assert panel["series"][0]["x"] == list(range(24))
+
+
+def test_panel_wk_empty():
+    assert _panel_wk(EMPTY, PAL) is None
 
 
 # ---------------------------------------------------------------- KPI severities
@@ -186,6 +236,70 @@ def test_kpi_no_data_is_info():
     assert all(c["value"] == "—" for c in cards)
     assert sevs == []                        # info never counts against health
     assert sparks == [None] * 5
+
+
+# ---------------------------------------------------------------- page-level features
+def test_print_stylesheet_and_button_present():
+    html = build_dashboard(**_smoke_inputs())
+    assert "@media print" in html
+    assert 'id="print-btn"' in html
+
+
+def test_meta_refresh_opt_in(monkeypatch):
+    # Off by default: a static snapshot must not reload itself.
+    html = build_dashboard(**_smoke_inputs())
+    assert 'http-equiv="refresh"' not in html
+    # [dashboard] refresh_minutes = 5 -> a 300-second meta refresh, for a
+    # dashboard left open on a second screen.
+    monkeypatch.setattr(cfg, "DASHBOARD_REFRESH_MINUTES", 5.0)
+    html2 = build_dashboard(**_smoke_inputs())
+    assert '<meta http-equiv="refresh" content="300">' in html2
+
+
+def test_spanish_localization(monkeypatch):
+    """[dashboard] language = "es" translates the page chrome via the single
+    string table; the JS tooltip labels ride the payload so the two sides
+    cannot drift. Number formatting stays en-US (the CSV export contract)."""
+    monkeypatch.setattr(cfg, "DASHBOARD_LANGUAGE", "es")
+    html = build_dashboard(**_smoke_inputs())
+    for token in ["Calidad de energía", "Voltaje de línea", "Salud de la batería",
+                  "Energía y costo", "Estadísticas por métrica"]:
+        assert token in html, f"missing Spanish token: {token}"
+    assert "Power Quality" not in html
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert payload["strings"]["meanPower"] == "potencia media"
+    assert 'toLocaleString("en-US"' in html   # machine-standard numbers survive
+
+
+def test_default_language_is_english():
+    html = build_dashboard(**_smoke_inputs())
+    assert "Power Quality" in html
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert payload["strings"]["meanPower"] == "mean power"
+
+
+def test_accessibility_surface():
+    """Charts as SVG are opaque to screen readers, so every chart card gets a
+    role, a data summary in its aria-label (min, max, latest — generated in
+    Python where the numbers already exist), and keyboard focusability."""
+    html = build_dashboard(**_smoke_inputs())
+    assert 'role="img"' in html
+    assert 'tabindex="0"' in html
+    # The Line Voltage box describes its own data.
+    m = re.search(r'id="panel-lv"[^>]*aria-label="([^"]+)"', html)
+    assert m, "panel-lv has no aria-label"
+    assert "latest" in m.group(1).lower()
+    assert "minimum" in m.group(1).lower()
+    # Empty panels say so instead of carrying a stale summary.
+    empty_html = build_dashboard(
+        datalog_df=EMPTY, energy_df=EMPTY, hist=EMPTY, dl_stats={}, hist_stats={},
+        sizes={"DataLog": 0, "EventLog (binary)": 0, "energylog/": 0}, energy_summary={},
+        stats_table=EMPTY, gaps=EMPTY, voltage_anomalies=EMPTY,
+        high_load_episodes=EMPTY, crossval={})
+    m2 = re.search(r'id="panel-lv"[^>]*aria-label="([^"]+)"', empty_html)
+    assert "no data" in m2.group(1).lower()
 
 
 # ---------------------------------------------------------------- build_dashboard smoke
@@ -225,9 +339,60 @@ def test_build_dashboard_html_smoke():
     assert m, "embedded payload not found"
     payload = json.loads(m.group(1).replace("<\\/", "</"))
     assert sorted(payload["panels"]) == sorted(
-        ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "growth", "proj", "cad"])
+        ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "cmp", "wk",
+         "growth", "proj", "cad"])
     assert payload["theme"] in ("dark", "light")
     assert payload["meta"]["last_sample_ms"] is not None
+
+
+def test_on_battery_episodes_in_payload_and_health():
+    """Episode spans ride the payload like gap spans (epoch-ms pairs) so
+    charts.js can shade them, and the health pill counts them."""
+    inputs = _smoke_inputs()
+    inputs["on_battery"] = pd.DataFrame({
+        "start": pd.to_datetime(["2026-05-01 04:00"]),
+        "end": pd.to_datetime(["2026-05-01 04:40"]),
+        "duration_min": [60.0], "min_voltage": [0.5], "capacity_drop_pct": [12.0],
+    })
+    html = build_dashboard(**inputs)
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert len(payload["episodes"]) == 1
+    assert payload["episodes"][0][1] - payload["episodes"][0][0] == 40 * 60 * 1000
+    assert "1 on-battery" in html
+
+
+def test_battery_replace_projection_in_subtitle_and_health():
+    """A long declining battery history puts a concrete replace-by date in
+    the Battery Voltage subtitle; a short one states the honest fallback."""
+    inputs = _smoke_inputs()
+    long_df = _datalog(n=90 * 72)
+    long_df["Battery Voltage"] = 27.4 - 0.01 * np.arange(len(long_df)) / 72.0
+    inputs["datalog_df"] = long_df
+    html = build_dashboard(**inputs)
+    assert "replace ≈" in html
+
+    short = _smoke_inputs()
+    short_df = _datalog(n=10 * 72)
+    short_df["Battery Voltage"] = 27.4 - 0.01 * np.arange(len(short_df)) / 72.0
+    short["datalog_df"] = short_df
+    html2 = build_dashboard(**short)
+    assert "not enough history" in html2
+
+
+def test_default_preset_only_for_long_history():
+    """Once the archive grows past ~45 days, the page should open on the
+    30-day preset instead of an unreadably dense full-range view; short
+    histories keep the full range (no preset key in the payload meta)."""
+    def _meta_for(days):
+        inputs = _smoke_inputs()
+        inputs["datalog_df"] = _datalog(n=days * 72)     # 20-min cadence
+        html = build_dashboard(**inputs)
+        m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+        return json.loads(m.group(1).replace("<\\/", "</"))["meta"]
+
+    assert _meta_for(60).get("default_preset_days") == 30
+    assert _meta_for(10).get("default_preset_days") is None
 
 
 def test_build_dashboard_empty_inputs():

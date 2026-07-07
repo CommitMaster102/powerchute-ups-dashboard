@@ -106,6 +106,18 @@ def test_other_time_panels_zoom_locally(dash, key):
     assert dash.evaluate(f"__chartsDebug.zoom('{key}')") is None
 
 
+def test_focus_targets_keyboard_without_hover(dash):
+    """Accessibility: focusing a chart box (keyboard Tab target) makes the
+    keyboard shortcuts act on that panel without any mouse hover."""
+    dash.locator("#panel-lv").focus()
+    dash.keyboard.press("+")
+    dash.wait_for_timeout(60)
+    assert dash.evaluate("__chartsDebug.isZoomed('lv')")
+    dash.keyboard.press("0")
+    dash.wait_for_timeout(60)
+    assert is_full(dash, "lv")
+
+
 def test_zoom_rerenders_series(dash):
     """Zooming re-decimates from the full arrays — the drawn path must change."""
     d_before = dash.evaluate(

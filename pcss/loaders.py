@@ -126,6 +126,77 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
 
 
 # ======================================================================
+# DataLog archive (persistent measurements beyond PCSS's retention window)
+# ======================================================================
+def _dedup_datalog(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop exact-duplicate rows and sort by timestamp.
+
+    The timestamp alone is not a safe key: PCSS can log two rows in the same
+    second, and a clock adjustment can repeat a timestamp. Whole-row equality
+    keeps those (they differ in some value) while making re-appends of the
+    same data a no-op. pandas treats NaN as equal to NaN here, so rows with
+    missing probe columns still deduplicate.
+    """
+    return df.drop_duplicates().sort_values("ts", kind="stable").reset_index(drop=True)
+
+
+def append_datalog_archive(df: pd.DataFrame, archive_dir: Path | None = None) -> int:
+    """Append DataLog rows to monthly CSV partitions (datalog-YYYY-MM.csv).
+
+    Idempotent: consecutive runs see mostly the same rows, and only rows not
+    already present are added. Columns may appear or disappear across PCSS
+    reconfigurations (temperature and humidity probes); the merge is a
+    concatenation followed by deduplication, so the archive simply grows to
+    the union of columns. Returns the number of newly stored rows.
+    """
+    archive_dir = archive_dir or config.ARCHIVE_DIR
+    if df is None or df.empty or "ts" not in df.columns:
+        return 0
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    added = 0
+    for period, month_df in df.groupby(df["ts"].dt.to_period("M")):
+        f = archive_dir / f"datalog-{period}.csv"
+        if f.exists():
+            try:
+                existing = pd.read_csv(f, parse_dates=["ts"])
+            except Exception:
+                existing = pd.DataFrame()
+            merged = _dedup_datalog(pd.concat([existing, month_df], ignore_index=True))
+            added += len(merged) - len(existing)
+        else:
+            merged = _dedup_datalog(month_df)
+            added += len(merged)
+        merged.to_csv(f, index=False)
+    return added
+
+
+def load_datalog_archive(archive_dir: Path | None = None) -> pd.DataFrame:
+    """Load every monthly archive partition into one sorted frame."""
+    archive_dir = archive_dir or config.ARCHIVE_DIR
+    if not archive_dir.exists():
+        return pd.DataFrame()
+    frames = []
+    for f in sorted(archive_dir.glob("datalog-*.csv")):
+        try:
+            frames.append(pd.read_csv(f, parse_dates=["ts"]))
+        except Exception:
+            continue
+    if not frames:
+        return pd.DataFrame()
+    return _dedup_datalog(pd.concat(frames, ignore_index=True))
+
+
+def merge_datalog_frames(live: pd.DataFrame, archive: pd.DataFrame) -> pd.DataFrame:
+    """Merge the live DataLog with the archive; overlap rows appear once."""
+    frames = [f for f in (archive, live) if f is not None and not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    if len(frames) == 1:
+        return frames[0].reset_index(drop=True)
+    return _dedup_datalog(pd.concat(frames, ignore_index=True))
+
+
+# ======================================================================
 # Snapshot tracking (persistent file-size growth log)
 # ======================================================================
 def record_size_snapshot(sizes: dict, path: Path | None = None) -> pd.DataFrame:

@@ -19,7 +19,8 @@ DASHBOARD = Path(__file__).resolve().parent.parent / "output" / "dashboard.html"
 
 # Panel keys, kept in sync with the payload built by pcss/dashboard.py
 # (the conftest session fixture asserts the page agrees).
-PANELS = ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "growth", "proj", "cad"]
+PANELS = ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "cmp", "wk",
+          "growth", "proj", "cad"]
 
 # The crosshair-sync group: hovering any of these mirrors the crosshair at
 # the same timestamp on the others. Zoom and pan are strictly per panel.
@@ -29,7 +30,7 @@ SYNC_PANELS = ["lv", "ul", "pw", "bv", "bc", "kw"]
 TIME_PANELS = [*SYNC_PANELS, "growth"]
 
 # Panels by chart kind (drives tooltip/export parametrization).
-LINE_PANELS = ["lv", "ul", "pw", "bv", "bc", "rt", "kw", "growth", "proj"]
+LINE_PANELS = ["lv", "ul", "pw", "bv", "bc", "rt", "kw", "cmp", "wk", "growth", "proj"]
 BAR_PANELS = ["daily", "cad"]
 HEATMAP_PANELS = ["hm"]
 

@@ -20,19 +20,31 @@ import pandas as pd
 from pcss import config
 from pcss.common import fmt_bytes
 from pcss.dashboard import build_dashboard
+from pcss.eventlog import (
+    append_event_archive,
+    load_event_archive,
+    load_eventlog,
+    merge_event_frames,
+    on_battery_spans,
+)
 from pcss.loaders import (
+    append_datalog_archive,
     history_summary,
     load_datalog,
+    load_datalog_archive,
     load_energylog,
+    merge_datalog_frames,
     record_size_snapshot,
 )
 from pcss.stats import (
+    battery_replace_projection,
     compute_energy_summary,
     compute_stats_summary,
     cross_validate_load,
     datalog_stats,
     detect_gaps,
     detect_high_load_episodes,
+    detect_on_battery_episodes,
     detect_voltage_anomalies,
     estimate_runtime,
 )
@@ -164,7 +176,32 @@ def main(argv: list[str] | None = None) -> int:
     # roughly full_span/filtered_span. Everything downstream (anomalies, gaps,
     # energy, cross-validation, dashboard series) uses the filtered frame.
     raw_datalog_df = load_datalog()
-    datalog_df = _date_filter(raw_datalog_df, since_ts, until_ts)
+
+    # PCSS discards DataLog samples after roughly a month; the archive keeps
+    # them. Append the freshly loaded rows (idempotent; skipped on read-only
+    # runs like the snapshot), then merge the archive back in so the analyzed
+    # frame spans the whole recorded life of the UPS, not one month.
+    archive_added = 0
+    archive_df = pd.DataFrame()
+    if config.ARCHIVE_ENABLED:
+        if not args.no_snapshot:
+            archive_added = append_datalog_archive(raw_datalog_df)
+        archive_df = load_datalog_archive()
+    merged_datalog_df = merge_datalog_frames(raw_datalog_df, archive_df)
+
+    # The binary EventLog decodes to authoritative event markers (outages,
+    # self-tests, monitoring stops). It stays strictly optional: any parse
+    # trouble becomes a status string, never a failed run. Parsed events are
+    # archived like the DataLog rows so they outlive PCSS's own rotation.
+    events_df, ev_status = load_eventlog()
+    if config.ARCHIVE_ENABLED:
+        if not args.no_snapshot and not events_df.empty:
+            append_event_archive(events_df)
+        events_df = merge_event_frames(events_df, load_event_archive())
+    events_df = _date_filter(events_df, since_ts, until_ts)
+    ev_spans = on_battery_spans(events_df)
+
+    datalog_df = _date_filter(merged_datalog_df, since_ts, until_ts)
     dl_stats = datalog_stats(raw_datalog_df, sizes["DataLog"])
 
     section("DATALOG SUMMARY")
@@ -183,6 +220,11 @@ def main(argv: list[str] | None = None) -> int:
         say(f"    Per day     : {fmt_bytes(dl_stats['daily_bytes'])}")
         say(f"    Per month   : {fmt_bytes(dl_stats['monthly_bytes'])}")
         say(f"    Per year    : {fmt_bytes(dl_stats['yearly_bytes'])}")
+    if not archive_df.empty:
+        say("")
+        say(f"  Archive        : {len(archive_df)} rows, "
+            f"{archive_df['ts'].iloc[0]} -> {archive_df['ts'].iloc[-1]} "
+            f"(+{archive_added} new this run)")
 
     energy_df, energy_metas = load_energylog()
     energy_df = _date_filter(energy_df, since_ts, until_ts)
@@ -203,15 +245,18 @@ def main(argv: list[str] | None = None) -> int:
         say(f"  CO2 emitted         : {energy_summary['total_co2_kg']:.4f} kg")
         if energy_summary["monthly"] is not None and not energy_summary["monthly"].empty:
             say("")
-            say("  Monthly breakdown:")
+            label = ("Monthly breakdown:" if config.BILLING_CYCLE_START_DAY <= 1 else
+                     f"Billing-period breakdown (cycle starts day {config.BILLING_CYCLE_START_DAY}):")
+            say(f"  {label}")
             monthly = energy_summary["monthly"]
-            for month, kwh, cost_pcss, cost_tiered, co2_kg in monthly[
-                ["month", "kwh", "cost_pcss", "cost_tiered", "co2_kg"]
+            for month, kwh, cost_pcss, cost_tiered, co2_kg, partial in monthly[
+                ["month", "kwh", "cost_pcss", "cost_tiered", "co2_kg", "partial"]
             ].itertuples(index=False, name=None):
+                mark = " (partial)" if partial else ""
                 say(f"    {month}: {kwh:>9.4f} kWh   "
                     f"PCSS=CRC {cost_pcss:>10,.2f}   "
                     f"Tiered=CRC {cost_tiered:>10,.2f}   "
-                    f"CO2={co2_kg:>7.4f} kg")
+                    f"CO2={co2_kg:>7.4f} kg{mark}")
 
     section("ANOMALIES & EVENTS")
     voltage_anomalies = detect_voltage_anomalies(datalog_df)
@@ -222,6 +267,34 @@ def main(argv: list[str] | None = None) -> int:
             say(f"    {ts}  {volts} V")
         if len(voltage_anomalies) > 5:
             say(f"    ... ({len(voltage_anomalies)-5} more)")
+
+    on_battery = detect_on_battery_episodes(datalog_df)
+    say(f"  On-battery episodes (visible at the {config.DATALOG_EXPECTED_INTERVAL_MIN:.0f}-min "
+        f"cadence; short outages between samples are missed): {len(on_battery)}")
+    if not on_battery.empty:
+        for start, end, dmin, minv, drop in on_battery[
+            ["start", "end", "duration_min", "min_voltage", "capacity_drop_pct"]
+        ].head(5).itertuples(index=False, name=None):
+            drop_txt = f", capacity -{drop:.0f}%" if pd.notna(drop) else ""
+            say(f"    {start} -> {end}  ~{dmin:.0f}min  min {minv:.1f} V{drop_txt}")
+        if len(on_battery) > 5:
+            say(f"    ... ({len(on_battery)-5} more)")
+
+    if ev_status == "ok" and not events_df.empty:
+        say(f"  EventLog (parsed): {len(events_df)} events")
+        for name, n in events_df["name"].value_counts().head(6).items():
+            say(f"    {n:>4d} × {name}")
+        say(f"  On-battery episodes (from EventLog, authoritative): {len(ev_spans)}")
+        for start, end, dmin, is_open in ev_spans[
+            ["start", "end", "duration_min", "open"]
+        ].head(5).itertuples(index=False, name=None):
+            if is_open:
+                say(f"    {start} -> (still on battery at end of log)")
+            else:
+                say(f"    {start} -> {end}  {dmin:.1f} min")
+    else:
+        say(f"  EventLog: not parsed ({ev_status}) — on-battery detection relies on"
+            " the DataLog inference above")
 
     high_load = detect_high_load_episodes(energy_df) if not energy_df.empty else pd.DataFrame()
     say(f"  Sustained high-load episodes (>={config.HIGH_LOAD_PCT}%, >=10min): {len(high_load)}")
@@ -239,7 +312,16 @@ def main(argv: list[str] | None = None) -> int:
         for frm, to, dmin in gaps[["from", "to", "duration_min"]].head(5).itertuples(index=False, name=None):
             say(f"    {frm} -> {to}  ({dmin:.1f} min)")
 
-    alert_path = _maybe_write_alerts(voltage_anomalies, high_load)
+    # Event-derived outage spans are authoritative when the EventLog parsed;
+    # the DataLog inference stays as the fallback (and as a cross-check).
+    if not ev_spans.empty:
+        episodes = ev_spans.copy()
+        if episodes["end"].isna().any() and not events_df.empty:
+            episodes["end"] = episodes["end"].fillna(events_df["ts"].iloc[-1])
+    else:
+        episodes = on_battery
+
+    alert_path = _maybe_write_alerts(voltage_anomalies, high_load, episodes)
     if alert_path:
         say(f"  [alert] appended to {alert_path}")
 
@@ -265,6 +347,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         say("  No power data yet.")
 
+    battery = battery_replace_projection(datalog_df)
+
+    section("BATTERY REPLACE-BY PROJECTION")
+    if battery["status"] == "projected":
+        say(f"  Trend (rolling-median fit): {battery['slope_v_per_day']:+.4f} V/day")
+        say(f"  Crosses {battery['threshold_v']:g} V around {battery['replace_date']:%Y-%m-%d} "
+            f"(~{battery['days_to_replace']:.0f} days)")
+    elif battery["status"] == "stable":
+        say(f"  Trend (rolling-median fit): {battery['slope_v_per_day']:+.4f} V/day — stable, "
+            "no projection needed.")
+    else:
+        say(f"  Not enough history ({config.BATTERY_TREND_MIN_DAYS:.0f}+ days needed); "
+            "the archive accumulates it over time.")
+
     stats_table = compute_stats_summary(datalog_df)
 
     section("PER-METRIC STATISTICS (DataLog)")
@@ -275,13 +371,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         _write_json_summary(args.json, sizes, dl_stats, hist_stats, energy_summary,
-                            voltage_anomalies, high_load, gaps, crossval)
+                            voltage_anomalies, high_load, on_battery, gaps, crossval,
+                            archive_df, archive_added, battery,
+                            events_df, ev_status, ev_spans)
         say(f"  Wrote JSON summary to {args.json}")
+
+    events_summary = None
+    if ev_status == "ok" and not events_df.empty:
+        events_summary = {
+            "n": int(len(events_df)),
+            "on_battery": int(len(ev_spans)),
+            "last_name": str(events_df["name"].iloc[-1]),
+            "last_ts": events_df["ts"].iloc[-1],
+        }
 
     section("DASHBOARD")
     html = build_dashboard(
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
-        stats_table, gaps, voltage_anomalies, high_load, crossval,
+        stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
+        events_summary,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
@@ -297,7 +405,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
-                        voltage_anomalies, high_load, gaps, crossval) -> None:
+                        voltage_anomalies, high_load, on_battery, gaps, crossval,
+                        archive_df, archive_added, battery,
+                        events_df, ev_status, ev_spans) -> None:
     """Structured machine-readable summary for external tooling (--json)."""
     summary = {
         "sizes_bytes": sizes,
@@ -305,6 +415,12 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
         "datalog": {k: dl_stats.get(k) for k in
                     ("n_entries", "first", "last", "median_interval_sec", "span_days",
                      "daily_bytes", "yearly_bytes")} if dl_stats else {},
+        "archive": {
+            "rows": int(len(archive_df)),
+            "first": archive_df["ts"].iloc[0] if not archive_df.empty else None,
+            "last": archive_df["ts"].iloc[-1] if not archive_df.empty else None,
+            "added": int(archive_added),
+        },
         "growth": {k: hist_stats.get(k) for k in
                    ("snapshots", "bytes_per_day", "first_ts", "last_ts")} if hist_stats else {},
         "energy": {k: energy_summary.get(k) for k in
@@ -313,24 +429,35 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
         "anomalies": {
             "voltage_out_of_envelope": int(len(voltage_anomalies)),
             "high_load_episodes": int(len(high_load)),
+            "on_battery_episodes": int(len(on_battery)),
             "datalog_gaps": int(len(gaps)),
         },
         "cross_validation": crossval or {},
+        "battery": battery or {},
+        "events": {
+            "status": ev_status,
+            "n_events": int(len(events_df)),
+            "first": events_df["ts"].iloc[0] if not events_df.empty else None,
+            "last": events_df["ts"].iloc[-1] if not events_df.empty else None,
+            "on_battery_events": int(len(ev_spans)),
+        },
     }
     Path(path).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
 
 
-def _maybe_write_alerts(voltage_anomalies, high_load) -> Path | None:
+def _maybe_write_alerts(voltage_anomalies, high_load, on_battery) -> Path | None:
     """Opt-in (config [alerts] enabled): append a timestamped line to
-    alerts.log when the analyzed window has voltage anomalies or sustained
-    high-load. Email/notify is left as an extension point."""
+    alerts.log when the analyzed window has voltage anomalies, sustained
+    high-load, or inferred on-battery episodes. The tray process watches this
+    file and raises a notification for new lines; email stays an extension
+    point."""
     if not config.ALERTS_ENABLED:
         return None
-    n_v, n_h = len(voltage_anomalies), len(high_load)
-    if n_v == 0 and n_h == 0:
+    n_v, n_h, n_ob = len(voltage_anomalies), len(high_load), len(on_battery)
+    if n_v == 0 and n_h == 0 and n_ob == 0:
         return None
     line = (f"{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}  "
-            f"voltage_anomalies={n_v}  high_load_episodes={n_h}\n")
+            f"voltage_anomalies={n_v}  high_load_episodes={n_h}  on_battery_episodes={n_ob}\n")
     with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
         f.write(line)
     return config.ALERTS_LOG

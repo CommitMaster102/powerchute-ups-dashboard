@@ -10,6 +10,7 @@
   // pcss/dashboard.py with the real JSON payload.
   const DATA = __DASH_DATA__;
   const C = DATA.palette;
+  const S = DATA.strings || {};   // localized UI strings (English fallbacks)
   const SVGNS = "http://www.w3.org/2000/svg";
 
   // Per-panel interaction state. Every time-axis line panel zooms and pans
@@ -270,6 +271,17 @@
                         fill: "rgba(239,106,106,.4)", class: "gap-strip" }, plot);
       });
     }
+    // Inferred on-battery episodes: an amber strip just above the gap strip.
+    // A single-sample episode is only one cadence interval wide, so enforce a
+    // small minimum width to keep it visible at full range.
+    if (spec.gaps && DATA.episodes && spec.xkind !== "linear") {
+      DATA.episodes.forEach(g => {
+        if (g[1] < xd[0] || g[0] > xd[1]) return;
+        const x0 = sx(Math.max(g[0], xd[0])), x1 = sx(Math.min(g[1], xd[1]));
+        svgEl("rect", { x: x0, y: p.t + ih - 9, width: Math.max(2, x1 - x0), height: 4, rx: 1,
+                        fill: "rgba(243,193,75,.55)", class: "ep-strip" }, plot);
+      });
+    }
     // Threshold lines.
     (spec.hlines || []).forEach(l => {
       const y = syL(l.y);
@@ -513,6 +525,7 @@
     });
     LAST_PRESET = null;
     updatePresetPills();
+    updateHash();
   }
   function applyPreset(days) {
     if (days === "all") {
@@ -530,7 +543,53 @@
       LAST_PRESET = days;
     }
     updatePresetPills();
+    updateHash();
   }
+  // ------------------------------------------------------------------
+  // Permalink view state: the active preset, or each panel's non-default
+  // zoom window, lives in the URL hash so a view can be bookmarked and
+  // survives a meta-refresh reload. replaceState keeps drags out of the
+  // browser history; base-36 epoch-ms keeps the hash short.
+  // ------------------------------------------------------------------
+  function updateHash() {
+    let hash = "";
+    if (LAST_PRESET) {
+      hash = "p=" + LAST_PRESET;
+    } else {
+      const parts = [];
+      timePanels().forEach(k => {
+        const z = STATE[k].zoom;
+        if (z) parts.push(k + "." + Math.round(z[0]).toString(36) + "." + Math.round(z[1]).toString(36));
+      });
+      if (parts.length) hash = "z=" + parts.join(",");
+    }
+    try {
+      history.replaceState(null, "", location.pathname + location.search + (hash ? "#" + hash : ""));
+    } catch (e) { /* some file:// contexts refuse replaceState; the view still works */ }
+  }
+  function restoreFromHash() {
+    const h = location.hash.replace(/^#/, "");
+    if (!h) return;
+    try {
+      const params = new URLSearchParams(h);
+      const p = params.get("p");
+      if (p && ["30", "7", "1"].indexOf(p) >= 0) { applyPreset(p); return; }
+      const z = params.get("z");
+      if (!z) return;
+      z.split(",").forEach(part => {
+        const bits = part.split(".");
+        if (bits.length !== 3) return;
+        const key = bits[0], t0 = parseInt(bits[1], 36), t1 = parseInt(bits[2], 36);
+        const st = STATE[key];
+        if (!st || !st.spec || !zoomCapable(st.spec)) return;
+        if (!isFinite(t0) || !isFinite(t1) || t1 <= t0) return;
+        // applyWindow clamps to the panel's own data span, so a stored
+        // window that predates the current logs degrades to the full range.
+        applyWindow(key, st.spec, [t0, t1]);
+      });
+    } catch (e) { /* a malformed hash falls back to the default view */ }
+  }
+
   function updateResetPill(key) {
     document.querySelectorAll('.tool-reset[data-panel="' + key + '"]').forEach(b => {
       b.hidden = !isZoomed(key);
@@ -569,8 +628,39 @@
     if (st && st.spec && st.spec.sync) {
       TIME.hoverTs = null;
       syncKeys().forEach(k => { if (k !== key) clearOverlay(k); });
+      clearHeatmapHighlight();
     }
     delete LAST_HOVER[key];
+  }
+  function heatmapKeys() {
+    return Object.keys(STATE).filter(k =>
+      STATE[k].spec && STATE[k].spec.kind === "heatmap" && STATE[k].views.length);
+  }
+  // The heatmap sits outside the crosshair-mirror group (its y axis is a day
+  // list, not time), so it gets its own lightweight highlight: outline the
+  // hovered timestamp's day row and hour cell.
+  function highlightHeatmap(ts) {
+    heatmapKeys().forEach(k => {
+      const spec = STATE[k].spec;
+      const keys = spec.dayKeys || [];
+      const r = keys.indexOf(Math.floor(ts / 86400e3) * 86400e3);
+      STATE[k].views.forEach(v => {
+        if (!v.overlay || !v.geom) return;
+        v.overlay.replaceChildren();
+        if (r < 0) return;
+        const g = v.geom;
+        svgEl("rect", { x: g.p.l, y: g.p.t + r * g.ch, width: g.iw, height: g.ch,
+                        fill: "none", stroke: "rgba(255,255,255,.5)", "stroke-width": 1,
+                        "vector-effect": "non-scaling-stroke" }, v.overlay);
+        const c = new Date(ts).getUTCHours();
+        svgEl("rect", { x: g.p.l + c * g.cw, y: g.p.t + r * g.ch, width: g.cw, height: g.ch,
+                        fill: "none", stroke: "#fff", "stroke-width": 1.5,
+                        "vector-effect": "non-scaling-stroke" }, v.overlay);
+      });
+    });
+  }
+  function clearHeatmapHighlight() {
+    heatmapKeys().forEach(clearOverlay);
   }
   function clearOverlay(key) {
     const st = STATE[key];
@@ -625,10 +715,12 @@
       ttLive.innerHTML = lineTooltipHTML(key, spec, snappedTs, rows);
       placeTooltip(ttLive, clientX, clientY);
     }
-    // Mirror the crosshair across the sync group.
+    // Mirror the crosshair across the sync group, and light up the matching
+    // day row in the hourly power map.
     if (spec.sync && !fromSync) {
       TIME.hoverTs = snappedTs;
       syncKeys().forEach(k => { if (k !== key) hoverLineAt(k, snappedTs, null, null, true); });
+      highlightHeatmap(snappedTs);
     }
   }
 
@@ -645,7 +737,9 @@
   function attachInteractions(view) {
     const key = view.key;
     const cont = view.container;
-    let drag = null;   // { startVbX, startClientX, mode: "select"|"pan", winAtStart, moved }
+    let drag = null;   // { startVbX, startClientX/Y, mode, winAtStart, moved, pending }
+    const pointers = new Map();   // active pointerId -> {x, y} (touch tracking)
+    let pinch = null;  // { startDist, winAtStart, midClientX }
 
     cont.addEventListener("pointermove", ev => {
       const st = STATE[key], spec = st.spec;
@@ -653,7 +747,39 @@
       ACTIVE_KEY = key;
       const pt = vbPoint(view, ev);
       const g = view.geom;
+      if (pointers.has(ev.pointerId)) pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (pinch) {
+        if (pointers.size >= 2) {
+          // Scale the window at pinch start around the fingers' midpoint.
+          const pts = Array.from(pointers.values());
+          const dist = Math.max(8, Math.abs(pts[0].x - pts[1].x));
+          const scale = pinch.startDist / dist;
+          const rect = view.svg.getBoundingClientRect();
+          const midVbX = (pinch.midClientX - rect.left) / rect.width * g.W;
+          const frac = Math.max(0, Math.min(1, (midVbX - g.p.l) / g.iw));
+          const w = pinch.winAtStart;
+          const center = w[0] + frac * (w[1] - w[0]);
+          applyWindow(key, spec, [center - (center - w[0]) * scale,
+                                  center + (w[1] - center) * scale]);
+        }
+        return;
+      }
       if (drag) {
+        if (drag.pending) {
+          // Touch gesture arbitration: claim the drag only on clear
+          // horizontal intent; a mostly-vertical move stays the page's
+          // scroll (touch-action: pan-y does the actual scrolling).
+          const dx = ev.clientX - drag.startClientX, dy = ev.clientY - drag.startClientY;
+          if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+            drag.pending = false;
+            cont.setPointerCapture && cont.setPointerCapture(ev.pointerId);
+          } else if (Math.abs(dy) > 14) {
+            drag = null;
+            return;
+          } else {
+            return;
+          }
+        }
         const dxVb = pt.x - drag.startVbX;
         if (Math.abs(ev.clientX - drag.startClientX) > 4) drag.moved = true;
         if (drag.mode === "pan" && drag.moved) {
@@ -686,8 +812,9 @@
         const v = spec.z[r][c];
         LAST_HOVER[key] = { day: spec.days[r], hour: c, value: v };
         ttLive.innerHTML = '<div class="tt-ts">' + spec.days[r] + " · " + p2(c) + ":00</div>" +
-          '<div class="tt-row"><span class="tt-name">mean power</span><span class="tt-val">' +
-          (v == null ? "no data" : fmtVal(v, 0) + " " + (spec.unit || "")) + "</span></div>";
+          '<div class="tt-row"><span class="tt-name">' + (S.meanPower || "mean power") +
+          '</span><span class="tt-val">' +
+          (v == null ? (S.noData || "no data") : fmtVal(v, 0) + " " + (spec.unit || "")) + "</span></div>";
         placeTooltip(ttLive, ev.clientX, ev.clientY);
         view.overlay.replaceChildren();
         svgEl("rect", { x: g.p.l + c * g.cw, y: g.p.t + r * g.ch, width: g.cw, height: g.ch, fill: "none", stroke: "#fff", "stroke-width": 1.2, "vector-effect": "non-scaling-stroke" }, view.overlay);
@@ -696,11 +823,40 @@
 
     cont.addEventListener("pointerleave", () => { if (!drag) hideHover(key); });
 
+    // Keyboard focus (tabindex on the chart box) targets the shortcuts at
+    // this panel without needing mouse hover.
+    cont.addEventListener("focus", () => { ACTIVE_KEY = key; });
+
     cont.addEventListener("pointerdown", ev => {
       const st = STATE[key], spec = st.spec;
       if (!view.geom || ev.button !== 0) return;
       if (!zoomCapable(spec)) return;
+      if (ev.pointerType === "touch") pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (pointers.size === 2) {
+        // A second finger turns the gesture into a pinch; abandon any
+        // in-progress one-finger drag.
+        drag = null;
+        clearSelection(view);
+        const pts = Array.from(pointers.values());
+        pinch = {
+          startDist: Math.max(8, Math.abs(pts[0].x - pts[1].x)),
+          winAtStart: currentWindow(key, spec).slice(),
+          midClientX: (pts[0].x + pts[1].x) / 2,
+        };
+        return;
+      }
       const pt = vbPoint(view, ev);
+      if (ev.pointerType === "touch") {
+        // Touch drags start pending: they are only claimed once the move
+        // shows horizontal intent (see pointermove), so vertical scrolling
+        // over the chart keeps working.
+        drag = {
+          startVbX: pt.x, startClientX: ev.clientX, startClientY: ev.clientY,
+          moved: false, pending: true, mode: "select",
+          winAtStart: currentWindow(key, spec).slice(),
+        };
+        return;
+      }
       // Without this, the drag also starts a native text selection; a later
       // drag that lands on that selection becomes a drag-and-drop and the
       // browser cancels our pointer mid-gesture (user-select: none on the
@@ -710,27 +866,45 @@
       // (never a mode-dependent pan, which read as confusing); holding
       // Shift turns the drag into a pan of the current window.
       drag = {
-        startVbX: pt.x, startClientX: ev.clientX, moved: false,
+        startVbX: pt.x, startClientX: ev.clientX, startClientY: ev.clientY,
+        moved: false, pending: false,
         mode: ev.shiftKey ? "pan" : "select",
         winAtStart: currentWindow(key, spec).slice(),
       };
       cont.setPointerCapture && cont.setPointerCapture(ev.pointerId);
     });
 
-    cont.addEventListener("pointercancel", () => {
+    cont.addEventListener("pointercancel", ev => {
       // The browser reclaimed the pointer (e.g. a native drag or scroll
       // gesture won): abandon the gesture instead of leaving a stuck drag.
+      pointers.delete(ev.pointerId);
+      pinch = null;
       if (drag) { drag = null; clearSelection(view); }
     });
 
     cont.addEventListener("pointerup", ev => {
+      pointers.delete(ev.pointerId);
+      if (pinch) {
+        // Keep the pinched window; ignore the remaining finger until it
+        // lifts too (resuming a one-finger pan mid-lift reads as a jump).
+        if (pointers.size < 2) pinch = null;
+        return;
+      }
       if (!drag) return;
       const st = STATE[key], spec = st.spec;
       const pt = vbPoint(view, ev);
       const d = drag; drag = null;
       clearSelection(view);
       if (!d.moved) {
-        // A plain click: pin / unpin the tooltip.
+        // A plain click pins / unpins the tooltip. A touch tap has no hover
+        // history, so synthesize the hover at the tap point first.
+        if (ev.pointerType === "touch" && spec.kind === "line") {
+          const g = view.geom;
+          if (pt.x >= g.p.l - 4 && pt.x <= g.W - g.p.r + 4) {
+            const ts = g.xd[0] + (pt.x - g.p.l) / g.iw * (g.xd[1] - g.xd[0]);
+            hoverLineAt(key, ts, ev.clientX, ev.clientY, false);
+          }
+        }
         togglePin(key, ev);
         return;
       }
@@ -787,6 +961,7 @@
     LAST_PRESET = null;
     rerenderPanel(key);
     updatePresetPills();
+    updateHash();
   }
   function resetZoom(key) {
     const st = STATE[key];
@@ -795,6 +970,37 @@
     LAST_PRESET = null;
     rerenderPanel(key);
     updatePresetPills();
+    updateHash();
+  }
+
+  // ------------------------------------------------------------------
+  // Anomaly jump: cycle the panel window through the marker clusters.
+  // Markers closer together than twice the padding read as one event and
+  // are framed as a single view instead of two nearly identical jumps.
+  // ------------------------------------------------------------------
+  const ANOM_PAD_MS = 6 * 3600e3;
+  function anomalyClusters(key) {
+    const st = STATE[key];
+    if (!st || !st.spec || !(st.spec.markers || []).length) return [];
+    if (!st.anomClusters) {
+      const xs = st.spec.markers.map(m => m.x).sort((a, b) => a - b);
+      const clusters = [];
+      xs.forEach(x => {
+        const last = clusters[clusters.length - 1];
+        if (last && x - last[1] <= 2 * ANOM_PAD_MS) last[1] = x;
+        else clusters.push([x, x]);
+      });
+      st.anomClusters = clusters;
+    }
+    return st.anomClusters;
+  }
+  function jumpAnomaly(key) {
+    const clusters = anomalyClusters(key);
+    if (!clusters.length) return;
+    const st = STATE[key];
+    st.anomIdx = ((st.anomIdx == null ? -1 : st.anomIdx) + 1) % clusters.length;
+    const c = clusters[st.anomIdx];
+    applyWindow(key, st.spec, [c[0] - ANOM_PAD_MS, c[1] + ANOM_PAD_MS]);
   }
   function drawSelection(view, x0, x1) {
     const g = view.geom;
@@ -835,9 +1041,14 @@
     document.querySelectorAll(".tool-expand").forEach(b => {
       b.addEventListener("click", () => openLightbox(b.dataset.panel));
     });
+    document.querySelectorAll(".tool-anom").forEach(b => {
+      b.addEventListener("click", () => jumpAnomaly(b.dataset.panel));
+    });
     document.querySelectorAll(".preset-pill").forEach(b => {
       b.addEventListener("click", () => applyPreset(b.dataset.days));
     });
+    const pb = document.getElementById("print-btn");
+    if (pb) pb.addEventListener("click", () => window.print());
   }
 
   function exportPng(key) {
@@ -1009,11 +1220,11 @@
     const nowEnc = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(),
       now.getHours(), now.getMinutes(), now.getSeconds());
     const ageMin = Math.max(0, (nowEnc - DATA.meta.last_sample_ms) / 60e3);
-    let label;
-    if (ageMin < 90) label = Math.round(ageMin) + " min ago";
-    else if (ageMin < 48 * 60) label = (ageMin / 60).toFixed(1) + " h ago";
-    else label = (ageMin / 1440).toFixed(1) + " d ago";
-    el.textContent = "last sample " + label;
+    let t;
+    if (ageMin < 90) t = Math.round(ageMin) + " min";
+    else if (ageMin < 48 * 60) t = (ageMin / 60).toFixed(1) + " h";
+    else t = (ageMin / 1440).toFixed(1) + " d";
+    el.textContent = (S.staleness || "last sample {t} ago").replace("{t}", t);
     const expected = (DATA.meta.expected_interval_min || 20) * 2;
     if (ageMin > expected) el.classList.add("is-stale");
   }
@@ -1030,10 +1241,12 @@
     Object.keys(STATE).forEach(k => {
       STATE[k].zoom = null;
       STATE[k].hidden.clear();
+      STATE[k].anomIdx = null;
       delete LAST_HOVER[k];
     });
     Object.keys(STATE).forEach(rerenderPanel);
     updatePresetPills();
+    updateHash();
     READY = true;   // reveals are long gone by the time tests reset
   }
 
@@ -1050,6 +1263,8 @@
     hidden: k => (STATE[k] ? Array.from(STATE[k].hidden) : []),
     lightbox: () => LIGHTBOX_KEY,
     openLightbox,
+    anomalyClusters: k => anomalyClusters(k).map(c => c.slice()),
+    jumpAnomaly,
     resetAll,
   };
 
@@ -1065,7 +1280,7 @@
         (spec.kind === "bar" && !(spec.data || []).length) ||
         (spec.kind === "heatmap" && !(spec.days || []).length)) {
         const d = htmlEl("div", "chart-empty", cont);
-        d.textContent = "no data in the analyzed window";
+        d.textContent = S.empty || "no data in the analyzed window";
         STATE[key] = { spec: spec || { kind: "empty" }, zoom: null, hidden: new Set(), views: [], title: cont.dataset.title || key };
         return;
       }
@@ -1086,6 +1301,12 @@
     bindKeyboard();
     fillStaleness();
     updatePresetPills();
+    restoreFromHash();
+    // Long archives open on the 30-day preset so the initial view stays
+    // readable; a permalink hash (restored above) takes precedence.
+    if (DATA.meta && DATA.meta.default_preset_days && !location.hash) {
+      applyPreset(String(DATA.meta.default_preset_days));
+    }
     const lb = document.getElementById("lightbox");
     if (lb) lb.addEventListener("click", ev => { if (ev.target === lb || ev.target.classList.contains("lightbox-close")) closeLightbox(); });
     reveal();

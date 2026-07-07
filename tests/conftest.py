@@ -66,32 +66,47 @@ def _write_synthetic_agent(agent: Path) -> Path:
         bv = 27.0 + (i % 3) * 0.2
         ul = 15.0 + (i % 7)
         bc = 100.0 if i % 11 else 96.0
+        if i in (120, 121):
+            # One corroborated on-battery episode: line voltage collapses
+            # while the battery capacity falls (exercises the ep-strip path).
+            lv = 0.5
+            bc = 90.0 if i == 120 else 84.0
         vals = f"{lv:.1f}\t{bv:.1f}\t{ul:.1f}\t{bc:.1f}".replace(".", ",")  # Spanish decimals
         dl_lines.append(f"{t:%m/%d/%Y %H:%M:%S}\t{vals}")
     (agent / "DataLog").write_text("\n".join(dl_lines) + "\n", encoding="utf-8")
 
     # energylog: ';'-delimited, dot-decimal, ts = seconds since 2010 LOCAL,
     # 5-min cadence over ~2 days (2 distinct dates -> heatmap has >=2 rows).
-    el = ["# $month=2026-05", "# $interval=300", "# $calculatedMaxLoad=1400.0"]
-    for i in range(576):  # 2 days @ 5 min
-        t = start + timedelta(minutes=5 * i)
-        secs = (t - EPOCH_2010).total_seconds()
-        load = 15.0 + (i % 9)
-        power = load / 100.0 * 1400.0
-        el.append(f"{secs:.0f};null;{load:.1f};{power:.1f}")
-    (agent / "energylog" / "2026-05.log").write_text("\n".join(el) + "\n", encoding="utf-8")
+    # A second file covers the tail of April so the period-comparison panel
+    # has two billing periods; May 1 2026 is a Friday and May 2 a Saturday,
+    # so the weekday/weekend panel gets both profiles.
+    for month_start, month_label, n in [
+        (start - timedelta(days=2), "2026-04", 576),   # Apr 29-30
+        (start, "2026-05", 576),                       # May 1-2
+    ]:
+        el = [f"# $month={month_label}", "# $interval=300", "# $calculatedMaxLoad=1400.0"]
+        for i in range(n):  # @ 5 min
+            t = month_start + timedelta(minutes=5 * i)
+            secs = (t - EPOCH_2010).total_seconds()
+            load = 15.0 + (i % 9)
+            power = load / 100.0 * 1400.0
+            el.append(f"{secs:.0f};null;{load:.1f};{power:.1f}")
+        (agent / "energylog" / f"{month_label}.log").write_text(
+            "\n".join(el) + "\n", encoding="utf-8")
     return agent
 
 
 def _build_dashboard(tmp_path_factory, theme: str) -> Path:
     """Run the real pipeline against the synthetic agent with an explicit
     config file (hermetic: a developer's local config.toml must not leak into
-    the tests) and return the written HTML path."""
+    the tests, and neither may a developer's real output/archive — hence
+    archive disabled) and return the written HTML path."""
     agent = _write_synthetic_agent(tmp_path_factory.mktemp(f"agent-{theme}"))
     out_dir = tmp_path_factory.mktemp(f"out-{theme}")
     out = out_dir / "dashboard.html"
     conf = out_dir / "config.toml"
-    conf.write_text(f'[dashboard]\ntheme = "{theme}"\n', encoding="utf-8")
+    conf.write_text(f'[dashboard]\ntheme = "{theme}"\n\n[archive]\nenabled = false\n',
+                    encoding="utf-8")
     import analyze_ups
     analyze_ups.main(["--agent-dir", str(agent), "-o", str(out), "--config", str(conf),
                       "--no-browser", "--quiet", "--no-snapshot"])

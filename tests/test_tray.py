@@ -125,6 +125,51 @@ def test_is_already_connected(html, expected):
     assert t._is_already_connected(html) is expected
 
 
+# ---------------------------------------------------------------- alert watcher
+def test_alert_watcher_starts_at_end_of_file(tmp_path):
+    p = tmp_path / "alerts.log"
+    p.write_text("old alert line\n", encoding="utf-8")
+    w = t.AlertWatcher(p, cooldown_sec=0)
+    assert w.poll(now=1000.0) is None                    # history never re-notifies
+    with p.open("a", encoding="utf-8") as f:
+        f.write("2026-07-06 10:00:00  voltage_anomalies=2\n")
+    assert "voltage_anomalies=2" in w.poll(now=1001.0)
+    assert w.poll(now=1002.0) is None                    # nothing new
+
+
+def test_alert_watcher_cooldown_swallows_repeats(tmp_path):
+    p = tmp_path / "alerts.log"
+    p.write_text("", encoding="utf-8")
+    w = t.AlertWatcher(p, cooldown_sec=1800)
+    with p.open("a", encoding="utf-8") as f:
+        f.write("first\n")
+    assert w.poll(now=1000.0) == "first"
+    with p.open("a", encoding="utf-8") as f:
+        f.write("second\n")
+    # Inside the cooldown the new line is consumed without notifying.
+    assert w.poll(now=1100.0) is None
+    with p.open("a", encoding="utf-8") as f:
+        f.write("third\n")
+    # After the cooldown expires the next new line notifies again.
+    assert w.poll(now=1000.0 + 1801) == "third"
+
+
+def test_alert_watcher_handles_truncation(tmp_path):
+    p = tmp_path / "alerts.log"
+    p.write_text("a long line of history\n" * 5, encoding="utf-8")
+    w = t.AlertWatcher(p, cooldown_sec=0)
+    p.write_text("fresh\n", encoding="utf-8")            # rotated / truncated
+    assert w.poll(now=1000.0) == "fresh"
+
+
+def test_alert_watcher_missing_file(tmp_path):
+    p = tmp_path / "alerts.log"
+    w = t.AlertWatcher(p, cooldown_sec=0)
+    assert w.poll(now=1000.0) is None
+    p.write_text("born later\n", encoding="utf-8")
+    assert w.poll(now=1001.0) == "born later"
+
+
 # ---------------------------------------------------------------- TLS hardening
 def test_client_pins_cert_and_ignores_env():
     # PCSSClient must not trust ambient REQUESTS_CA_BUNDLE / proxy env: the

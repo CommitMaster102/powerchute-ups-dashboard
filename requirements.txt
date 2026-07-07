@@ -12,3 +12,4 @@ beautifulsoup4>=4.13
 pystray>=0.19
 Pillow>=11.0
 keyring>=25
+javaobj-py3>=0.4
