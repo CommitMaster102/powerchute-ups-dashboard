@@ -324,8 +324,11 @@ def test_panel_daily_flags_deviating_day_with_marker_and_color():
     pct = baseline["flagged"].iloc[0]["deviation_pct"]
     # The marker carries the y/type/color fields renderBar needs to draw the
     # glyph above the flagged bar, mirroring the lv/bc marker-list shape.
+    # deviation_pct is an unsigned mean-absolute deviation, so the label is
+    # bare (no leading "+", matching the console) — a below-baseline day would
+    # otherwise read "+38%".
     assert panel["markers"] == [{"x": idx, "y": panel["data"][idx]["y"], "type": "dot",
-                                 "color": "amber", "label": f"+{pct:.0f}%"}]
+                                 "color": "amber", "label": f"{pct:.0f}%"}]
     # Every other bar stays uncolored (the default panel color applies).
     assert all("color" not in item for i, item in enumerate(panel["data"]) if i != idx)
 

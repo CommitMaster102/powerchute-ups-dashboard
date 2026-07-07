@@ -471,3 +471,50 @@ def test_no_tariff_history_json_has_no_periods_key(tmp_path, restore_config):
                       "--config", str(_hermetic_config(tmp_path)), "--json", str(j)])
     data = json.loads(j.read_text())
     assert "periods" not in data["energy"]
+
+
+def _raise_locked(*_args, **_kwargs):
+    raise OSError("alerts.log is locked")
+
+
+def test_main_survives_a_locked_alerts_log(tmp_path, restore_config, monkeypatch, capsys):
+    """A failing alerts.log append (a locked file, a full disk) must not crash
+    a run whose analysis already completed: main() still writes the dashboard
+    and returns 0, logging a warning — the same guard the weekly digest call
+    site already has, now extended to the event-driven alert append."""
+    import analyze_ups
+    agent = _write_multiday_agent(tmp_path / "agent")
+    conf = tmp_path / "config.toml"
+    conf.write_text("[archive]\nenabled = false\n[alerts]\nenabled = true\n", encoding="utf-8")
+    monkeypatch.setattr(analyze_ups, "_maybe_write_alerts", _raise_locked)
+    out = tmp_path / "d.html"
+    rc = analyze_ups.main(["--agent-dir", str(agent), "-o", str(out),
+                           "--no-browser", "--quiet", "--no-snapshot", "--config", str(conf)])
+    assert rc == 0
+    assert out.exists()
+    err = capsys.readouterr().err
+    assert "alert append failed" in err
+    assert "Traceback" not in err
+
+
+def test_malformed_tariff_history_exits_nonzero_without_traceback(
+        tmp_path, restore_config, capsys):
+    """A malformed [[tariff.history]] entry makes load_config raise at the
+    analyzer's entry (roadmap item 17). main() must print the loud
+    "config error: ..." message and exit nonzero, not surface a traceback at a
+    user who only mistyped a date in config.toml."""
+    import analyze_ups
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        'effective_from = "not-a-date"\n'
+        "coopesantos_low = 70\ncoopesantos_high = 110\n"
+        "tier_limit_kwh = 200\npcss_flat = 110\n",
+        encoding="utf-8",
+    )
+    rc = analyze_ups.main(["--config", str(conf), "--no-browser", "--quiet",
+                           "--agent-dir", str(tmp_path / "empty-agent")])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "config error" in err
+    assert "Traceback" not in err

@@ -236,6 +236,8 @@ _STRINGS_ES = {
     "UPS-metered share of the billed consumption":
         "proporción medida por el UPS del consumo facturado",
     "Share": "Proporción",
+    "Billed kWh": "Facturado kWh",
+    "Billed ₡": "Facturado ₡",
     "day deviates from the recorded baseline":
         "día se desvía de la referencia registrada",
     "days deviate from the recorded baseline":
@@ -585,7 +587,7 @@ def _panel_daily(energy_summary, flagged: pd.DataFrame | None = None) -> dict | 
         if pct is not None:
             item["color"] = "amber"
             markers.append({"x": i, "y": kwh, "type": "dot", "color": "amber",
-                             "label": f"+{pct:.0f}%"})
+                             "label": f"{pct:.0f}%"})
         data.append(item)
     return {
         "kind": "bar", "unit": "kWh", "dec": 2, "vb": [460, 250], "barName": _L("energy"),
@@ -1150,8 +1152,8 @@ def _bills_table_html(reconciled: pd.DataFrame | None) -> str:
     is unchanged for anyone who never uses bills.csv."""
     if reconciled is None or reconciled.empty:
         return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
-    head_cols = [_L("Period"), "UPS kWh", "Billed kWh", f"{_L('Share')} %",
-                 f"{_L('Tiered')} ₡", "Billed ₡", "₡/kWh", _L("Notes")]
+    head_cols = [_L("Period"), "UPS kWh", _L("Billed kWh"), f"{_L('Share')} %",
+                 f"{_L('Tiered')} ₡", _L("Billed ₡"), "₡/kWh", _L("Notes")]
     head = "".join(f'<th class="{"tl" if i == 0 else "tr"}">{_esc(c)}</th>' for i, c in enumerate(head_cols))
     rows = []
     cols = ["period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
@@ -1621,7 +1623,6 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             "themeAuto": _L("auto"),
             "themeDark": _L("dark"),
             "themeLight": _L("light"),
-            "themeTitle": _L("Cycle theme: auto, dark, light"),
         },
         "meta": {
             "last_sample_ms": last_sample_ms,

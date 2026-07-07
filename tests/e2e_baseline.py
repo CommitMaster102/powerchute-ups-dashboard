@@ -69,7 +69,7 @@ def test_daily_panel_renders_deviation_marker(_browser, baseline_dashboard_path)
         # The glyph's deviation-percent label rides just above it.
         labels = page.eval_on_selector_all(
             "#panel-daily svg text",
-            "els => els.map(e => e.textContent).filter(t => /^\\+\\d+%$/.test(t))")
+            "els => els.map(e => e.textContent).filter(t => /^\\d+%$/.test(t))")
         assert labels, "no deviation-percent label rendered on the daily panel"
         # The amber bar recolor is still there alongside the glyph: exactly
         # one bar (the flagged day) carries a fill different from the rest.

@@ -182,7 +182,15 @@ def _wall_clock_now() -> pd.Timestamp:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     quiet = args.quiet
-    used_cfg = config.load_config(args.config, agent_dir=args.agent_dir, output=args.output)
+    try:
+        used_cfg = config.load_config(args.config, agent_dir=args.agent_dir, output=args.output)
+    except ValueError as e:
+        # A malformed [[tariff.history]] entry (roadmap item 17) raises a loud,
+        # already-worded "config error: ..." ValueError from _parse_tariff_history.
+        # Surface just that message and exit nonzero, rather than dumping a
+        # traceback at a user who only mistyped a date in config.toml.
+        print(str(e), file=sys.stderr)
+        return 2
 
     def say(*a, **k):
         if not quiet:
@@ -490,7 +498,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         episodes = on_battery
 
-    alert_path = _maybe_write_alerts(voltage_anomalies, high_load, episodes, staleness, baseline)
+    # Guarded like the weekly-digest call site below: the alerts.log append can
+    # fail (disk full, an AV lock on the file), and that must never crash a run
+    # whose analysis already completed — the dashboard has not been written
+    # yet at this point, so an unguarded raise here would lose the page too.
+    try:
+        alert_path = _maybe_write_alerts(voltage_anomalies, high_load, episodes, staleness,
+                                         baseline, now)
+    except Exception as e:
+        alert_path = None
+        print(
+            f"[warn] alert append failed and was skipped this run: {type(e).__name__}: {e}\n"
+            "       The analyzer run continues normally and still writes the dashboard.",
+            file=sys.stderr,
+        )
     if alert_path:
         say(f"  [alert] appended to {alert_path}")
 
@@ -816,14 +837,20 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
 
 
 def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None,
-                        baseline=None) -> Path | None:
+                        baseline=None, now=None) -> Path | None:
     """Opt-in (config [alerts] enabled): append a timestamped line to
     alerts.log when the analyzed window has voltage anomalies, sustained
     high-load, inferred on-battery episodes, a stale data feed, or days that
     deviate from the recorded baseline (roadmap item 19,
     pcss.stats.detect_baseline_deviations — a deviation flag, never a fault
     claim). The tray process watches this file and raises a notification for
-    new lines; email stays an extension point."""
+    new lines; email stays an extension point.
+
+    The line is stamped with `now`, the pipeline's single wall-clock read
+    (roadmap item 31), rather than a fresh pd.Timestamp.now() call, so the
+    alert, the staleness watchdog, and the weekly digest all agree on one
+    "now". A None `now` (a direct caller that does not thread it through)
+    falls back to the wall clock."""
     if not config.ALERTS_ENABLED:
         return None
     n_v, n_h, n_ob = len(voltage_anomalies), len(high_load), len(on_battery)
@@ -833,7 +860,8 @@ def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None
         return None
     stale_bit = (f"  stale={stale_level}({staleness['age_hours']:.1f}h)"
                 if stale_level != "fresh" else "")
-    line = (f"{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}  "
+    stamp = now if now is not None else pd.Timestamp.now()
+    line = (f"{stamp:%Y-%m-%d %H:%M:%S}  "
             f"voltage_anomalies={n_v}  high_load_episodes={n_h}  "
             f"on_battery_episodes={n_ob}  baseline_deviations={n_bd}{stale_bit}\n")
     with config.ALERTS_LOG.open("a", encoding="utf-8") as f:

@@ -390,7 +390,7 @@
         svgEl("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, plot);
         svgEl("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, plot);
       } else if (m.type === "star") {
-        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: mc || C.red, stroke: "#fff", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, plot);
+        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: mc || C.red, stroke: C.text, "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, plot);
       } else {
         svgEl("circle", { cx: x, cy: y, r: 3.5, fill: mc || C.amber, stroke: C.panel, "stroke-width": 1.5 }, plot);
       }
@@ -507,7 +507,7 @@
         svgEl("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
         svgEl("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
       } else if (m.type === "star") {
-        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: mc || C.red, stroke: "#fff", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, svg);
+        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: mc || C.red, stroke: C.text, "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, svg);
       } else {
         svgEl("circle", { cx: x, cy: y, r: 3.5, fill: mc || C.amber, stroke: C.panel, "stroke-width": 1.5 }, svg);
       }
@@ -650,10 +650,18 @@
     return svg;
   }
 
+  // The event name is the one data-derived string on the page (it comes from
+  // the EventLog / PCSS bundles), and eventsTooltipHTML assembles it into
+  // innerHTML, so escape it rather than trusting it as markup.
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, ch => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  }
+
   function eventsTooltipHTML(dot) {
     return '<div class="tt-ts">' + fmtFull(dot.e.x) + "</div>" +
       '<div class="tt-row"><span class="tt-dot" style="background:' + dot.color + '"></span>' +
-      '<span class="tt-name">' + dot.e.name + "</span>" +
+      '<span class="tt-name">' + escapeHtml(dot.e.name) + "</span>" +
       '<span class="tt-val">' + dot.label + "</span></div>";
   }
 
@@ -1079,7 +1087,7 @@
       placeTooltip(ttLive, clientX, clientY);
     }
     view.overlay.replaceChildren();
-    svgEl("circle", { cx: best.cx, cy: best.cy, r: 6, fill: "none", stroke: "#fff",
+    svgEl("circle", { cx: best.cx, cy: best.cy, r: 6, fill: "none", stroke: C.text,
                       "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }, view.overlay);
   }
 
@@ -1587,6 +1595,11 @@
     const st = STATE[key], spec = st.spec;
     const ref = inspectRefSeries(spec, st);
     if (!ref) return;
+    // The reference series can shrink out from under a live inspect cursor
+    // (for example a cmp baseline switch rebuilds the panel with a shorter
+    // series). stepInspect already clamps on every step; clamp here too so a
+    // rebuild does not leave INSPECT.idx pointing past the new array's end.
+    INSPECT.idx = Math.max(0, Math.min(ref.x.length - 1, INSPECT.idx));
     const ts = ref.x[INSPECT.idx];
     const view = activeInspectView(key);
     let clientX = null, clientY = null;

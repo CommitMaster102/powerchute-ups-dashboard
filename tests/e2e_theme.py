@@ -62,6 +62,30 @@ def _lv_stroke(page):
         ".getAttribute('stroke').toLowerCase()")
 
 
+def _ev_hover_ring_stroke(page):
+    """Hover the first visible dot on the event-timeline panel and return the
+    stroke of the hover ring drawn in that panel's overlay (a <circle>)."""
+    from harness import panel_box
+    panel_box(page, "ev")  # scroll into view; page.mouse only lands in the viewport
+    xy = page.evaluate(
+        "(() => {"
+        "  const c = document.querySelector('#panel-ev svg circle.ev-dot');"
+        "  if (!c) return null;"
+        "  const svg = c.ownerSVGElement, r = svg.getBoundingClientRect(),"
+        "        vb = svg.viewBox.baseVal;"
+        "  const cx = +c.getAttribute('cx'), cy = +c.getAttribute('cy');"
+        "  return { x: r.left + cx / vb.width * r.width,"
+        "           y: r.top + cy / vb.height * r.height };"
+        "})()")
+    assert xy, "no visible dot on the ev panel"
+    page.mouse.move(xy["x"], xy["y"])
+    page.wait_for_timeout(80)
+    return page.evaluate(
+        "(() => { const c = document.querySelector("
+        "'#panel-ev svg .chart-overlay circle'); "
+        "return c && c.getAttribute('stroke'); })()")
+
+
 @pytest.fixture
 def auto_page(_browser, auto_dashboard_path):
     page = _browser.new_page(viewport={"width": 1600, "height": 2400})
@@ -213,6 +237,25 @@ def test_dark_theme_bar_hover_highlight_unchanged(auto_page, auto_dashboard_path
     fill, stroke = _bar_hover_rect(auto_page, "cad")
     assert fill.lower() == DARK_TEXT
     assert stroke.lower() == DARK_TEXT
+
+
+def test_light_theme_events_hover_ring_is_not_white(auto_page, auto_dashboard_path):
+    # Review finding (Minor 6): the event-timeline hover ring (hoverEventsAt)
+    # and the marker star outline were hardcoded white, like the three overlays
+    # above, and vanished against the light chrome. The ring now resolves from
+    # the active palette's "text" role at draw time.
+    _open(auto_page, auto_dashboard_path, "light")
+    stroke = _ev_hover_ring_stroke(auto_page)
+    assert stroke is not None, "no events hover ring drawn"
+    assert "255,255,255" not in stroke and stroke.lower() != "#fff"
+    assert stroke.lower() == LIGHT_TEXT
+
+
+def test_dark_theme_events_hover_ring_unchanged(auto_page, auto_dashboard_path):
+    # The dark palette's text role reads near-white, so the fix stays visually
+    # equivalent to the old literal white on the theme it always worked on.
+    _open(auto_page, auto_dashboard_path, "dark")
+    assert _ev_hover_ring_stroke(auto_page).lower() == DARK_TEXT
 
 
 def test_light_theme_sync_hover_mirrors_heatmap_outline(auto_page, auto_dashboard_path):
