@@ -133,20 +133,47 @@ def _build_dashboard(tmp_path_factory, theme: str) -> Path:
     """Run the real pipeline against the synthetic agent with an explicit
     config file (hermetic: a developer's local config.toml must not leak into
     the tests, and neither may a developer's real output/archive — hence
-    archive disabled) and return the written HTML path."""
+    archive disabled) and return the written HTML path.
+
+    Both user-owned input files the pipeline otherwise reads from the repo
+    root by default are pinned through [paths]: annotations_file at the
+    synthetic annotations written above, and bills_file at a guaranteed-absent
+    path. Without the bills_file pin, a developer's real bills.csv for June or
+    July 2026 would reconcile against the synthetic billing periods and change
+    this supposedly hermetic page.
+    """
     agent = _write_synthetic_agent(tmp_path_factory.mktemp(f"agent-{theme}"))
     out_dir = tmp_path_factory.mktemp(f"out-{theme}")
     out = out_dir / "dashboard.html"
     annotations = _write_synthetic_annotations(out_dir)
+    absent_bills = out_dir / "no-such-bills.csv"     # never created: disables bill reconciliation
     conf = out_dir / "config.toml"
     conf.write_text(
         f'[dashboard]\ntheme = "{theme}"\n\n[archive]\nenabled = false\n\n'
-        f"[paths]\nannotations_file = '{annotations.as_posix()}'\n",
+        f"[paths]\nannotations_file = '{annotations.as_posix()}'\n"
+        f"bills_file = '{absent_bills.as_posix()}'\n",
         encoding="utf-8",
     )
     import analyze_ups
-    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out), "--config", str(conf),
-                      "--no-browser", "--quiet", "--no-snapshot"])
+    # The synthetic logs carry fixed June/July 2026 dates. The analyzer reads
+    # the wall clock exactly once (roadmap item 31, for the staleness
+    # watchdog); left to the real clock, this fixture would read as
+    # staleness-critical forever, drifting further as real time passes.
+    # STATEOFUPS_NOW is a test-only override (read in
+    # analyze_ups._wall_clock_now) that pins "now" just after the newest
+    # synthetic sample so the health pill reads fresh. It deliberately does not
+    # move the fixture's own dates, so the DataLog window still overlaps the
+    # fixture EventLog's fixed 2026-06-29 outage.
+    prev_now = os.environ.get("STATEOFUPS_NOW")
+    os.environ["STATEOFUPS_NOW"] = "2026-07-01 00:00:00"
+    try:
+        analyze_ups.main(["--agent-dir", str(agent), "-o", str(out), "--config", str(conf),
+                          "--no-browser", "--quiet", "--no-snapshot"])
+    finally:
+        if prev_now is None:
+            os.environ.pop("STATEOFUPS_NOW", None)
+        else:
+            os.environ["STATEOFUPS_NOW"] = prev_now
     assert out.exists(), "synthetic dashboard was not written"
     return out
 

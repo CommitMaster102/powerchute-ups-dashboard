@@ -439,3 +439,36 @@ def test_dashboard_omits_bill_reconciliation_table_when_file_missing(tmp_path):
                       "--config", str(_hermetic_config(tmp_path, bills_file=str(missing)))])
     html = out.read_text(encoding="utf-8")
     assert "Bill Reconciliation" not in html
+
+
+def test_hermetic_e2e_build_pins_bills_file_against_repo_root_leak(
+        tmp_path, tmp_path_factory, monkeypatch):
+    """The hermetic E2E fixture (tests/conftest.py) must pin [paths]
+    bills_file at a guaranteed-absent path, exactly as it already does for
+    annotations_file. Otherwise a real bills.csv at the repo-root default
+    (config.BILLS_FILE) reconciles against the synthetic billing periods and
+    silently changes the supposedly hermetic page.
+
+    This drives the actual fixture build. It is RED before the fixture fix
+    (with no bills_file override the repo-root bill leaks the Bill
+    Reconciliation table into the built page) and GREEN after (the absent-path
+    override keeps the page clean). The bill aligns to the synthetic July
+    billing period, whose partial energy still reconciles.
+    """
+    import conftest
+    bill = tmp_path / "bills.csv"
+    bill.write_text(
+        "period_start,kwh,amount_crc\n2026-07-01,100.0,13000.0\n", encoding="utf-8")
+    monkeypatch.setattr(config, "BILLS_FILE", bill)
+    # _build_dashboard runs the real pipeline, which mutates module-level
+    # config state via load_config (theme "dark", archive off, ...). Snapshot
+    # and restore it so this test does not leak "dark" into a later test that
+    # asserts the "auto" default.
+    saved = {n: getattr(config, n) for n in ("DASHBOARD_THEME", "DASHBOARD_LANGUAGE",
+                                             "ARCHIVE_ENABLED")}
+    try:
+        out = conftest._build_dashboard(tmp_path_factory, "dark")
+        assert "Bill Reconciliation" not in out.read_text(encoding="utf-8")
+    finally:
+        for n, v in saved.items():
+            setattr(config, n, v)

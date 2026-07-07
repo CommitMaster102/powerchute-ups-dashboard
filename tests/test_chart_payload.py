@@ -713,10 +713,25 @@ def test_default_preset_only_for_long_history():
 def test_no_tariff_history_dashboard_html_unchanged(monkeypatch):
     """With TARIFF_HISTORY empty (the default), the page must be
     byte-identical to a run with the key untouched — no Billing Periods
-    card, no stray blank-line drift from the conditional block."""
+    card, no stray blank-line drift from the conditional block.
+
+    The footer stamps datetime.now() at second resolution, so two builds that
+    straddle a second boundary would differ on that one line and flake. This
+    freezes pcss.dashboard's datetime.now() rather than normalizing the
+    "Generated" line afterward: freezing keeps the assertion a true
+    byte-for-byte equality (which is what the test is really pinning) instead
+    of masking one field with a regex.
+    """
+    import pcss.dashboard as dashboard_mod
+
+    class _FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 6, 12, 0, 0)
+
+    monkeypatch.setattr(dashboard_mod, "datetime", _FrozenClock)
     monkeypatch.setattr(cfg, "TARIFF_HISTORY", [])
     baseline = build_dashboard(**_smoke_inputs())
-    monkeypatch.setattr(cfg, "TARIFF_HISTORY", [])
     again = build_dashboard(**_smoke_inputs())
     assert baseline == again
     assert "Billing Periods" not in baseline

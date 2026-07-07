@@ -159,6 +159,26 @@ def _window_df(df: pd.DataFrame | None, col: str, cutoff: pd.Timestamp,
     return df[df[key] >= cutoff].reset_index(drop=True)
 
 
+def _wall_clock_now() -> pd.Timestamp:
+    """The single wall-clock read the pipeline makes, for the staleness
+    watchdog (roadmap item 31) and the weekly digest gate (item 32).
+
+    Honors the test-only STATEOFUPS_NOW environment variable, an ISO timestamp
+    the hermetic E2E fixture (tests/conftest.py) sets so its fixed-date
+    synthetic logs read as fresh rather than drifting into
+    staleness-critical as real time passes. The variable is unset in normal
+    operation, so the analyzer reads the real wall clock; a malformed value
+    falls back to it too.
+    """
+    override = os.environ.get("STATEOFUPS_NOW")
+    if override:
+        try:
+            return pd.Timestamp(override)
+        except (ValueError, TypeError):
+            pass
+    return pd.Timestamp.now()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     quiet = args.quiet
@@ -265,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     # "Newest sample" is the merged (live + archive), date-filtered frame —
     # in practice the live DataLog's own newest sample, since the archive
     # only ever holds older months.
-    now = pd.Timestamp.now()
+    now = _wall_clock_now()
     staleness = assess_staleness(datalog_df["ts"].iloc[-1], now) if not datalog_df.empty else None
 
     section("DATALOG SUMMARY")
