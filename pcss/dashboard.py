@@ -28,6 +28,7 @@ from pcss.common import fmt_age_hours, fmt_bytes, fmt_crc
 from pcss.stats import (
     _billing_period_bounds,
     battery_replace_projection,
+    detect_self_tests,
     estimate_runtime,
     forecast_period_cost,
 )
@@ -175,6 +176,9 @@ _STRINGS_ES = {
     "crosses": "cruza",
     "not enough history to project replace-by":
         "historial insuficiente para proyectar el reemplazo",
+    "self-test": "autoprueba",
+    "self-tests": "autopruebas",
+    "median sag": "caída media",
     "nominal": "nominal",
     "high-load episode": "episodio de carga alta",
     "high-load episodes": "episodios de carga alta",
@@ -400,16 +404,41 @@ def _panel_bv(datalog_df, pal) -> tuple[dict | None, float | None]:
     return panel, slope_day
 
 
-def _panel_bc(datalog_df, pal) -> dict | None:
+def _panel_bc(datalog_df, pal, self_tests: pd.DataFrame | None = None) -> dict | None:
     xy = _xy(datalog_df, "Battery Capacity")
     if xy is None:
         return None
     lo = min(min(xy[1]), 96)
+    # Self-test markers (roadmap item 18): one dot per detected test, at the
+    # nearest Battery Capacity reading — the same marker shape the Line
+    # Voltage card uses for anomalies, reused here rather than a new type.
+    markers: list[dict] = []
+    if self_tests is not None and not self_tests.empty:
+        bc = datalog_df.dropna(subset=["Battery Capacity"])[["ts", "Battery Capacity"]].sort_values("ts")
+        test_ts = self_tests[["ts"]].dropna().sort_values("ts")
+        if not bc.empty and not test_ts.empty:
+            merged = pd.merge_asof(test_ts, bc, on="ts", direction="nearest")
+            markers = [{"x": x, "y": y, "type": "dot"} for x, y in
+                       zip(_ms_list(merged["ts"]), _vals(merged["Battery Capacity"]), strict=True)]
     return {
         "kind": "line", "unit": "%", "dec": 0, "sync": True, "gaps": True, "vb": [460, 250],
         "series": [_line_series("Battery %", pal["green"], *xy, width=1.8, fill=True)],
         "yDomain": [max(0.0, lo - 4), 103],
+        "markers": markers,
     }
+
+
+def _self_test_sub(n_tests: int, median_sag_v: float | None) -> str:
+    """Battery Charge card subtitle (roadmap item 18): the count of detected
+    self-tests and, when known, their median voltage sag. With none detected
+    the card keeps its original "% capacity" wording rather than announcing
+    a "0 self-tests" that nobody asked about."""
+    if n_tests == 0:
+        return _L("% capacity")
+    bits = [_count(n_tests, _L("self-test"), _L("self-tests"))]
+    if median_sag_v is not None:
+        bits.append(f"{_L('median sag')} {median_sag_v:.2f} V")
+    return " · ".join(bits)
 
 
 def _panel_rt(energy_df, pal, calibration: dict | None = None) -> tuple[dict | None, float | None, float | None]:
@@ -1178,13 +1207,16 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     forecast: dict | None = None,
                     bill_reconciliation: pd.DataFrame | None = None,
                     annotations: pd.DataFrame | None = None,
-                    calibration: dict | None = None) -> str:
+                    calibration: dict | None = None,
+                    self_tests: pd.DataFrame | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
         on_battery = pd.DataFrame()
+    if self_tests is None:
+        self_tests = detect_self_tests(datalog_df)
     if battery is None:
-        battery = battery_replace_projection(datalog_df, annotations=annotations)
+        battery = battery_replace_projection(datalog_df, annotations=annotations, self_tests=self_tests)
     if forecast is None:
         forecast = forecast_period_cost(energy_summary)
 
@@ -1197,7 +1229,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         "pw": _panel_pw(energy_df, pal),
         "hm": _panel_hm(_heatmap_pivot(energy_df)),
         "bv": bv_panel,
-        "bc": _panel_bc(datalog_df, pal),
+        "bc": _panel_bc(datalog_df, pal, self_tests),
         "rt": rt_panel,
         "kw": _panel_kw(energy_summary, pal),
         "daily": _panel_daily(energy_summary, pal),
@@ -1274,6 +1306,14 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     if battery.get("battery_age_days") is not None:
         bv_sub += (f" · {_L('battery age')} {battery['battery_age_days']:.0f} {_L('days')} "
                    f"({_L('since')} {battery['battery_installed_on']:%Y-%m-%d})")
+    n_self_tests = 0 if self_tests is None else int(len(self_tests))
+    median_sag_v = None
+    if self_tests is not None and not self_tests.empty and "sag_v" in self_tests.columns:
+        sagged = self_tests["sag_v"].dropna()
+        if not sagged.empty:
+            median_sag_v = float(sagged.median())
+    bc_sub = _self_test_sub(n_self_tests, median_sag_v)
+
     rt_sub = (f"{latest_w:.0f}W → {latest_rt:.0f} min" if latest_rt is not None
               else _L("runtime curve"))
     # Runtime-curve calibration (roadmap item 16): name the number of
@@ -1400,7 +1440,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
   {_section_head(_L('Battery Health'), _L('voltage · charge · runtime'))}
   <div class="grid12">
     {_card('bv', 12, _L('Battery Voltage'), bv_sub, True, sub_color=pal['amber'] if bv_slope is not None and bv_slope < 0 else None)}
-    {_card('bc', 6, _L('Battery Charge'), _L('% capacity'), True)}
+    {_card('bc', 6, _L('Battery Charge'), bc_sub, True)}
     {_card('rt', 6, _L('Estimated Runtime'), rt_sub, False, sub_color=pal['violet'])}
   </div>
 

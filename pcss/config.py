@@ -110,6 +110,17 @@ HIGH_LOAD_PCT = 80.0
 ON_BATTERY_VOLTAGE_V = 50.0
 ON_BATTERY_CAPACITY_DROP_PCT = 1.0
 
+# Self-test detection (roadmap item 18): a battery-capacity drop of at least
+# SELFTEST_DIP_PCT percentage points between consecutive samples, recovering
+# to near the pre-dip level within SELFTEST_RECOVERY_SAMPLES samples, with
+# line voltage staying inside the normal envelope throughout, reads as a UPS
+# self-test rather than an on-battery episode (which the thresholds above
+# already catch, via low line voltage). Both are heuristics tuned for the
+# BX2000M-LM's factory self-test behavior; adjust if a real test's shape
+# turns out to look different.
+SELFTEST_DIP_PCT = 3.0
+SELFTEST_RECOVERY_SAMPLES = 4
+
 # Battery replace-by projection. The BX2000M-LM carries a
 # 24 V lead-acid pack (12 cells); 25.6 V is 2.13 V per cell, the bottom of
 # the float band — a pack resting below that at float no longer holds full
@@ -277,6 +288,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
     global STALE_WARN_HOURS, STALE_CRIT_HOURS
     global ON_BATTERY_VOLTAGE_V, ON_BATTERY_CAPACITY_DROP_PCT
+    global SELFTEST_DIP_PCT, SELFTEST_RECOVERY_SAMPLES
     global BATTERY_REPLACE_VOLTAGE_V, BATTERY_TREND_MIN_DAYS, CALIBRATION_MIN_EPISODES
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
     global DASHBOARD_THEME, DASHBOARD_MODEL, DASHBOARD_REFRESH_MINUTES, DASHBOARD_LANGUAGE
@@ -329,6 +341,9 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     ON_BATTERY_VOLTAGE_V = float(th.get("on_battery_voltage_v", ON_BATTERY_VOLTAGE_V))
     ON_BATTERY_CAPACITY_DROP_PCT = float(
         th.get("on_battery_capacity_drop_pct", ON_BATTERY_CAPACITY_DROP_PCT))
+    SELFTEST_DIP_PCT = float(th.get("selftest_dip_pct", SELFTEST_DIP_PCT))
+    SELFTEST_RECOVERY_SAMPLES = int(
+        th.get("selftest_recovery_samples", SELFTEST_RECOVERY_SAMPLES))
     BATTERY_REPLACE_VOLTAGE_V = float(
         th.get("battery_replace_voltage_v", BATTERY_REPLACE_VOLTAGE_V))
     BATTERY_TREND_MIN_DAYS = float(th.get("battery_trend_min_days", BATTERY_TREND_MIN_DAYS))

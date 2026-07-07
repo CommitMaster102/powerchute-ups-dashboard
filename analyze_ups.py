@@ -49,10 +49,12 @@ from pcss.stats import (
     detect_gaps,
     detect_high_load_episodes,
     detect_on_battery_episodes,
+    detect_self_tests,
     detect_voltage_anomalies,
     estimate_runtime,
     forecast_period_cost,
     reconcile_bills,
+    self_test_sag_trend,
 )
 
 __version__ = "1.0.0"
@@ -430,7 +432,29 @@ def main(argv: list[str] | None = None) -> int:
     else:
         say("  No power data yet.")
 
-    battery = battery_replace_projection(datalog_df, annotations=annotations_df)
+    # Self-test detection (roadmap item 18): event-based when the PCSS
+    # self-test event id is known (still unobserved as of this writing; see
+    # pcss.eventlog.SELF_TEST_EVENT_IDS), shape-based otherwise. Feeds two
+    # things: the sag-under-load trend below, and an explicit mask on the
+    # replace-by projection's fit, so the sawtooth these tests carve into
+    # Battery Voltage never gets mistaken for real degradation.
+    self_tests = detect_self_tests(datalog_df, events=events_df)
+    sag_trend = self_test_sag_trend(self_tests)
+
+    section("BATTERY SELF-TESTS")
+    say(f"  Detected: {len(self_tests)}")
+    if sag_trend["status"] == "trended":
+        say(f"  Sag trend (voltage sag under test load): {sag_trend['slope_v_per_day']:+.4f} V/day "
+            f"(median {sag_trend['median_sag_v']:.2f} V over {sag_trend['n_with_sag']} tests)")
+    elif sag_trend["median_sag_v"] is not None:
+        say(f"  Median sag so far: {sag_trend['median_sag_v']:.2f} V "
+            f"(not enough test history to trend a rate; "
+            f"{config.BATTERY_TREND_MIN_DAYS:.0f}+ days needed)")
+    else:
+        say("  No usable voltage-sag data yet.")
+
+    battery = battery_replace_projection(datalog_df, annotations=annotations_df,
+                                        self_tests=self_tests)
 
     section("BATTERY REPLACE-BY PROJECTION")
     if battery.get("battery_installed_on") is not None:
@@ -476,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
         stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
         events_summary, staleness, forecast, reconciled_bills, annotations_df,
-        calibration,
+        calibration, self_tests=self_tests,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")

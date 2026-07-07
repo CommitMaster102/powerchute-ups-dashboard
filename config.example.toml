@@ -98,6 +98,14 @@ on_battery_capacity_drop_pct = 1.0
 # over a few weeks is noise.
 battery_replace_voltage_v = 25.6
 battery_trend_min_days    = 60.0
+# Self-test detection heuristics: a battery-capacity dip of at least
+# selftest_dip_pct percentage points between consecutive samples, recovering
+# to near the pre-dip level within selftest_recovery_samples samples, with
+# line voltage staying inside the envelope the whole time, reads as a UPS
+# self-test rather than an on-battery episode. Tune these if a real
+# self-test's shape looks different on your UPS model.
+selftest_dip_pct          = 3.0
+selftest_recovery_samples = 4
 
 [dashboard]
 # Dashboard color theme: "dark" (the designed default) or "light".

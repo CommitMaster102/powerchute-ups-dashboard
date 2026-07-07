@@ -57,6 +57,17 @@ FALLBACK_NAMES = {
 ON_BATTERY_OID = "3.5.1.5.4.1"
 OFF_BATTERY_OID = "3.5.1.5.4.2"
 
+# The PCSS self-test event id (roadmap item 18) is still unknown: the
+# one-month capture behind this project's fixtures never happened to catch a
+# self-test event. Detection falls back instead to the capacity-dip shape in
+# pcss.stats.detect_self_tests. When a self-test is finally observed, it will
+# show up in output/archive/events.csv as an unresolved numeric id ("event
+# X.Y.Z...") at a timestamp that lines up with a Battery Charge dip; add that
+# id here (and to FALLBACK_NAMES above, so it renders with a real name) once
+# confirmed, and event-based detection then takes precedence over the shape
+# heuristic.
+SELF_TEST_EVENT_IDS: tuple[str, ...] = ()
+
 _BUNDLE_LINE = re.compile(r"^\.((?:\d+\.)+\d+)\.(true|false|name)\s*=\s*(.+)$")
 
 

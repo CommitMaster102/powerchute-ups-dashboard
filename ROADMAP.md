@@ -41,30 +41,9 @@ Shipped so far (details in the archive at the bottom):
 | 29 | Bill reconciliation | `pcss/loaders.py` (`load_bills`), `pcss/stats.py` (`reconcile_bills`) |
 | 26 | Battery lifecycle annotations | `pcss/loaders.py` (`load_annotations`), `pcss/stats.py` (`latest_battery_replacement`, `battery_replace_projection`) |
 | 16 | Runtime-curve calibration from observed discharges | `pcss/stats.py` (`calibrate_runtime_curve`) |
+| 18 | Self-test detection and battery health under load | `pcss/stats.py` (`detect_self_tests`, `self_test_sag_trend`) |
 
 ## Data and analysis
-
-### 18. Self-test detection and battery health under load
-
-The Battery Charge sawtooth comes from the UPS's periodic self-tests, and
-the PCSS event bundles include self-test event ids. Detecting the tests
-(from events when the id shows up, from the capacity-dip shape otherwise)
-enables two things: excluding them explicitly from trend fits, and using
-the voltage sag under test load as a battery-health signal that complements
-the resting-voltage slope of item 7.
-
-Challenges:
-
-- The current one-month capture contains no self-test event, so the exact
-  id is unknown. Unknown ids already render numerically and accumulate in
-  `output/archive/events.csv`; the first observed test names itself, and
-  `FALLBACK_NAMES` in `pcss/eventlog.py` then gains the entry.
-- Correlating a test event with the DataLog dip around it is a windowed
-  join at the 20-minute cadence; a test shorter than one sample interval may
-  leave only the capacity dip, only the voltage sag, or neither.
-- The health metric needs a defensible interpretation (voltage sag at a
-  known load, trended over months), and it must state its confidence the
-  same way the replace-by projection does.
 
 ### 19. Baseline-deviation energy alerts
 
@@ -962,3 +941,63 @@ Challenges:
   `pcss/dashboard.py` (a second series plus a subtitle note), with the
   observations sourced from `output/archive/events.csv` and the DataLog
   archive.
+
+### 18. Self-test detection and battery health under load
+
+SHIPPED: `detect_self_tests` in `pcss/stats.py` finds UPS self-tests two
+ways, in order of preference. Event-based: once
+`pcss.eventlog.SELF_TEST_EVENT_IDS` names the real self-test event id (still
+empty — the one-month capture behind this analyzer never caught one; the
+constant's own docstring explains how the first observed test names itself
+in `output/archive/events.csv` and gains the entry), every matching parsed
+event anchors one record at its own timestamp, replacing the shape
+heuristic entirely for that call — the same way the EventLog's own outage
+spans already replace the DataLog-inferred on-battery episodes once the log
+parses. Shape-based (the fallback in practice today): a battery-capacity
+drop of at least `[thresholds] selftest_dip_pct` percentage points between
+consecutive DataLog samples, recovering to within half that margin of the
+pre-dip level within `selftest_recovery_samples` samples, with every Line
+Voltage sample across the window inside the normal envelope — the voltage
+requirement is what tells a self-test apart from an on-battery episode
+(`detect_on_battery_episodes`), which is the same capacity-dip shape but
+with line voltage collapsed. Both knobs default to 3.0 points and 4 samples
+in `pcss/config.py`, documented in `config.example.toml`. Either route
+measures, from the DataLog window bracketing the test, the capacity drop
+and the voltage sag (the resting Battery Voltage just before the dip minus
+the window's minimum) — a window with no usable voltage samples yields a
+record with `sag_v` NaN rather than crashing. `self_test_sag_trend` fits
+that sag against time the same way `battery_replace_projection` fits the
+resting-voltage slope, reporting the median sag whenever any test has one
+but staying at the honest `"insufficient_history"` below
+`battery_trend_min_days` of detected-test history (reused, not a new key).
+`battery_replace_projection` also gained a `self_tests` argument: every
+Battery Voltage sample inside a detected test's `[dip_start, dip_end]`
+window is masked out of the fit before the rolling median even runs — belt
+and braces on top of that median's own damping, per the roadmap's
+"excluding them explicitly". On the dashboard, `_panel_bc` in
+`pcss/dashboard.py` draws one dot marker per detected test at the nearest
+Battery Charge reading (the `lv` panel's anomaly-marker pattern, reused),
+and the card subtitle names the count and median sag, localized via
+`_STRINGS_ES`; `analyze_ups.py` prints the count and, once available, the
+sag trend in a new "BATTERY SELF-TESTS" console section, right before the
+now self-test-aware replace-by projection. `tests/test_selftest.py`.
+
+The Battery Charge sawtooth comes from the UPS's periodic self-tests, and
+the PCSS event bundles include self-test event ids. Detecting the tests
+(from events when the id shows up, from the capacity-dip shape otherwise)
+enables two things: excluding them explicitly from trend fits, and using
+the voltage sag under test load as a battery-health signal that complements
+the resting-voltage slope of item 7.
+
+Challenges:
+
+- The current one-month capture contains no self-test event, so the exact
+  id is unknown. Unknown ids already render numerically and accumulate in
+  `output/archive/events.csv`; the first observed test names itself, and
+  `FALLBACK_NAMES` in `pcss/eventlog.py` then gains the entry.
+- Correlating a test event with the DataLog dip around it is a windowed
+  join at the 20-minute cadence; a test shorter than one sample interval may
+  leave only the capacity dip, only the voltage sag, or neither.
+- The health metric needs a defensible interpretation (voltage sag at a
+  known load, trended over months), and it must state its confidence the
+  same way the replace-by projection does.

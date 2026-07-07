@@ -8,7 +8,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from pcss import config
+from pcss import config, eventlog
 
 
 def datalog_stats(df: pd.DataFrame, file_size: int) -> dict:
@@ -229,6 +229,190 @@ def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = N
     return pd.DataFrame(episodes)
 
 
+def _last_before_or_at(series: pd.Series, mask) -> float | None:
+    """Most recent non-NaN value of series where mask holds, or None."""
+    s = series[mask].dropna()
+    return float(s.iloc[-1]) if not s.empty else None
+
+
+def _min_in_window(series: pd.Series, mask) -> float | None:
+    """Minimum non-NaN value of series where mask holds, or None."""
+    s = series[mask].dropna()
+    return float(s.min()) if not s.empty else None
+
+
+_SELF_TEST_COLUMNS = ["ts", "dip_start", "dip_end", "capacity_drop_pct", "sag_v", "source"]
+
+
+def _self_test_record(df: pd.DataFrame, ts, dip_start, dip_end, source: str) -> dict:
+    """One self-test record's capacity drop and battery-voltage sag, measured
+    from the DataLog window [dip_start, dip_end]. Never raises: a window with
+    no usable Battery Capacity or Battery Voltage samples yields NaN for that
+    field instead of crashing."""
+    before = df["ts"] <= dip_start
+    in_window = (df["ts"] >= dip_start) & (df["ts"] <= dip_end)
+    resting_cap = (_last_before_or_at(df["Battery Capacity"], before)
+                  if "Battery Capacity" in df.columns else None)
+    min_cap = (_min_in_window(df["Battery Capacity"], in_window)
+              if "Battery Capacity" in df.columns else None)
+    capacity_drop_pct = (resting_cap - min_cap if resting_cap is not None and min_cap is not None
+                         else float("nan"))
+    resting_v = (_last_before_or_at(df["Battery Voltage"], before)
+                if "Battery Voltage" in df.columns else None)
+    min_v = (_min_in_window(df["Battery Voltage"], in_window)
+            if "Battery Voltage" in df.columns else None)
+    sag_v = resting_v - min_v if resting_v is not None and min_v is not None else float("nan")
+    return {"ts": ts, "dip_start": dip_start, "dip_end": dip_end,
+            "capacity_drop_pct": capacity_drop_pct, "sag_v": sag_v, "source": source}
+
+
+def detect_self_tests(datalog_df: pd.DataFrame, dip_pct: float | None = None,
+                      recovery_samples: int | None = None,
+                      voltage_low: float | None = None,
+                      voltage_high: float | None = None,
+                      events: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Detect UPS self-tests: the periodic exercise that carves the Battery
+    Charge card's sawtooth.
+
+    Two routes, in order of preference:
+
+    Event-based (authoritative): when ``events`` is given and
+    ``pcss.eventlog.SELF_TEST_EVENT_IDS`` (roadmap item 18) is non-empty,
+    every parsed event whose id is in that tuple anchors one self-test record
+    at its own timestamp, and this replaces the shape heuristic below
+    entirely for this call — the same way the EventLog's own outage spans
+    replace the DataLog-inferred on-battery episodes once the log parses. The
+    id is still unknown as of this writing; see that constant's own docstring
+    in ``pcss/eventlog.py``.
+
+    Shape-based (fallback): a battery-capacity drop of at least ``dip_pct``
+    percentage points between two consecutive DataLog samples, followed by a
+    recovery to within half that margin of the pre-dip level within
+    ``recovery_samples`` samples after the dip begins, with every Line
+    Voltage sample across the window inside [``voltage_low``,
+    ``voltage_high``]. The voltage requirement is what tells a self-test
+    apart from an on-battery episode (``detect_on_battery_episodes``), which
+    is the same capacity-dip shape but with line voltage collapsed. Without a
+    Line Voltage column there is no way to rule out an on-battery episode, so
+    the shape route reports nothing (the event route does not need this
+    column at all).
+
+    Either route measures, from the DataLog window bracketing the test: the
+    capacity drop, and the voltage sag — the resting Battery Voltage just
+    before the dip minus the minimum Battery Voltage inside the window, the
+    battery-health signal that complements the resting-voltage slope of
+    ``battery_replace_projection``. A window with no usable Battery Voltage
+    (or Battery Capacity) samples yields a record with that field NaN rather
+    than raising.
+
+    Returns one row per detected test: ``ts`` (the test's own timestamp --
+    the event time, or the first sample showing the capacity drop),
+    ``dip_start``/``dip_end`` (the DataLog window used for measurement),
+    ``capacity_drop_pct``, ``sag_v``, and ``source`` (``"event"`` or
+    ``"shape"``).
+    """
+    if dip_pct is None:
+        dip_pct = config.SELFTEST_DIP_PCT
+    if recovery_samples is None:
+        recovery_samples = config.SELFTEST_RECOVERY_SAMPLES
+    if voltage_low is None:
+        voltage_low = config.VOLTAGE_NORMAL_LOW
+    if voltage_high is None:
+        voltage_high = config.VOLTAGE_NORMAL_HIGH
+
+    if datalog_df.empty or "Battery Capacity" not in datalog_df.columns:
+        return pd.DataFrame(columns=_SELF_TEST_COLUMNS)
+    df = datalog_df.sort_values("ts").reset_index(drop=True)
+
+    if events is not None and not events.empty and eventlog.SELF_TEST_EVENT_IDS:
+        test_events = events[events["oid"].isin(eventlog.SELF_TEST_EVENT_IDS)]
+        if not test_events.empty:
+            records = []
+            for evt_ts in test_events["ts"]:
+                after = df[df["ts"] >= evt_ts]
+                window_end = (after["ts"].iloc[min(recovery_samples, len(after) - 1)]
+                             if not after.empty else evt_ts)
+                records.append(_self_test_record(df, evt_ts, evt_ts, window_end, "event"))
+            return pd.DataFrame(records, columns=_SELF_TEST_COLUMNS)
+
+    if "Line Voltage" not in df.columns:
+        return pd.DataFrame(columns=_SELF_TEST_COLUMNS)
+
+    cap = df["Battery Capacity"]
+    lv = df["Line Voltage"]
+    n = len(df)
+    records = []
+    i = 1
+    while i < n:
+        prev_cap, cur_cap = cap.iloc[i - 1], cap.iloc[i]
+        if pd.isna(prev_cap) or pd.isna(cur_cap) or (prev_cap - cur_cap) < dip_pct:
+            i += 1
+            continue
+        window_end_idx = min(i + recovery_samples, n - 1)
+        recover_level = prev_cap - dip_pct / 2.0
+        recovered_idx = None
+        for j in range(i + 1, window_end_idx + 1):
+            v = cap.iloc[j]
+            if pd.notna(v) and v >= recover_level:
+                recovered_idx = j
+                break
+        if recovered_idx is None:
+            i += 1
+            continue
+        window_lv = lv.iloc[i - 1:recovered_idx + 1].dropna()
+        if not window_lv.empty and ((window_lv < voltage_low) | (window_lv > voltage_high)).any():
+            i = recovered_idx + 1
+            continue
+        dip_start_ts = df["ts"].iloc[i - 1]
+        dip_end_ts = df["ts"].iloc[recovered_idx]
+        records.append(_self_test_record(df, df["ts"].iloc[i], dip_start_ts, dip_end_ts, "shape"))
+        i = recovered_idx + 1
+    return pd.DataFrame(records, columns=_SELF_TEST_COLUMNS)
+
+
+def self_test_sag_trend(tests: pd.DataFrame | None, min_days: float | None = None) -> dict:
+    """Fit the self-test voltage sag (``detect_self_tests``' ``sag_v``)
+    against time — the load-based battery-health signal that complements
+    ``battery_replace_projection``'s resting-voltage slope.
+
+    States its confidence the same way that projection does: the median sag
+    is reported whenever at least one test carries a usable sag value, but
+    the trend itself — the slope — is fit only once the tests with a usable
+    sag span at least ``min_days`` (``config.BATTERY_TREND_MIN_DAYS``, the
+    same floor the replace-by projection uses; a slope over a handful of
+    tests is noise). Below that floor the honest result is
+    ``"insufficient_history"``, exactly like that projection's own status.
+
+    Returns a dict with ``status`` (``"insufficient_history"`` or
+    ``"trended"``), ``slope_v_per_day``, ``n_tests``, ``n_with_sag``,
+    ``median_sag_v``, and ``span_days`` (the last four ``None``/0 when there
+    is nothing to report).
+    """
+    if min_days is None:
+        min_days = config.BATTERY_TREND_MIN_DAYS
+    out: dict = {"status": "insufficient_history", "slope_v_per_day": None,
+                 "n_tests": 0, "n_with_sag": 0, "median_sag_v": None, "span_days": None}
+    if tests is None or tests.empty:
+        return out
+    out["n_tests"] = int(len(tests))
+    if "sag_v" not in tests.columns:
+        return out
+    sagged = tests.dropna(subset=["sag_v"]).sort_values("ts")
+    out["n_with_sag"] = int(len(sagged))
+    if sagged.empty:
+        return out
+    out["median_sag_v"] = float(sagged["sag_v"].median())
+    span_days = (sagged["ts"].iloc[-1] - sagged["ts"].iloc[0]).total_seconds() / 86400.0
+    out["span_days"] = span_days
+    if len(sagged) < 2 or span_days < min_days:
+        return out
+    days = (sagged["ts"] - sagged["ts"].iloc[0]).dt.total_seconds().to_numpy() / 86400.0
+    slope, _intercept = np.polyfit(days, sagged["sag_v"].to_numpy(dtype=float), 1)
+    out["slope_v_per_day"] = float(slope)
+    out["status"] = "trended"
+    return out
+
+
 def latest_battery_replacement(annotations: pd.DataFrame | None,
                                as_of: pd.Timestamp | datetime) -> pd.Timestamp | None:
     """The newest `battery_replaced` entry in a user-owned annotations.csv
@@ -259,7 +443,8 @@ def latest_battery_replacement(annotations: pd.DataFrame | None,
 
 def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = None,
                                min_days: float | None = None,
-                               annotations: pd.DataFrame | None = None) -> dict:
+                               annotations: pd.DataFrame | None = None,
+                               self_tests: pd.DataFrame | None = None) -> dict:
     """Project when the resting battery voltage crosses the replace threshold.
 
     Fits a line to the rolling median of Battery Voltage (the median damps
@@ -276,6 +461,13 @@ def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = Non
     meaningless slope — and the result carries the replaced-on date plus the
     battery's age in days. With no qualifying annotation, behavior is
     unchanged from before this feature existed.
+
+    ``self_tests`` is a ``detect_self_tests``-shaped frame (roadmap item 18):
+    when given, every sample whose timestamp falls inside a detected test's
+    ``[dip_start, dip_end]`` window is dropped before the fit runs. The
+    rolling-median fit below already damps the self-test sawtooth on its
+    own, but excluding the windows outright is the roadmap's own "excluding
+    them explicitly" — belt and braces, not a replacement for the median.
 
     Returns a dict with ``status`` ("insufficient_history", "stable", or
     "projected"), ``slope_v_per_day``, ``replace_date``, ``days_to_replace``,
@@ -301,6 +493,13 @@ def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = Non
         if not bv.empty:
             out["battery_age_days"] = float(
                 (bv["ts"].iloc[-1] - boundary).total_seconds() / 86400)
+    if (self_tests is not None and not self_tests.empty
+            and {"dip_start", "dip_end"} <= set(self_tests.columns)):
+        windows = self_tests.dropna(subset=["dip_start", "dip_end"])
+        mask_out = pd.Series(False, index=bv.index)
+        for dip_start, dip_end in windows[["dip_start", "dip_end"]].itertuples(index=False, name=None):
+            mask_out |= (bv["ts"] >= dip_start) & (bv["ts"] <= dip_end)
+        bv = bv[~mask_out].reset_index(drop=True)
     if len(bv) < 10:
         return out
     span_days = (bv["ts"].iloc[-1] - bv["ts"].iloc[0]).total_seconds() / 86400
