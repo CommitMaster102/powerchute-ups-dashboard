@@ -47,26 +47,9 @@ Shipped so far (details in the archive at the bottom):
 | 25 | Payload budget (`max_days` window) | `analyze_ups.py` (`_dashboard_window`, `_window_df`) |
 | 20 | Event timeline panel | `pcss/charts.js` (`renderEvents`), `pcss/eventlog.py` (`categorize_event`), `pcss/dashboard.py` (`_panel_ev`) |
 | 21 | Keyboard sample step-through | `pcss/charts.js` (`toggleInspect`, `stepInspect`) |
+| 22 | Selectable comparison periods | `pcss/dashboard.py` (`_panel_cmp`), `pcss/charts.js` (`setCmpSelection`, `cmpResolveBaseline`) |
 
 ## Dashboard and interaction
-
-### 22. Selectable comparison periods
-
-The Period Comparison card fixes "current versus previous". A small selector
-(previous period, same period last quarter, pick-a-period) would let the
-panel answer seasonal questions once the energylog archive spans enough
-months.
-
-Challenges:
-
-- The payload currently carries only the last two periods
-  (`_panel_cmp` in `pcss/dashboard.py`); selection needs all periods in the
-  payload, which is fine at hourly resolution but should be decimated
-  server-side beyond a few thousand points.
-- Selection is client state that belongs in the permalink hash (item 1's
-  encoder is extensible — one more key alongside `z` and `p`).
-- The control must fit the minimal card-header design; the preset-pill
-  pattern (`_section_head`) is the established look for this kind of toggle.
 
 ### 30. Auto theme
 
@@ -1170,3 +1153,73 @@ Challenges:
   `decimateMinMax` renders, or steps would skip samples at wide zoom.
 - `aria-live` etiquette: announce on step, not on every render, and keep the
   text short; a chatty live region is worse than none.
+
+### 22. Selectable comparison periods
+
+SHIPPED: `_panel_cmp` in `pcss/dashboard.py` now carries every billing
+period in the payload (`periods`: label, day-offset `x`, cumulative-kWh
+`y`, and a `partial` flag per period), not only the last two — at hourly
+resolution a year of monthly periods is a few thousand points total, which
+is the scale the roadmap text itself judged "fine", so no server-side
+decimation was added (the omission is noted directly in `_panel_cmp`'s
+docstring). The card still always overlays the current period (the last
+one) against exactly one baseline; the initial render keeps today's
+default (current vs. the immediately previous period) by building
+`series` from `periods` the same way `_panel_cmp` always did, so nothing
+changes for a page with no selection made. `pcss/charts.js` adds
+`cmpResolveBaseline` (resolves "previous", "quarter" — three periods
+back — or an explicit period label against the payload's `periods`,
+returning null for anything unavailable), `rebuildCmpSeries` (regenerates
+the two rendered series from the resolved baseline plus the current
+period, reusing the existing line renderer, legend, inspect mode, and CSV
+export unmodified), and `setCmpSelection` (the single entry point that
+resolves, rebuilds, re-renders, and updates the permalink hash). The
+control is two pills ("previous", "quarter") in the card header using the
+established preset-pill look — "quarter" renders `disabled` when the
+payload has fewer than four periods — plus a minimal native
+`<select class="cmp-period-select">` for pick-a-period in the card's
+hover-revealed tools tray, listing every period except the current one
+(each option flagged "(partial)" where the payload says so). Selection is
+permalink state: `updateHash`/`restoreFromHash` (item 1's encoder) gained
+a third key, `c`, alongside `z` and `p` — encoded only when the selection
+is not the default "previous" — and a stale or malformed value falls back
+to "previous" silently via the same `cmpResolveBaseline` resolution
+`setCmpSelection` always runs through. `resetAll` clears the selection
+back to "previous" and re-renders; `window.__chartsDebug` exposes
+`cmpSelection()` (`{mode, baseline, current}`) and `setCmpSelection(sel)`
+for tests. The baseline's label is already visible without any new UI:
+the card's existing legend names both rendered series by their period
+label, so a shared permalink reads correctly at a glance; the forecast
+subtitle item 27 added keeps working untouched. CSV export
+(`exportCsv`) already reads the live `spec.series`, so it exports
+whichever comparison is currently selected with no changes needed there.
+All new pill/select labels are localized through the existing
+`_STRINGS_ES`/`_L` table. Tests: `tests/test_chart_payload.py` (every
+period present with label/x/y/partial, the default baseline is the
+previous period, no server-side decimation even across a year of
+periods, the quarter pill's disabled state under/over four periods, and
+Spanish localization of the new labels) and `tests/e2e_cmpselect.py`
+(built against a dedicated six-period fixture: default selection,
+switching to "quarter" changes both the rendered series and the hash,
+reloading with that hash restores the selection, a stale period in the
+hash falls back silently, pick-a-period sets an explicit baseline and its
+own hash value, `resetAll` returns to the default and clears the hash,
+CSV export reflects the selected comparison, and — against the shared
+short-history fixture — the quarter pill renders disabled and driving it
+directly still falls back).
+
+The Period Comparison card fixes "current versus previous". A small selector
+(previous period, same period last quarter, pick-a-period) would let the
+panel answer seasonal questions once the energylog archive spans enough
+months.
+
+Challenges:
+
+- The payload currently carries only the last two periods
+  (`_panel_cmp` in `pcss/dashboard.py`); selection needs all periods in the
+  payload, which is fine at hourly resolution but should be decimated
+  server-side beyond a few thousand points.
+- Selection is client state that belongs in the permalink hash (item 1's
+  encoder is extensible — one more key alongside `z` and `p`).
+- The control must fit the minimal card-header design; the preset-pill
+  pattern (`_section_head`) is the established look for this kind of toggle.

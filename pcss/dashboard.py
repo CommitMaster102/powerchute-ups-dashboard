@@ -249,6 +249,14 @@ _STRINGS_ES = {
     "Event Timeline": "Cronología de eventos",
     "events by category": "eventos por categoría",
     "categories": "categorías",
+    "previous": "anterior",
+    "quarter": "trimestre",
+    "Compare against the previous period": "Comparar con el período anterior",
+    "Compare against the same period one quarter ago":
+        "Comparar con el mismo período de hace un trimestre",
+    "Compare against a specific period": "Comparar con un período específico",
+    "pick a period…": "elegir un período…",
+    "not enough history for this option": "no hay suficiente historial para esta opción",
     "Power": "Corriente",
     "Battery": "Batería",
     "Shutdown": "Apagado",
@@ -576,8 +584,19 @@ def _panel_daily(energy_summary, pal, flagged: pd.DataFrame | None = None) -> di
 
 def _panel_cmp(energy_summary, pal) -> dict | None:
     """Cumulative kWh against day-offset-in-period, the current billing
-    period overlaid on the previous one — answers "is this month normal?".
-    Needs at least two periods of energylog history."""
+    period overlaid on one selected baseline — answers "is this period
+    normal?". Needs at least two periods of energylog history.
+
+    Roadmap item 22 (selectable comparison periods): the payload carries
+    every period, not only the last two, so the client can overlay the
+    current period against the previous one (the default), the same period
+    one quarter back, or any period picked from a list — charts.js rebuilds
+    the rendered pair from ``periods`` on selection instead of asking the
+    server to rebuild the page. A year of monthly periods at hourly
+    resolution is only a few thousand points total, which is exactly the
+    scale the roadmap entry itself judged "fine at hourly resolution" — so,
+    deliberately, no server-side decimation is applied here.
+    """
     if not energy_summary or "samples" not in energy_summary:
         return None
     s = energy_summary["samples"]
@@ -585,23 +604,80 @@ def _panel_cmp(energy_summary, pal) -> dict | None:
     if len(labels) < 2:
         return None
     start_day = int(getattr(config, "BILLING_CYCLE_START_DAY", 1))
-    series = []
-    for label, color, width, dash in [
-        (labels[-2], pal["faint"], 1.6, "5 4"),
-        (labels[-1], pal["teal"], 2.2, None),
-    ]:
+    monthly = energy_summary.get("monthly")
+    partial_by_label: dict[str, bool] = {}
+    if monthly is not None and "partial" in monthly.columns:
+        partial_by_label = dict(
+            zip(monthly["month"].astype(str), monthly["partial"], strict=True))
+
+    periods: list[dict[str, object]] = []
+    xy_by_index: list[tuple[list[float], list[float]]] = []
+    for label in labels:
         part = s[s["month"] == label]
         p_start, _ = _billing_period_bounds(str(label), start_day)
         hourly = part.set_index("ts")["kwh"].resample("1h").sum().cumsum()
         x = [round((idx - p_start).total_seconds() / 86400, 3) for idx in hourly.index]
-        style: dict[str, object] = {"width": width}
-        if dash:
-            style["dash"] = dash
-        series.append(_line_series(str(label), color, x, _vals(hourly, 4), **style))
+        y = _vals(hourly, 4)
+        periods.append({
+            "label": str(label),
+            "partial": bool(partial_by_label.get(str(label), False)),
+            "x": x,
+            "y": y,
+        })
+        xy_by_index.append((x, y))
+
+    # The initial render (before any client-side selection) keeps today's
+    # behavior exactly: current period overlaid on the immediately previous
+    # one, styled baseline-faint-dashed versus current-teal-solid.
+    prev_x, prev_y = xy_by_index[-2]
+    cur_x, cur_y = xy_by_index[-1]
+    series = [
+        _line_series(str(labels[-2]), pal["faint"], prev_x, prev_y, width=1.6, dash="5 4"),
+        _line_series(str(labels[-1]), pal["teal"], cur_x, cur_y, width=2.2),
+    ]
     return {
         "kind": "line", "unit": "kWh", "dec": 2, "xkind": "linear", "xunit": "d",
         "legend": True, "vb": [560, 250], "series": series,
+        "periods": periods,
     }
+
+
+def _cmp_pills_html(n_periods: int) -> str:
+    """Pills for the two named comparison modes ("previous period", "same
+    period one quarter back"). The pick-a-period select lives separately in
+    the card tools tray (``_cmp_select_html``) — see roadmap item 22.
+
+    "Quarter" needs a period three cycles back; with fewer than four periods
+    in the payload it renders disabled instead of silently comparing against
+    the wrong thing."""
+    if n_periods < 4:
+        quarter_title = _L("not enough history for this option")
+        quarter_attrs = f' disabled title="{_esc(quarter_title)}"'
+    else:
+        quarter_title = _L("Compare against the same period one quarter ago")
+        quarter_attrs = f' title="{_esc(quarter_title)}"'
+    return (
+        '<span class="cmp-pills">'
+        f'<button class="cmp-pill" data-mode="previous" type="button" '
+        f'title="{_esc(_L("Compare against the previous period"))}">{_esc(_L("previous"))}</button>'
+        f'<button class="cmp-pill" data-mode="quarter" type="button"{quarter_attrs}>'
+        f'{_esc(_L("quarter"))}</button>'
+        '</span>'
+    )
+
+
+def _cmp_select_html(periods: list[dict]) -> str:
+    """The pick-a-period control: every period except the current one (the
+    last, always shown) is a valid baseline to list."""
+    if len(periods) < 2:
+        return ""
+    label = _esc(_L("Compare against a specific period"))
+    options = [f'<option value="" disabled selected>{_esc(_L("pick a period…"))}</option>']
+    for p in periods[:-1]:
+        text = p["label"] + (f" ({_L('partial')})" if p.get("partial") else "")
+        options.append(f'<option value="{_esc(p["label"])}">{_esc(text)}</option>')
+    return (f'<select class="cmp-period-select" data-panel="cmp" '
+            f'title="{label}" aria-label="{label}">{"".join(options)}</select>')
 
 
 def _forecast_sub(forecast: dict | None) -> str:
@@ -940,7 +1016,7 @@ def _sr_text(spec) -> str:
     return empty
 
 
-def _tools_html(key: str, zoomable: bool, anomaly_nav: int = 0) -> str:
+def _tools_html(key: str, zoomable: bool, anomaly_nav: int = 0, extra: str = "") -> str:
     anom = (f'<button class="tool-btn tool-anom" data-panel="{key}" '
             f'title="Jump to next anomaly">⚑ {anomaly_nav}</button>') if anomaly_nav else ""
     reset = (f'<button class="tool-btn tool-reset" data-panel="{key}" hidden '
@@ -949,12 +1025,14 @@ def _tools_html(key: str, zoomable: bool, anomaly_nav: int = 0) -> str:
             f'<button class="tool-btn tool-png" data-panel="{key}" title="Export PNG">png</button>'
             f'<button class="tool-btn tool-csv" data-panel="{key}" title="Export CSV">csv</button>'
             f'<button class="tool-btn tool-expand" data-panel="{key}" title="Expand">⤢</button>'
+            f'{extra}'
             f'</div>')
 
 
 def _chart_card(key: str, span: int, title: str, sub: str, zoomable: bool,
                 sub_color: str | None = None, sr_text: str = "",
-                anomaly_nav: int = 0, inspectable: bool = False) -> str:
+                anomaly_nav: int = 0, inspectable: bool = False,
+                header_extra: str = "", extra_tool: str = "") -> str:
     sub_style = f' style="color:{sub_color}"' if sub_color else ""
     aria = _esc(f"{title} {_L('chart')}. {sr_text}".strip())
     # The inspect-mode badge (roadmap item 21) only exists on line-kind
@@ -967,7 +1045,7 @@ def _chart_card(key: str, span: int, title: str, sub: str, zoomable: bool,
 <div class="card chart-card s{span}">
   <div class="card-head">
     <div class="card-title">{_esc(title)}</div>
-    <div class="card-side"><span class="card-sub"{sub_style}>{_esc(sub)}</span>{badge}{_tools_html(key, zoomable, anomaly_nav)}</div>
+    <div class="card-side"><span class="card-sub"{sub_style}>{_esc(sub)}</span>{header_extra}{badge}{_tools_html(key, zoomable, anomaly_nav, extra_tool)}</div>
   </div>
   <div class="chart-box" id="panel-{key}" data-title="{_esc(title)}" role="img" tabindex="0" aria-label="{aria}"></div>
 </div>"""
@@ -1296,6 +1374,20 @@ h1 {{ font-size: 27px; font-weight: 600; margin: 5px 0 0; color: var(--title); l
   background: transparent; border: 1px solid var(--border); color: var(--faint); }}
 .tool-btn:hover {{ color: var(--text); border-color: var(--border-hover); }}
 .tool-reset {{ color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, transparent); }}
+/* Period Comparison baseline selector (roadmap item 22): the "previous" and
+   "quarter" pills reuse the preset-pill look and stay visible in the card
+   header (the common case, one click); the pick-a-period select is a rarer
+   escape hatch and lives in the hover-revealed card-tools tray instead. */
+.cmp-pills {{ display: inline-flex; gap: 4px; }}
+.cmp-pill {{ font-size: 10.5px; padding: 2px 9px; border-radius: 999px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border); color: var(--mut);
+  font-family: inherit; }}
+.cmp-pill:hover:not(:disabled) {{ border-color: var(--border-hover); color: var(--text); }}
+.cmp-pill.is-active {{ color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, transparent);
+  background: color-mix(in srgb, var(--blue) 10%, transparent); }}
+.cmp-pill:disabled {{ opacity: .35; cursor: not-allowed; }}
+.cmp-period-select {{ font-size: 10px; padding: 2px 4px; border-radius: 6px; max-width: 120px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--faint); font-family: inherit; }}
 .chart-box {{ position: relative; touch-action: pan-y;
   user-select: none; -webkit-user-select: none; }}
 .chart-box svg {{ cursor: crosshair; }}
@@ -1370,7 +1462,7 @@ footer .dim {{ color: var(--foot); }}
   .wrap {{ max-width: none; }}
   .card {{ break-inside: avoid; }}
   .sec-head {{ break-after: avoid-page; }}
-  .card-tools, .presets, #print-btn, #lightbox, .chart-tooltip, .inspect-badge {{ display: none !important; }}
+  .card-tools, .presets, .cmp-pills, #print-btn, #lightbox, .chart-tooltip, .inspect-badge {{ display: none !important; }}
   .chart-box.is-inspecting {{ outline: none !important; }}
   * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
 }}
@@ -1649,9 +1741,17 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     def _card(key, span_, title, sub, zoomable, sub_color=None, anomaly_nav=0):
         spec = panels.get(key)
         inspectable = bool(spec and spec.get("kind") == "line")
+        header_extra = extra_tool = ""
+        # The Period Comparison card's baseline selector (roadmap item 22)
+        # only exists once the payload actually carries every period to
+        # choose from.
+        if key == "cmp" and spec and spec.get("periods"):
+            header_extra = _cmp_pills_html(len(spec["periods"]))
+            extra_tool = _cmp_select_html(spec["periods"])
         return _chart_card(key, span_, title, sub, zoomable, sub_color,
                            sr_text=_sr_text(spec), anomaly_nav=anomaly_nav,
-                           inspectable=inspectable)
+                           inspectable=inspectable, header_extra=header_extra,
+                           extra_tool=extra_tool)
 
     page = f"""<!DOCTYPE html>
 <html lang="en">

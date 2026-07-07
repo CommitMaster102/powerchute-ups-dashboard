@@ -26,6 +26,11 @@
   let LIGHTBOX_KEY = null;
   let LAST_PRESET = null; // "30" | "7" | "1" while a preset window is applied
   let INSPECT = null;     // { key, idx } while a panel is in keyboard inspect mode
+  // Period Comparison baseline selection (roadmap item 22): "previous"
+  // (the default), "quarter" (three periods back), or an explicit period
+  // label picked from the dropdown. Period labels look like "2026-06" or
+  // "2026-06-15", so they never collide with the two keyword values.
+  let CMP_SEL = "previous";
 
   // Crosshair-sync state only (never drives zooming).
   const TIME = { hoverTs: null };
@@ -706,23 +711,87 @@
     updateHash();
   }
   // ------------------------------------------------------------------
+  // Period Comparison baseline selection (roadmap item 22). The payload's
+  // cmp panel carries every billing period (spec.periods); this picks the
+  // current period (always the last) and whichever baseline period is
+  // selected, and rebuilds the two-series spec.series the line renderer
+  // already knows how to draw — so renderLine, the legend, inspect mode,
+  // and CSV export all keep working unmodified.
+  // ------------------------------------------------------------------
+  function cmpPeriods() {
+    const st = STATE.cmp;
+    return (st && st.spec && st.spec.periods) || [];
+  }
+  function cmpCurrentPeriod() {
+    const periods = cmpPeriods();
+    return periods.length ? periods[periods.length - 1] : null;
+  }
+  function cmpResolveBaseline(sel) {
+    // Returns the baseline period object for a selection value, or null if
+    // it cannot be resolved against the periods actually in the payload —
+    // the caller falls back to the default rather than rendering nothing.
+    const periods = cmpPeriods();
+    const n = periods.length;
+    if (n < 2) return null;
+    if (sel === "previous") return periods[n - 2];
+    if (sel === "quarter") return n >= 4 ? periods[n - 4] : null;
+    if (sel === periods[n - 1].label) return null;   // never compare current to itself
+    const found = periods.find(p => p.label === sel);
+    return found || null;
+  }
+  function rebuildCmpSeries() {
+    const st = STATE.cmp;
+    if (!st || !st.spec || !st.spec.periods) return;
+    const spec = st.spec;
+    const cur = cmpCurrentPeriod();
+    const base = cmpResolveBaseline(CMP_SEL);
+    if (!cur || !base) return;
+    spec.series = [
+      { name: base.label, color: C.faint, x: base.x, y: base.y, width: 1.6, dash: "5 4" },
+      { name: cur.label, color: C.teal, x: cur.x, y: cur.y, width: 2.2 },
+    ];
+  }
+  function updateCmpControls() {
+    document.querySelectorAll(".cmp-pill").forEach(b => {
+      b.classList.toggle("is-active", b.dataset.mode === CMP_SEL);
+    });
+    const sel = document.querySelector(".cmp-period-select");
+    if (sel) {
+      // The select only reflects an explicit pick-a-period choice; the two
+      // named modes own the pills instead, so the select shows its
+      // placeholder while either of those is active.
+      const isPill = CMP_SEL === "previous" || CMP_SEL === "quarter";
+      sel.value = isPill ? "" : CMP_SEL;
+    }
+  }
+  function setCmpSelection(sel) {
+    CMP_SEL = cmpResolveBaseline(sel) ? sel : "previous";
+    rebuildCmpSeries();
+    updateCmpControls();
+    if (STATE.cmp) rerenderPanel("cmp");
+    updateHash();
+  }
+
+  // ------------------------------------------------------------------
   // Permalink view state: the active preset, or each panel's non-default
   // zoom window, lives in the URL hash so a view can be bookmarked and
   // survives a meta-refresh reload. replaceState keeps drags out of the
   // browser history; base-36 epoch-ms keeps the hash short.
   // ------------------------------------------------------------------
   function updateHash() {
-    let hash = "";
+    const parts = [];
     if (LAST_PRESET) {
-      hash = "p=" + LAST_PRESET;
+      parts.push("p=" + LAST_PRESET);
     } else {
-      const parts = [];
+      const zparts = [];
       timePanels().forEach(k => {
         const z = STATE[k].zoom;
-        if (z) parts.push(k + "." + Math.round(z[0]).toString(36) + "." + Math.round(z[1]).toString(36));
+        if (z) zparts.push(k + "." + Math.round(z[0]).toString(36) + "." + Math.round(z[1]).toString(36));
       });
-      if (parts.length) hash = "z=" + parts.join(",");
+      if (zparts.length) parts.push("z=" + zparts.join(","));
     }
+    if (CMP_SEL !== "previous") parts.push("c=" + encodeURIComponent(CMP_SEL));
+    const hash = parts.join("&");
     try {
       history.replaceState(null, "", location.pathname + location.search + (hash ? "#" + hash : ""));
     } catch (e) { /* some file:// contexts refuse replaceState; the view still works */ }
@@ -733,20 +802,26 @@
     try {
       const params = new URLSearchParams(h);
       const p = params.get("p");
-      if (p && ["30", "7", "1"].indexOf(p) >= 0) { applyPreset(p); return; }
-      const z = params.get("z");
-      if (!z) return;
-      z.split(",").forEach(part => {
-        const bits = part.split(".");
-        if (bits.length !== 3) return;
-        const key = bits[0], t0 = parseInt(bits[1], 36), t1 = parseInt(bits[2], 36);
-        const st = STATE[key];
-        if (!st || !st.spec || !zoomCapable(st.spec)) return;
-        if (!isFinite(t0) || !isFinite(t1) || t1 <= t0) return;
-        // applyWindow clamps to the panel's own data span, so a stored
-        // window that predates the current logs degrades to the full range.
-        applyWindow(key, st.spec, [t0, t1]);
-      });
+      if (p && ["30", "7", "1"].indexOf(p) >= 0) {
+        applyPreset(p);
+      } else {
+        const z = params.get("z");
+        if (z) {
+          z.split(",").forEach(part => {
+            const bits = part.split(".");
+            if (bits.length !== 3) return;
+            const key = bits[0], t0 = parseInt(bits[1], 36), t1 = parseInt(bits[2], 36);
+            const st = STATE[key];
+            if (!st || !st.spec || !zoomCapable(st.spec)) return;
+            if (!isFinite(t0) || !isFinite(t1) || t1 <= t0) return;
+            // applyWindow clamps to the panel's own data span, so a stored
+            // window that predates the current logs degrades to the full range.
+            applyWindow(key, st.spec, [t0, t1]);
+          });
+        }
+      }
+      const c = params.get("c");
+      if (c) setCmpSelection(c);
     } catch (e) { /* a malformed hash falls back to the default view */ }
   }
 
@@ -1246,6 +1321,12 @@
     document.querySelectorAll(".preset-pill").forEach(b => {
       b.addEventListener("click", () => applyPreset(b.dataset.days));
     });
+    document.querySelectorAll(".cmp-pill").forEach(b => {
+      b.addEventListener("click", () => { if (!b.disabled) setCmpSelection(b.dataset.mode); });
+    });
+    document.querySelectorAll(".cmp-period-select").forEach(sel => {
+      sel.addEventListener("change", () => { if (sel.value) setCmpSelection(sel.value); });
+    });
     const pb = document.getElementById("print-btn");
     if (pb) pb.addEventListener("click", () => window.print());
   }
@@ -1559,6 +1640,9 @@
     if (ttLive) ttLive.hidden = true;
     TIME.hoverTs = null;
     LAST_PRESET = null;
+    CMP_SEL = "previous";
+    rebuildCmpSeries();
+    updateCmpControls();
     Object.keys(STATE).forEach(k => {
       STATE[k].zoom = null;
       // Re-seed the default filter rather than clearing it, so the event
@@ -1586,6 +1670,12 @@
     hidden: k => (STATE[k] ? Array.from(STATE[k].hidden) : []),
     lightbox: () => LIGHTBOX_KEY,
     openLightbox,
+    cmpSelection: () => ({
+      mode: CMP_SEL,
+      baseline: (cmpResolveBaseline(CMP_SEL) || {}).label || null,
+      current: (cmpCurrentPeriod() || {}).label || null,
+    }),
+    setCmpSelection: sel => setCmpSelection(sel),
     anomalyClusters: k => anomalyClusters(k).map(c => c.slice()),
     jumpAnomaly,
     inspect: () => (INSPECT ? { key: INSPECT.key, idx: INSPECT.idx } : null),
@@ -1639,6 +1729,7 @@
     bindKeyboard();
     fillStaleness();
     updatePresetPills();
+    updateCmpControls();
     restoreFromHash();
     // Long archives open on the 30-day preset so the initial view stays
     // readable; a permalink hash (restored above) takes precedence.

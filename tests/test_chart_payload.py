@@ -316,6 +316,120 @@ def test_panel_cmp_needs_two_periods():
     assert _panel_cmp({}, PAL) is None
 
 
+def test_panel_cmp_periods_carries_every_period_with_label_and_partial():
+    """Roadmap item 22: selection needs every billing period in the payload
+    (not just the last two), each with its display label, day-offset x/y
+    series, and whether the recorded span covers it fully."""
+    from pcss.stats import compute_energy_summary
+    edf = pd.concat([
+        _energy(n=288, start="2026-03-01 00:00"),
+        _energy(n=288, start="2026-04-01 00:00"),
+        _energy(n=288, start="2026-05-01 00:00"),
+        _energy(n=200, start="2026-06-01 00:00"),  # the current period, still open
+    ], ignore_index=True)
+    edf["interval_sec"] = 300
+    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    periods = panel["periods"]
+    assert [p["label"] for p in periods] == ["2026-03", "2026-04", "2026-05", "2026-06"]
+    for p in periods:
+        assert p["x"] and p["y"]
+        assert len(p["x"]) == len(p["y"])
+        assert isinstance(p["partial"], bool)
+    # The still-open current period does not reach the end of June.
+    assert periods[-1]["partial"] is True
+
+
+def test_panel_cmp_default_baseline_is_previous_period():
+    """The initial render (before any client-side selection) must keep
+    today's behavior: current period overlaid on the immediately previous
+    one, so a page with no permalink hash looks exactly as it always has."""
+    from pcss.stats import compute_energy_summary
+    edf = pd.concat([_energy(n=288, start="2026-04-29 00:00"),
+                     _energy(n=288, start="2026-05-01 00:00")], ignore_index=True)
+    edf["interval_sec"] = 300
+    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    assert [s["name"] for s in panel["series"]] == ["2026-04", "2026-05"]
+    # The default baseline series matches the last entry before "current" in
+    # the periods list (periods[-2]) exactly, x and y included.
+    prev_period = panel["periods"][-2]
+    assert panel["series"][0]["x"] == prev_period["x"]
+    assert panel["series"][0]["y"] == prev_period["y"]
+
+
+def test_panel_cmp_no_server_side_decimation():
+    """A year of monthly periods at hourly resolution is a few thousand
+    points total (the roadmap's own judgment call); _panel_cmp must not trim
+    any period's series down."""
+    from pcss.stats import compute_energy_summary
+    edf = pd.concat(
+        [_energy(n=31 * 24 * 12, start=f"2026-{m:02d}-01 00:00", power=100.0 + m)
+         for m in range(1, 13)],
+        ignore_index=True,
+    )
+    edf["interval_sec"] = 300
+    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    # Full month at 1h resolution: on the order of ~720-750 points, well
+    # above any small decimation budget, and every period keeps its own
+    # count (no cross-period trimming).
+    counts = [len(p["x"]) for p in panel["periods"]]
+    assert all(c > 600 for c in counts), counts
+
+
+def test_cmp_selector_strings_localized(monkeypatch):
+    """The comparison-selector pill/select labels are localized through the
+    same _STRINGS_ES/_L table as the rest of the page chrome."""
+    from pcss.stats import compute_energy_summary
+    edf = pd.concat([_energy(n=288, start="2026-04-29 00:00"),
+                     _energy(n=288, start="2026-05-01 00:00")], ignore_index=True)
+    edf["interval_sec"] = 300
+    inputs = _smoke_inputs()
+    inputs["energy_summary"] = compute_energy_summary(edf)
+
+    html_en = build_dashboard(**inputs)
+    assert 'data-mode="previous"' in html_en
+    assert 'data-mode="quarter"' in html_en
+    assert "cmp-period-select" in html_en
+
+    monkeypatch.setattr(cfg, "DASHBOARD_LANGUAGE", "es")
+    html_es = build_dashboard(**inputs)
+    assert ">anterior<" in html_es
+    assert ">trimestre<" in html_es
+    assert "Power Quality" not in html_es  # sanity: page is actually Spanish
+
+
+def test_cmp_quarter_pill_disabled_under_four_periods():
+    """"Same period last quarter" needs a period three cycles back; with
+    fewer than four periods in the payload the pill renders disabled rather
+    than silently doing the wrong thing."""
+    from pcss.stats import compute_energy_summary
+    edf = pd.concat([_energy(n=288, start="2026-04-29 00:00"),
+                     _energy(n=288, start="2026-05-01 00:00")], ignore_index=True)
+    edf["interval_sec"] = 300
+    inputs = _smoke_inputs()
+    inputs["energy_summary"] = compute_energy_summary(edf)
+    html = build_dashboard(**inputs)
+    m = re.search(r'<button class="cmp-pill" data-mode="quarter"([^>]*)>', html)
+    assert m, "quarter pill not found"
+    assert "disabled" in m.group(1)
+
+
+def test_cmp_quarter_pill_enabled_with_four_or_more_periods():
+    from pcss.stats import compute_energy_summary
+    edf = pd.concat([
+        _energy(n=288, start="2026-03-01 00:00"),
+        _energy(n=288, start="2026-04-01 00:00"),
+        _energy(n=288, start="2026-05-01 00:00"),
+        _energy(n=200, start="2026-06-01 00:00"),
+    ], ignore_index=True)
+    edf["interval_sec"] = 300
+    inputs = _smoke_inputs()
+    inputs["energy_summary"] = compute_energy_summary(edf)
+    html = build_dashboard(**inputs)
+    m = re.search(r'<button class="cmp-pill" data-mode="quarter"([^>]*)>', html)
+    assert m, "quarter pill not found"
+    assert "disabled" not in m.group(1)
+
+
 def test_panel_wk_weekday_weekend_profiles():
     # 2026-05-01 is a Friday (weekday, 200 W); 2026-05-02 a Saturday (400 W).
     edf = pd.concat([_energy(n=288, start="2026-05-01 00:00", power=200.0),
