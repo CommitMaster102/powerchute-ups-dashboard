@@ -28,9 +28,11 @@ from pcss.common import fmt_age_hours, fmt_bytes, fmt_crc
 from pcss.stats import (
     _billing_period_bounds,
     battery_replace_projection,
+    detect_baseline_deviations,
     detect_self_tests,
     estimate_runtime,
     forecast_period_cost,
+    weekday_weekend_profiles,
 )
 
 _CHARTS_JS_TEMPLATE = (Path(__file__).resolve().parent / "charts.js").read_text(encoding="utf-8")
@@ -221,6 +223,10 @@ _STRINGS_ES = {
     "UPS-metered share of the billed consumption":
         "proporción medida por el UPS del consumo facturado",
     "Share": "Proporción",
+    "day deviates from the recorded baseline":
+        "día se desvía de la referencia registrada",
+    "days deviate from the recorded baseline":
+        "días se desvían de la referencia registrada",
 }
 
 
@@ -497,15 +503,40 @@ def _panel_kw(energy_summary, pal) -> dict | None:
     }
 
 
-def _panel_daily(energy_summary, pal) -> dict | None:
+def _panel_daily(energy_summary, pal, flagged: pd.DataFrame | None = None) -> dict | None:
+    """Daily Energy bars, with the baseline-deviation flags (roadmap item
+    19) riding the same panel rather than a new one: a flagged day's bar
+    takes the amber accent color (the ``d.color`` per-bar override
+    ``pcss/charts.js`` already renders, the same convention
+    ``_panel_cad`` uses to highlight one bin), and the panel also carries a
+    ``markers`` list (bar index + deviation-percent label) for any future
+    marker-glyph rendering, mirroring the ``lv``/``bc`` marker-list shape.
+
+    ``flagged`` is the ``flagged`` frame from
+    ``pcss.stats.detect_baseline_deviations`` (columns ``date``,
+    ``day_type``, ``deviation_pct``), or ``None``/empty when nothing is
+    flagged.
+    """
     if not energy_summary or energy_summary.get("daily") is None or energy_summary["daily"].empty:
         return None
     d = energy_summary["daily"]
+    deviation_by_date: dict = {}
+    if flagged is not None and not flagged.empty:
+        deviation_by_date = dict(zip(flagged["date"], flagged["deviation_pct"], strict=True))
+    data = []
+    markers = []
+    for i, (dt, k) in enumerate(zip(d["date"], d["kwh"], strict=True)):
+        item = {"label": f"{dt.month}/{dt.day}", "y": round(float(k), 4)}
+        pct = deviation_by_date.get(dt)
+        if pct is not None:
+            item["color"] = pal["amber"]
+            markers.append({"x": i, "label": f"+{pct:.0f}%"})
+        data.append(item)
     return {
         "kind": "bar", "unit": "kWh", "dec": 2, "vb": [460, 250], "barName": _L("energy"),
         "color": pal["blue"],
-        "data": [{"label": f"{dt.month}/{dt.day}", "y": round(float(k), 4)}
-                 for dt, k in zip(d["date"], d["kwh"], strict=True)],
+        "data": data,
+        "markers": markers,
     }
 
 
@@ -563,21 +594,19 @@ def _forecast_sub(forecast: dict | None) -> str:
 
 
 def _panel_wk(energy_df, pal) -> dict | None:
-    """Mean power by hour of day, weekday against weekend."""
-    if energy_df.empty or "power_w" not in energy_df.columns:
-        return None
-    s = energy_df.dropna(subset=["power_w"])
-    if s.empty:
-        return None
-    dow = s["ts"].dt.dayofweek
+    """Mean power by hour of day, weekday against weekend.
+
+    The profile math itself lives in ``pcss.stats.weekday_weekend_profiles``,
+    shared with the baseline-deviation detector (roadmap item 19) so the two
+    views of "what a normal day looks like" cannot drift apart.
+    """
+    profiles = weekday_weekend_profiles(energy_df)
     series = []
-    for mask, name, color in [(dow < 5, _L("weekday"), pal["blue"]),
-                              (dow >= 5, _L("weekend"), pal["green"])]:
-        part = s[mask]
-        if part.empty:
+    for name, color in [("weekday", pal["blue"]), ("weekend", pal["green"])]:
+        prof = profiles.get(name)
+        if prof is None:
             continue
-        prof = part.groupby(part["ts"].dt.hour)["power_w"].mean()
-        series.append(_line_series(name, color, [int(h) for h in prof.index],
+        series.append(_line_series(_L(name), color, [int(h) for h in prof.index],
                                    _vals(prof, 1), width=2))
     if not series:
         return None
@@ -1208,7 +1237,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     bill_reconciliation: pd.DataFrame | None = None,
                     annotations: pd.DataFrame | None = None,
                     calibration: dict | None = None,
-                    self_tests: pd.DataFrame | None = None) -> str:
+                    self_tests: pd.DataFrame | None = None,
+                    baseline: dict | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
@@ -1219,6 +1249,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         battery = battery_replace_projection(datalog_df, annotations=annotations, self_tests=self_tests)
     if forecast is None:
         forecast = forecast_period_cost(energy_summary)
+    if baseline is None:
+        baseline = detect_baseline_deviations(energy_df)
 
     bv_panel, bv_slope = _panel_bv(datalog_df, pal)
     rt_panel, latest_w, latest_rt = _panel_rt(energy_df, pal, calibration)
@@ -1232,7 +1264,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         "bc": _panel_bc(datalog_df, pal, self_tests),
         "rt": rt_panel,
         "kw": _panel_kw(energy_summary, pal),
-        "daily": _panel_daily(energy_summary, pal),
+        "daily": _panel_daily(energy_summary, pal, baseline.get("flagged")),
         "cmp": _panel_cmp(energy_summary, pal),
         "wk": _panel_wk(energy_df, pal),
         "growth": _panel_growth(hist, pal),
@@ -1330,6 +1362,14 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                    f"({cal.get('n_episodes', 0)}/{cal_min_episodes:.0f})")
     rt_sub = f"{rt_sub} · {cal_bit}"
     kw_sub = f"kWh · ₡ (₡{config.PCSS_FLAT_RATE:g}/kWh)"
+    # Baseline-deviation flags (roadmap item 19): silent when nothing is
+    # flagged (whether because the history is clean or below the floor —
+    # either way there is nothing to say), named only when at least one
+    # complete day deviates from the recorded baseline.
+    daily_sub = _L("kWh / day")
+    n_flagged = len(baseline.get("flagged", []))
+    if n_flagged:
+        daily_sub = f"{daily_sub} · {_count(n_flagged, _L('day deviates from the recorded baseline'), _L('days deviate from the recorded baseline'))}"
     proj_sub = f"≈ {proj_1yr_kb / 1024:.1f} MB / yr" if proj_1yr_kb else _L("current rate")
     energy_note = (f"{energy_summary['total_kwh']:.1f} kWh · "
                    f"₡{energy_summary['total_cost_pcss']:,.0f} · "
@@ -1447,7 +1487,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
   {_section_head(_L('Energy & Cost'), energy_note)}
   <div class="grid12">
     {_card('kw', 8, _L('Cumulative Energy & Cost'), kw_sub, True)}
-    {_card('daily', 4, _L('Daily Energy'), _L('kWh / day'), False)}
+    {_card('daily', 4, _L('Daily Energy'), daily_sub, False)}
     {_card('cmp', 7, _L('Period Comparison'), f"{_L('cumulative kWh · same day offset')} · {_forecast_sub(forecast)}", False)}
     {_card('wk', 5, _L('Weekday vs Weekend'), _L('mean W by hour'), False)}
   </div>

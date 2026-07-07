@@ -42,27 +42,9 @@ Shipped so far (details in the archive at the bottom):
 | 26 | Battery lifecycle annotations | `pcss/loaders.py` (`load_annotations`), `pcss/stats.py` (`latest_battery_replacement`, `battery_replace_projection`) |
 | 16 | Runtime-curve calibration from observed discharges | `pcss/stats.py` (`calibrate_runtime_curve`) |
 | 18 | Self-test detection and battery health under load | `pcss/stats.py` (`detect_self_tests`, `self_test_sag_trend`) |
+| 19 | Baseline-deviation energy alerts | `pcss/stats.py` (`detect_baseline_deviations`, `weekday_weekend_profiles`) |
 
 ## Data and analysis
-
-### 19. Baseline-deviation energy alerts
-
-The weekday and weekend hourly profiles (item 9's `wk` panel) define what a
-normal day looks like. Comparing each new day against its profile — mean
-absolute deviation, or a per-hour z-score — turns "is this normal?" into a
-detection: a stuck-on appliance, a new always-on load, or a failing PSU
-shows up as a flagged day instead of a chart the user must remember to read.
-
-Challenges:
-
-- Small history first: with a few weeks of energylog, per-hour variance is
-  noisy, and holidays sit in neither profile. The detector needs a minimum
-  history floor and a deliberately blunt threshold in `[thresholds]`.
-- Where the flag surfaces: a marker on the Daily Energy bars, a line in the
-  console summary, and the `[alerts]` trigger — all three exist as patterns
-  (`markers`, the anomalies section, `_maybe_write_alerts`).
-- Honest labeling again: this flags deviation from the recorded baseline,
-  not faults; the wording must not overclaim.
 
 ### 28. Grid-quality trend
 
@@ -1001,3 +983,56 @@ Challenges:
 - The health metric needs a defensible interpretation (voltage sag at a
   known load, trended over months), and it must state its confidence the
   same way the replace-by projection does.
+
+### 19. Baseline-deviation energy alerts
+
+SHIPPED: `weekday_weekend_profiles` in `pcss/stats.py` pulls the mean-W-by-hour
+math out of the Weekday vs Weekend dashboard card (item 9's `_panel_wk`) into
+one shared helper, so the card and the new detector below read the same
+definition of "what a normal day looks like" and cannot drift apart.
+`detect_baseline_deviations(energy_df, deviation_pct=None, min_days=None)`
+compares each complete day in the energylog — every day except the trailing
+partial one (the most recent calendar date, which has not finished
+accumulating samples yet) and any day whose sample count falls far short of
+its peers (a mid-history sampling gap) — against whichever baseline profile
+matches its type (weekday or weekend), built from the full history including
+the day itself. The deviation metric is the mean absolute difference between
+the day's own hourly profile and the baseline profile across their shared
+hours, expressed as a percent of the baseline's own mean power — the blunter
+mean-absolute-deviation option the roadmap offered, not a per-hour z-score. A
+day is flagged once that percent exceeds `[thresholds] baseline_deviation_pct`
+(35.0 by default); below `baseline_min_days` (14) distinct energylog days of
+history, the honest result is `"insufficient_history"` with nothing flagged,
+the same floor pattern `battery_replace_projection` and
+`forecast_period_cost` already use. Both keys default in `pcss/config.py`,
+documented in `config.example.toml` as deliberately blunt. On the dashboard,
+`_panel_daily` in `pcss/dashboard.py` gives a flagged day's bar the amber
+accent color (the same per-bar `color` override `_panel_cad` already uses)
+and carries a `markers` list (bar index + deviation-percent label) alongside
+it; the Daily Energy card subtitle names the count once at least one day is
+flagged, localized via `_STRINGS_ES`, and stays silent otherwise (whether the
+history is clean or still below the floor). `analyze_ups.py` prints a new
+console block right after the DataLog-gaps line, naming each flagged day with
+its deviation percent or the honest not-enough-history line, and
+`_maybe_write_alerts` gained a `baseline` argument: a `baseline_deviations=N`
+field rides the alert line and the trigger fires on a nonzero flagged count
+alone, same as the existing anomaly counts. Every surface says "deviates from
+the recorded baseline", never a fault claim. `tests/test_baseline.py` (28
+tests).
+
+The weekday and weekend hourly profiles (item 9's `wk` panel) define what a
+normal day looks like. Comparing each new day against its profile — mean
+absolute deviation, or a per-hour z-score — turns "is this normal?" into a
+detection: a stuck-on appliance, a new always-on load, or a failing PSU
+shows up as a flagged day instead of a chart the user must remember to read.
+
+Challenges:
+
+- Small history first: with a few weeks of energylog, per-hour variance is
+  noisy, and holidays sit in neither profile. The detector needs a minimum
+  history floor and a deliberately blunt threshold in `[thresholds]`.
+- Where the flag surfaces: a marker on the Daily Energy bars, a line in the
+  console summary, and the `[alerts]` trigger — all three exist as patterns
+  (`markers`, the anomalies section, `_maybe_write_alerts`).
+- Honest labeling again: this flags deviation from the recorded baseline,
+  not faults; the wording must not overclaim.

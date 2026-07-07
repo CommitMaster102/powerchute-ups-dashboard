@@ -229,6 +229,132 @@ def detect_high_load_episodes(edf: pd.DataFrame, threshold_pct: float | None = N
     return pd.DataFrame(episodes)
 
 
+def weekday_weekend_profiles(energy_df: pd.DataFrame) -> dict[str, pd.Series]:
+    """Mean power by hour of day, split into weekday and weekend, from the
+    energylog's full history — this is the definition of "what a normal day
+    looks like" that both the Weekday vs Weekend dashboard card
+    (``pcss.dashboard._panel_wk``) and ``detect_baseline_deviations`` below
+    share, so the two views of "normal" cannot drift apart.
+
+    Returns a dict with keys ``"weekday"`` and ``"weekend"``, each a pandas
+    Series indexed by hour of day (0 through 23) holding the mean
+    ``power_w`` for that hour across every day of that type in the frame. A
+    key is simply absent when the frame has no days of that type — a
+    history shorter than a week can easily have no weekend days yet.
+    """
+    profiles: dict[str, pd.Series] = {}
+    if energy_df.empty or "power_w" not in energy_df.columns:
+        return profiles
+    s = energy_df.dropna(subset=["power_w"])
+    if s.empty:
+        return profiles
+    dow = s["ts"].dt.dayofweek
+    for mask, name in [(dow < 5, "weekday"), (dow >= 5, "weekend")]:
+        part = s[mask]
+        if part.empty:
+            continue
+        profiles[name] = part.groupby(part["ts"].dt.hour)["power_w"].mean()
+    return profiles
+
+
+_BASELINE_DEVIATION_COLUMNS = ["date", "day_type", "deviation_pct"]
+
+
+def detect_baseline_deviations(energy_df: pd.DataFrame, deviation_pct: float | None = None,
+                               min_days: int | None = None) -> dict:
+    """Flag energylog days whose shape deviates sharply from the recorded
+    weekday/weekend baseline (``weekday_weekend_profiles``) — a stuck-on
+    appliance, a new always-on load, or a failing power supply shows up as a
+    flagged day instead of a chart someone has to remember to read.
+
+    This flags a deviation from the recorded baseline, not a fault: a
+    holiday, a guest staying over, or simply not enough history yet can
+    produce the same signal, so every surface that shows this result must
+    say "deviates from the recorded baseline" and nothing stronger.
+
+    A day qualifies for comparison when it is "complete": every day in the
+    frame except the trailing partial one (the most recent calendar date,
+    which has not finished accumulating samples yet, and would therefore
+    always look anomalous) and any day whose sample count falls far short
+    of its peers (a mid-history sampling gap, not a real change in
+    behavior). For each qualifying day, its own hourly mean-power profile is
+    compared against whichever baseline profile matches the day's type
+    (weekday or weekend), computed from the full history including the day
+    itself — the same profiles the Weekday vs Weekend dashboard card draws.
+    The deviation metric is the mean absolute difference between the day's
+    profile and the baseline profile across their shared hours, expressed as
+    a percent of the baseline profile's own mean power: the blunter
+    mean-absolute-deviation option the roadmap offers, not a per-hour
+    z-score. A day is flagged when that percent exceeds ``deviation_pct``
+    (``config.BASELINE_DEVIATION_PCT`` by default).
+
+    Below ``min_days`` (``config.BASELINE_MIN_DAYS`` by default) distinct
+    calendar days of energylog history in the frame, per-hour variance is
+    too noisy to trust and the honest result is ``"insufficient_history"``
+    with nothing flagged — the same floor pattern
+    ``battery_replace_projection`` and ``forecast_period_cost`` already use.
+
+    Returns a dict with ``status`` (``"insufficient_history"`` or ``"ok"``),
+    ``min_days``, ``n_days`` (distinct calendar days present, even below the
+    floor), ``deviation_pct`` (the threshold used), and ``flagged`` (a
+    DataFrame with columns ``date``, ``day_type``, ``deviation_pct`` — one
+    row per flagged day, in date order).
+    """
+    if deviation_pct is None:
+        deviation_pct = config.BASELINE_DEVIATION_PCT
+    if min_days is None:
+        min_days = config.BASELINE_MIN_DAYS
+    out: dict = {
+        "status": "insufficient_history", "min_days": min_days, "n_days": 0,
+        "deviation_pct": deviation_pct,
+        "flagged": pd.DataFrame(columns=_BASELINE_DEVIATION_COLUMNS),
+    }
+    if energy_df.empty or "power_w" not in energy_df.columns:
+        return out
+    s = energy_df.dropna(subset=["power_w"]).copy()
+    if s.empty:
+        return out
+    s["date"] = s["ts"].dt.date
+    dates = sorted(s["date"].unique())
+    out["n_days"] = len(dates)
+    if len(dates) < min_days:
+        return out
+    out["status"] = "ok"
+
+    profiles = weekday_weekend_profiles(s)
+    candidate_dates = dates[:-1]        # the trailing day is always excluded
+    if not profiles or not candidate_dates:
+        return out
+
+    # "Complete" days: close enough to their peers' sample count that a
+    # mid-history sampling gap does not masquerade as a behavior change.
+    counts = s.groupby("date").size()
+    typical = counts.loc[candidate_dates].median()
+    complete_dates = [d for d in candidate_dates if counts[d] >= 0.9 * typical]
+
+    records = []
+    for d in complete_dates:
+        day = s[s["date"] == d]
+        day_type = "weekend" if pd.Timestamp(d).dayofweek >= 5 else "weekday"
+        baseline = profiles.get(day_type)
+        if baseline is None or baseline.empty:
+            continue
+        day_profile = day.groupby(day["ts"].dt.hour)["power_w"].mean()
+        common = day_profile.index.intersection(baseline.index)
+        if common.empty:
+            continue
+        baseline_mean = float(baseline.loc[common].mean())
+        if baseline_mean == 0:
+            continue
+        mad_pct = float((day_profile.loc[common] - baseline.loc[common]).abs().mean()
+                        / baseline_mean * 100)
+        if mad_pct > deviation_pct:
+            records.append({"date": d, "day_type": day_type, "deviation_pct": mad_pct})
+
+    out["flagged"] = pd.DataFrame(records, columns=_BASELINE_DEVIATION_COLUMNS)
+    return out
+
+
 def _last_before_or_at(series: pd.Series, mask) -> float | None:
     """Most recent non-NaN value of series where mask holds, or None."""
     s = series[mask].dropna()

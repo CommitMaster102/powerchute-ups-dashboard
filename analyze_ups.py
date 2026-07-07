@@ -46,6 +46,7 @@ from pcss.stats import (
     compute_stats_summary,
     cross_validate_load,
     datalog_stats,
+    detect_baseline_deviations,
     detect_gaps,
     detect_high_load_episodes,
     detect_on_battery_episodes,
@@ -397,6 +398,23 @@ def main(argv: list[str] | None = None) -> int:
         for frm, to, dmin in gaps[["from", "to", "duration_min"]].head(5).itertuples(index=False, name=None):
             say(f"    {frm} -> {to}  ({dmin:.1f} min)")
 
+    # Baseline-deviation energy alerts (roadmap item 19): each complete day's
+    # own hourly profile against the weekday/weekend baseline
+    # (pcss.stats.weekday_weekend_profiles, shared with the wk dashboard
+    # card). This flags a deviation from the recorded baseline, never a
+    # fault — the wording says so explicitly.
+    baseline = detect_baseline_deviations(energy_df)
+    if baseline["status"] == "insufficient_history":
+        say(f"  Baseline-deviation check: not enough history yet "
+            f"({baseline['n_days']}/{baseline['min_days']:.0f} days).")
+    else:
+        flagged = baseline["flagged"]
+        noun = "day deviates" if len(flagged) == 1 else "days deviate"
+        say(f"  {len(flagged)} {noun} from the recorded baseline "
+            f"(threshold {baseline['deviation_pct']:g}%):")
+        for d, day_type, pct in flagged[["date", "day_type", "deviation_pct"]].itertuples(index=False, name=None):
+            say(f"    {d} ({day_type}): {pct:.0f}% deviation")
+
     # Event-derived outage spans are authoritative when the EventLog parsed;
     # the DataLog inference stays as the fallback (and as a cross-check).
     if not ev_spans.empty:
@@ -406,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         episodes = on_battery
 
-    alert_path = _maybe_write_alerts(voltage_anomalies, high_load, episodes, staleness)
+    alert_path = _maybe_write_alerts(voltage_anomalies, high_load, episodes, staleness, baseline)
     if alert_path:
         say(f"  [alert] appended to {alert_path}")
 
@@ -500,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
         stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
         events_summary, staleness, forecast, reconciled_bills, annotations_df,
-        calibration, self_tests=self_tests,
+        calibration, self_tests=self_tests, baseline=baseline,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
@@ -597,23 +615,27 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
     Path(path).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
 
 
-def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None) -> Path | None:
+def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None,
+                        baseline=None) -> Path | None:
     """Opt-in (config [alerts] enabled): append a timestamped line to
     alerts.log when the analyzed window has voltage anomalies, sustained
-    high-load, inferred on-battery episodes, or a stale data feed. The tray
-    process watches this file and raises a notification for new lines;
-    email stays an extension point."""
+    high-load, inferred on-battery episodes, a stale data feed, or days that
+    deviate from the recorded baseline (roadmap item 19,
+    pcss.stats.detect_baseline_deviations — a deviation flag, never a fault
+    claim). The tray process watches this file and raises a notification for
+    new lines; email stays an extension point."""
     if not config.ALERTS_ENABLED:
         return None
     n_v, n_h, n_ob = len(voltage_anomalies), len(high_load), len(on_battery)
+    n_bd = 0 if baseline is None else len(baseline.get("flagged", []))
     stale_level = (staleness or {}).get("level", "fresh")
-    if n_v == 0 and n_h == 0 and n_ob == 0 and stale_level == "fresh":
+    if n_v == 0 and n_h == 0 and n_ob == 0 and n_bd == 0 and stale_level == "fresh":
         return None
     stale_bit = (f"  stale={stale_level}({staleness['age_hours']:.1f}h)"
                 if stale_level != "fresh" else "")
     line = (f"{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}  "
             f"voltage_anomalies={n_v}  high_load_episodes={n_h}  "
-            f"on_battery_episodes={n_ob}{stale_bit}\n")
+            f"on_battery_episodes={n_ob}  baseline_deviations={n_bd}{stale_bit}\n")
     with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
         f.write(line)
     return config.ALERTS_LOG

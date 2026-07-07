@@ -130,6 +130,20 @@ SELFTEST_RECOVERY_SAMPLES = 4
 BATTERY_REPLACE_VOLTAGE_V = 25.6
 BATTERY_TREND_MIN_DAYS = 60.0
 
+# Baseline-deviation energy alerts (roadmap item 19): a day's own hourly
+# power profile is compared against the weekday or weekend baseline built
+# from the full energylog history (pcss.stats.weekday_weekend_profiles), and
+# flagged when the mean absolute deviation across the 24 hours — as a
+# percent of the baseline's own mean power — exceeds
+# BASELINE_DEVIATION_PCT. Both knobs are deliberately blunt: per-hour
+# variance is noisy with only a few weeks of history, and a holiday sits in
+# neither profile, so BASELINE_MIN_DAYS holds the detector silent (the
+# honest "not enough history" status, nothing flagged) below that many
+# distinct energylog days, the same floor pattern as
+# BATTERY_TREND_MIN_DAYS above.
+BASELINE_MIN_DAYS = 14
+BASELINE_DEVIATION_PCT = 35.0
+
 # DataLog default sample interval (PCSS factory default).
 DATALOG_EXPECTED_INTERVAL_MIN = 20.0
 
@@ -290,6 +304,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global ON_BATTERY_VOLTAGE_V, ON_BATTERY_CAPACITY_DROP_PCT
     global SELFTEST_DIP_PCT, SELFTEST_RECOVERY_SAMPLES
     global BATTERY_REPLACE_VOLTAGE_V, BATTERY_TREND_MIN_DAYS, CALIBRATION_MIN_EPISODES
+    global BASELINE_MIN_DAYS, BASELINE_DEVIATION_PCT
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
     global DASHBOARD_THEME, DASHBOARD_MODEL, DASHBOARD_REFRESH_MINUTES, DASHBOARD_LANGUAGE
     global ALERTS_ENABLED, ARCHIVE_ENABLED
@@ -347,6 +362,8 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     BATTERY_REPLACE_VOLTAGE_V = float(
         th.get("battery_replace_voltage_v", BATTERY_REPLACE_VOLTAGE_V))
     BATTERY_TREND_MIN_DAYS = float(th.get("battery_trend_min_days", BATTERY_TREND_MIN_DAYS))
+    BASELINE_MIN_DAYS = int(th.get("baseline_min_days", BASELINE_MIN_DAYS))
+    BASELINE_DEVIATION_PCT = float(th.get("baseline_deviation_pct", BASELINE_DEVIATION_PCT))
     DATALOG_EXPECTED_INTERVAL_MIN = float(th.get("datalog_expected_interval_min", DATALOG_EXPECTED_INTERVAL_MIN))
     STALE_WARN_HOURS = float(th.get("stale_warn_hours", STALE_WARN_HOURS))
     STALE_CRIT_HOURS = float(th.get("stale_crit_hours", STALE_CRIT_HOURS))

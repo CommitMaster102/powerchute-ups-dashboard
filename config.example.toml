@@ -106,6 +106,17 @@ battery_trend_min_days    = 60.0
 # self-test's shape looks different on your UPS model.
 selftest_dip_pct          = 3.0
 selftest_recovery_samples = 4
+# Baseline-deviation energy alerts: each complete day's own hourly power
+# profile is compared against the weekday or weekend baseline built from the
+# full energylog history, and flagged when the mean absolute deviation across
+# the 24 hours (as a percent of the baseline's own mean power) exceeds
+# baseline_deviation_pct. Below baseline_min_days distinct energylog days,
+# per-hour variance is too noisy to trust and nothing is flagged. Both knobs
+# are deliberately blunt — a holiday or a guest staying over can trip this
+# just as easily as a stuck-on appliance, so it flags a deviation from the
+# recorded baseline, never a fault.
+baseline_min_days      = 14
+baseline_deviation_pct = 35.0
 
 [dashboard]
 # Dashboard color theme: "dark" (the designed default) or "light".
@@ -134,9 +145,10 @@ calibration_min_episodes = 3
 
 [alerts]
 # Opt-in. When true, a run that finds voltage anomalies, sustained high-load
-# episodes, or inferred on-battery episodes appends one line to
-# output/alerts.log. The tray icon watches that file and raises a Windows
-# toast for new lines (30-minute cooldown). Off by default.
+# episodes, inferred on-battery episodes, or days that deviate from the
+# recorded baseline appends one line to output/alerts.log. The tray icon
+# watches that file and raises a Windows toast for new lines (30-minute
+# cooldown). Off by default.
 enabled = false
 
 [archive]
