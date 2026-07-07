@@ -131,6 +131,101 @@ Challenges:
 - Honest labeling again: this flags deviation from the recorded baseline,
   not faults; the wording must not overclaim.
 
+### 26. Battery lifecycle annotations and replacement tracking
+
+The archive is designed to outlive PCSS's own rotation, which means it will
+eventually span battery replacements — and both the replace-by projection
+(item 7) and the planned runtime calibration (item 16) fit trends that
+assume a single battery. A `battery_installed_on` date, and more generally a
+small annotations file of dated entries (battery replaced, new appliance on
+the UPS, UPS moved), would segment those fits at replacement boundaries and
+draw labeled vertical markers across the time panels so the archive's
+history stays interpretable years later.
+
+Challenges:
+
+- Fit segmentation: `battery_replace_projection` in `pcss/stats.py` must fit
+  only samples after the newest replacement date and report the battery's
+  age alongside the projection; the same boundary applies to item 16's
+  calibration when it lands.
+- Where annotations live: config is for settings, and `output/` holds
+  generated files. A user-owned `annotations.csv` (or a `[[annotations]]`
+  list in `config.toml`) that the analyzer reads and never writes keeps the
+  entries authoritative, and like `size_history.csv` they must never be
+  truncated.
+- Rendering: a labeled vertical marker is a new small shape in
+  `pcss/charts.js` next to the existing point markers, and it must stay
+  legible next to the gap and episode strips on a busy axis.
+
+### 27. End-of-period cost forecast
+
+The billing-period grouping (item 8) and the hourly profiles (item 9) make a
+forecast mostly a lookup: project the current period's cumulative kWh to the
+period's end date, price the result both flat and tiered, and name the date
+the tier limit will be crossed. Shown as a subtitle on the Period Comparison
+card, a console line, and the `--json` summary — it answers "what will this
+bill be?" while there is still time to react.
+
+Challenges:
+
+- Early-period noise: two days into a period, a linear extrapolation is
+  wild. The forecast needs a minimum-days floor (the
+  `battery_trend_min_days` honesty pattern) or a blend with the previous
+  period's profile until enough of the current period exists.
+- Method choice: a day-of-week-aware projection from the item-9 profiles
+  against a plain per-day mean; the simple version should ship first and the
+  profile version only if it demonstrably beats it.
+- Wording: the partial-period labeling from item 8 already marks the current
+  period; the forecast must present itself as a projection, never a
+  measurement, in every surface it reaches.
+- Where it lands: a new function in `pcss/stats.py` next to
+  `compute_energy_summary`, feeding the `_panel_cmp` subtitle in
+  `pcss/dashboard.py`.
+
+### 28. Grid-quality trend
+
+`detect_voltage_anomalies` finds out-of-envelope samples, but nothing
+aggregates them over time. Per-month counts of sags, swells, and
+interruptions — with mean depth and the worst event — would answer whether
+the Coopesantos supply is getting better or worse, a question no current
+view addresses.
+
+Challenges:
+
+- Normalization: months with sampling gaps under-count events, so the trend
+  must report rates per recorded day, using `detect_gaps` output to compute
+  the recorded time.
+- Classification: envelope violations split into sag and swell by direction;
+  interruptions come from item 6 episodes or the authoritative EventLog
+  spans. The split thresholds belong under `[thresholds]`.
+- Cadence honesty: 20-minute samples miss short events entirely (the item 6
+  caveat), so this is a trend of events visible at the sampling cadence and
+  must be labeled as such.
+- Presentation: a reference-table block is the cheap first step; a dedicated
+  bar panel is a new key that must join `PANELS` in `tests/harness.py` with
+  the conftest render assertion, so the table should prove the value first.
+
+### 29. Bill reconciliation
+
+The dashboard prices UPS-metered energy, but the bill covers the whole
+house. Recording actual bills (period, kWh, amount) in a small user-owned
+file would show the UPS share of household consumption per period and
+validate the tariff arithmetic against a real invoice instead of assuming
+it.
+
+Challenges:
+
+- Entry ergonomics: a `bills.csv` next to `config.toml` (or `[[bills]]`
+  entries in it), tolerant of missing periods — reconciliation is opt-in per
+  bill, not a required habit.
+- Alignment: entered periods must snap to the bounds from
+  `_billing_period_bounds` in `pcss/stats.py`; a start-day mismatch should
+  be reported, never silently mis-joined.
+- Honest labeling: the UPS sees only its own outlets, so "share of household
+  consumption" must not read as if a household meter exists.
+- Synergy with item 17: a real bill pins the effective rates for its period,
+  so reconciliation data can seed or verify the tariff history.
+
 ## Dashboard and interaction
 
 ### 20. Event timeline panel
@@ -190,6 +285,30 @@ Challenges:
   encoder is extensible — one more key alongside `z` and `p`).
 - The control must fit the minimal card-header design; the preset-pill
   pattern (`_section_head`) is the established look for this kind of toggle.
+
+### 30. Auto theme
+
+`[dashboard] theme` picks one palette at build time — `build_dashboard`
+bakes `PALETTES[theme]` into the page, which is why the E2E theme suite
+builds a second, light dashboard. Moving the palette to CSS custom
+properties and shipping both would let a single build follow
+`prefers-color-scheme`, with a header toggle for manual override.
+
+Challenges:
+
+- The palette is not only CSS: the panel builders in `pcss/dashboard.py`
+  embed concrete colors in the JSON payload (series and marker colors), so
+  either the payload carries palette-neutral color roles resolved by
+  `pcss/charts.js` at draw time, or both palettes ride the payload. That
+  payload refactor is the real work.
+- PNG export serializes the SVG to a canvas, and CSS variables inside
+  serialized SVG do not resolve; the export path must inline the computed
+  colors of the active theme or the exported image comes out wrong.
+- The manual override belongs in the permalink hash (item 1's encoder is
+  extensible) so a shared link carries its theme; `localStorage` would keep
+  it per-machine instead — one of the two, chosen deliberately.
+- `tests/e2e_theme.py` and the `light_dashboard_path` fixture simplify to a
+  single build toggled live, but must be reworked in the same change.
 
 ## Alerting and automation
 
@@ -254,6 +373,52 @@ Challenges:
   still intact on disk — should be weighed first; it may be all a personal
   dashboard ever needs (the ponytail question: does the fancy version need
   to exist at all?).
+
+### 31. Log-staleness watchdog
+
+Nothing notices when PCSS stops writing: a dead serial link, a stopped
+service, or a wedged agent just means every analyzer run re-analyzes aging
+data and the dashboard quietly goes stale. When the newest DataLog sample is
+older than a multiple of `datalog_expected_interval_min`, the console should
+say so, `_build_health` should degrade the health pill (amber, then red
+beyond a second threshold), and the `[alerts]` trigger should fire so the
+tray toasts it. Cheap, and it guards everything downstream of the data.
+
+Challenges:
+
+- False alarms: the PC being off overnight produces no samples with nothing
+  wrong. The default threshold must be generous (half a day or more, under
+  `[thresholds]`), and "stale now" must stay distinct from the historical
+  gaps that `detect_gaps` already reports.
+- Wall-clock enters the pipeline: the analyzer currently reasons only about
+  log timestamps. Comparing the newest sample against "now" has to respect
+  the naive-local timestamp contract (`ts_2010_to_dt`, the epoch-ms
+  convention), or a timezone slip fabricates staleness.
+- The tray could also check cheaply between analyzer runs (DataLog file
+  mtime); if it does, it must read the same threshold from config rather
+  than duplicating the number.
+
+### 32. Weekly digest
+
+Event-driven alerts (items 14 and 23) say when something happened; a digest
+says that nothing did, on a schedule: kWh and cost so far this billing
+period, the forecast (item 27) once it exists, anomaly and episode counts,
+battery health, and the biggest day of the week. Fatigue-free by
+construction, because it arrives on a cadence rather than a trigger.
+
+Challenges:
+
+- Scheduling ownership: the daily scheduled run already exists
+  (`scheduled_run.ps1`); the digest is a gate — "first run on or after
+  Monday" — with a marker file alongside `output/last_scheduled_run.txt` so
+  reruns do not duplicate it.
+- Delivery: a digest line appended to `alerts.log` gets toasted by
+  `AlertWatcher` today, and the richer destination is item 23's webhook
+  channel. This item must not grow its own transport.
+- The content is summarization, not new math: everything listed already
+  exists in the console summary and `--json`. The work is choosing what a
+  short text message omits, and keeping the wording honest about partial
+  periods and projections.
 
 ## Shipped — implementation archive
 
