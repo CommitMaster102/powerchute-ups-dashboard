@@ -82,7 +82,7 @@ def test_empty_or_missing_column():
     assert battery_replace_projection(df)["status"] == "insufficient_history"
 
 
-# ---------------------------------------------------- annotations (roadmap item 26)
+# ---------------------------------------------------- annotations
 def test_default_battery_fields_are_none_without_annotations():
     """With no annotations argument at all, the new keys are present but
     unset — the dict shape gains fields, but the values say "no boundary"."""

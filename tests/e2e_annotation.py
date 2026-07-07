@@ -1,4 +1,4 @@
-"""E2E: battery-lifecycle annotation labels stay inside the plot (item B1).
+"""E2E: battery-lifecycle annotation labels stay inside the plot.
 
 The hermetic fixture carries one battery_replaced annotation (2026-06-29).
 Zoomed so it sits near the window's right edge, its label must flip to an

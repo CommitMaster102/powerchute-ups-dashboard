@@ -1,4 +1,4 @@
-"""E2E: marker labels stay at or below the plot's top padding (item B4).
+"""E2E: marker labels stay at or below the plot's top padding.
 
 A flagged-day marker sits above the bar it flags, at ``y - 13``. On the
 tallest bar that nudge would push the label into (or above) the top padding,

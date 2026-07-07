@@ -126,7 +126,7 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
 
 
 # ======================================================================
-# Bill reconciliation (roadmap item 29) — a user-owned bills.csv
+# Bill reconciliation — a user-owned bills.csv
 # ======================================================================
 _BILLS_COLUMNS = ["period_start", "kwh", "amount_crc"]
 
@@ -203,7 +203,7 @@ def load_bills(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
 
 
 # ======================================================================
-# Battery lifecycle annotations (roadmap item 26) — a user-owned
+# Battery lifecycle annotations — a user-owned
 # annotations.csv
 # ======================================================================
 _ANNOTATIONS_COLUMNS = ["date", "kind", "label"]
@@ -216,7 +216,7 @@ def load_annotations(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]
     time panels), header row required.
 
     This file holds hand-entered personal notes, so it is read defensively,
-    the same pattern as `load_bills` (roadmap item 29). A missing file simply
+    the same pattern as `load_bills`. A missing file simply
     disables the feature — annotating lifecycle events is opt-in, not a
     required habit — and returns an empty frame with no warnings at all. A
     file missing one of the required columns is reported and ignored in

@@ -1,5 +1,4 @@
-"""Unit tests for runtime-curve calibration from observed discharges (roadmap
-item 16).
+"""Unit tests for runtime-curve calibration from observed discharges.
 
 Every real on-battery outage is a measurement: the EventLog spans give the
 exact duration, the DataLog gives the battery capacity consumed, and the
@@ -100,7 +99,7 @@ def test_clean_multi_episode_fit_recovers_known_k():
 
 
 def test_capacity_drop_floor_excludes_second_long_blips():
-    """Sub-percentage-point capacity drops (the roadmap's "lasted seconds,
+    """Sub-percentage-point capacity drops (the "lasted seconds,
     drains no measurable capacity" outages) must not become observations,
     even though their spans are otherwise well-formed."""
     dl_rows: list[dict] = []
@@ -166,12 +165,12 @@ def test_below_floor_returns_honest_status():
     assert result["watts"] is None
     assert result["minutes"] is None
     # Even below the floor, the observed range from the usable observations is
-    # reported (roadmap item 16, item B7): two discharges at 100 W and 200 W.
+    # reported: two discharges at 100 W and 200 W.
     assert result["watts_observed_min"] == pytest.approx(100.0)
     assert result["watts_observed_max"] == pytest.approx(200.0)
 
 
-# ---------------------------------------------------------------- observed watt range (item B7)
+# ---------------------------------------------------------------- observed watt range
 def test_calibrated_result_carries_observed_watt_range():
     """The measured overlay extrapolates one global k across all configured
     watt points, so the honest range is the span of the observations it was
@@ -403,7 +402,7 @@ def test_build_dashboard_spanish_calibration_note(monkeypatch):
 
 def test_build_dashboard_rt_subtitle_names_observed_watt_range():
     """The honesty note names the observed load span the single global k was
-    fitted across (roadmap item 16, item B7)."""
+    fitted across."""
     calibration = {"status": "calibrated", "n_episodes": 4, "min_episodes": 3,
                    "k": 0.01, "watts": [100.0, 200.0], "minutes": [10.0, 5.0],
                    "watts_observed_min": 120.0, "watts_observed_max": 480.0}
@@ -431,7 +430,7 @@ def test_build_dashboard_rt_subtitle_spanish_observed_range(monkeypatch):
     assert "cerca de 120-480 W" in html
 
 
-# ---------------------------------------------------------------- console + --json surfaces (item B6)
+# ---------------------------------------------------------------- console + --json surfaces
 def test_calibration_console_lines_calibrated_names_k_and_range():
     import analyze_ups
     cal = {"status": "calibrated", "n_episodes": 4, "min_episodes": 3, "k": 0.01234,

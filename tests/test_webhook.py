@@ -1,4 +1,4 @@
-"""Unit tests for the webhook notification channel (roadmap item 23).
+"""Unit tests for the webhook notification channel.
 
 Covers the keyring-backed URL storage, the gated send path, and the
 guarantee that the toast still fires when webhook delivery fails. All HTTP

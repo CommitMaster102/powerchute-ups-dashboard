@@ -85,7 +85,7 @@ def test_calendar_months_have_partial_column_too():
     assert "partial" in es["monthly"].columns
 
 
-# ------------------------------------------------------- tariff history (item 17)
+# ------------------------------------------------------- tariff history
 def test_no_tariff_history_matches_pre_feature_behavior(monkeypatch):
     """With TARIFF_HISTORY empty (the default), every period is still priced
     with the flat [tariff] keys, exactly as before this feature existed —

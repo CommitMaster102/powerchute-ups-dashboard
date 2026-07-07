@@ -162,7 +162,7 @@ def test_load_config_new_roadmap_keys(tmp_path, restore_config):
 
 
 def test_webhook_enabled_defaults_false(restore_config):
-    # Roadmap item 23: the webhook channel is off unless a config explicitly
+    # The webhook channel is off unless a config explicitly
     # turns it on — and it also needs a URL in the keyring, which is checked
     # by the tray, not here.
     c = restore_config
@@ -187,7 +187,7 @@ def test_load_config_rejects_unknown_language(tmp_path, restore_config):
 
 
 def test_default_theme_is_auto():
-    """Roadmap item 30: the module default theme is "auto" — a single build
+    """The module default theme is "auto" — a single build
     that follows the viewer's prefers-color-scheme, replacing the old "dark"
     default. Explicit "dark"/"light" configs still pin the initial theme."""
     assert cfg.DASHBOARD_THEME == "auto"
@@ -220,7 +220,7 @@ def test_load_config_agent_dir_arg_wins(tmp_path, restore_config):
     assert agent / "DataLog" == c.DATALOG
 
 
-# ---------------------------------------------------- tariff history (item 17)
+# ---------------------------------------------------- tariff history
 def test_load_config_parses_tariff_history(tmp_path, restore_config):
     c = restore_config
     conf = tmp_path / "config.toml"
@@ -493,7 +493,7 @@ def test_main_writes_shell(tmp_path, restore_config):
 
 
 def test_tariff_history_tags_console_and_json_periods(tmp_path, restore_config, capsys):
-    """End to end (item 17): with [[tariff.history]] configured, the console
+    """End to end: with [[tariff.history]] configured, the console
     monthly breakdown and the --json energy.periods array both say which
     rates priced the period, so a rate boundary mid-history does not read
     as a consumption change."""
@@ -562,7 +562,7 @@ def test_main_survives_a_locked_alerts_log(tmp_path, restore_config, monkeypatch
 def test_malformed_tariff_history_exits_nonzero_without_traceback(
         tmp_path, restore_config, capsys):
     """A malformed [[tariff.history]] entry makes load_config raise at the
-    analyzer's entry (roadmap item 17). main() must print the loud
+    analyzer's entry. main() must print the loud
     "config error: ..." message and exit nonzero, not surface a traceback at a
     user who only mistyped a date in config.toml."""
     import analyze_ups

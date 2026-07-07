@@ -12,12 +12,12 @@
   const S = DATA.strings || {};   // localized UI strings (English fallbacks)
   const SVGNS = "http://www.w3.org/2000/svg";
 
-  // Theme (roadmap item 30). Both palettes ride the payload; charts.js resolves
+  // Theme. Both palettes ride the payload; charts.js resolves
   // the palette-neutral role names the panels emit (e.g. "blue", "amber") to
   // concrete hex from whichever palette is active at DRAW time. Because chart
   // ink is always a concrete SVG attribute value — never a CSS variable inside
   // the SVG — the PNG export keeps working by construction. The manual override
-  // rides the permalink hash (item 1's encoder) rather than localStorage, so a
+  // rides the permalink hash rather than localStorage, so a
   // shared link carries its theme rather than keeping it per-machine.
   const PALETTES = DATA.palettes || {};
   const CONFIG_THEME = DATA.theme || "dark";   // "auto" | "dark" | "light"
@@ -54,7 +54,7 @@
   let LIGHTBOX_KEY = null;
   let LAST_PRESET = null; // "30" | "7" | "1" while a preset window is applied
   let INSPECT = null;     // { key, idx } while a panel is in keyboard inspect mode
-  // Period Comparison baseline selection (roadmap item 22): "previous"
+  // Period Comparison baseline selection: "previous"
   // (the default), "quarter" (three periods back), or an explicit period
   // label picked from the dropdown. Period labels look like "2026-06" or
   // "2026-06-15", so they never collide with the two keyword values.
@@ -150,7 +150,7 @@
   }
   function heatColor(t) {
     t = Math.max(0, Math.min(1, t));
-    // The ramp rides the active palette (roadmap item 30), so the hourly power
+    // The ramp rides the active palette, so the hourly power
     // map follows the theme like every other chart.
     const stops = (C && C.heat) || [[14, 30, 40], [31, 122, 140], [79, 209, 197], [243, 193, 75]];
     const seg = t * (stops.length - 1);
@@ -326,7 +326,7 @@
                         fill: C.amber, "fill-opacity": 0.55, class: "ep-strip" }, plot);
       });
     }
-    // Battery lifecycle annotations (roadmap item 26): a dashed vertical
+    // Battery lifecycle annotations: a dashed vertical
     // line with a short label near the top of the plot area, on every
     // time-axis panel — distinct from the red gap strips and the amber
     // episode strips along the x-axis, so "the battery was replaced here"
@@ -578,7 +578,7 @@
     return svg;
   }
 
-  // Event timeline (roadmap item 20): the fourth chart shape. One categorical
+  // Event timeline: the fourth chart shape. One categorical
   // row per event category, one dot per occurrence, time on the x axis. The
   // category row labels double as the legend — clicking one toggles its row
   // via st.hidden (seeded from the payload's default-visible flags). Dots that
@@ -784,7 +784,7 @@
     updateHash();
   }
   // ------------------------------------------------------------------
-  // Period Comparison baseline selection (roadmap item 22). The payload's
+  // Period Comparison baseline selection. The payload's
   // cmp panel carries every billing period (spec.periods); this picks the
   // current period (always the last) and whichever baseline period is
   // selected, and rebuilds the two-series spec.series the line renderer
@@ -830,7 +830,7 @@
     document.querySelectorAll(".cmp-pill").forEach(b => {
       const active = b.dataset.mode === CMP_SEL;
       b.classList.toggle("is-active", active);
-      // Keep the toggle-group aria state current (item B3).
+      // Keep the toggle-group aria state current.
       b.setAttribute("aria-pressed", active ? "true" : "false");
     });
     const sel = document.querySelector(".cmp-period-select");
@@ -851,7 +851,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Theme control (roadmap item 30). applyTheme swaps the active palette and
+  // Theme control. applyTheme swaps the active palette and
   // redraws every chart plus the sparklines; the header toggle cycles from
   // auto to dark to light; the override rides the permalink hash (encoded only
   // when it differs from the config default) and resetAll clears it back to
@@ -906,7 +906,7 @@
       if (zparts.length) parts.push("z=" + zparts.join(","));
     }
     if (CMP_SEL !== "previous") parts.push("c=" + encodeURIComponent(CMP_SEL));
-    // The manual theme override rides the hash (roadmap item 30), encoded only
+    // The manual theme override rides the hash, encoded only
     // when it differs from the config default so a default page stays cleanly
     // hashless.
     if (THEME_MODE !== CONFIG_THEME) parts.push("t=" + THEME_MODE);
@@ -957,7 +957,7 @@
       const d = b.dataset.days;
       const active = d === "all" ? !anyZoom : LAST_PRESET === d;
       b.classList.toggle("is-active", active);
-      // Keep the toggle-group aria state current (item B3).
+      // Keep the toggle-group aria state current.
       b.setAttribute("aria-pressed", active ? "true" : "false");
     });
   }
@@ -1553,7 +1553,7 @@
     const st = STATE[key];
     if (!st) return;
     // Opening a DIFFERENT panel's lightbox with no hover/focus crossing would
-    // otherwise leave inspect mode stuck on the previous panel (item B2) —
+    // otherwise leave inspect mode stuck on the previous panel —
     // drop it, the same rule pointermove/focus already apply when the active
     // panel changes.
     if (INSPECT && INSPECT.key !== key) exitInspect();
@@ -1572,7 +1572,7 @@
     attachInteractions(view);
     LIGHTBOX_KEY = key;
     // If this lightbox shows the very panel being inspected, carry the inspect
-    // cue and the current sample onto the expanded view too (item B2).
+    // cue and the current sample onto the expanded view too.
     if (INSPECT && INSPECT.key === key) {
       updateInspectCue(key, true);
       showInspectSample(key);
@@ -1584,7 +1584,7 @@
     lb.hidden = true;
     const key = LIGHTBOX_KEY;
     LIGHTBOX_KEY = null;
-    // Clear any inspect cue mirrored onto the lightbox view (item B2); the
+    // Clear any inspect cue mirrored onto the lightbox view; the
     // grid card keeps its own cue if inspect mode is still active there.
     const lbBox = document.getElementById("lightbox-chart");
     if (lbBox) lbBox.classList.remove("is-inspecting");
@@ -1596,7 +1596,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Keyboard sample step-through ("inspect mode", roadmap item 21): Enter
+  // Keyboard sample step-through ("inspect mode"): Enter
   // toggles it on the focused chart, ArrowLeft/ArrowRight then walk the
   // panel's full sample array — never the decimated index decimateMinMax
   // renders, so a step never skips a sample at a wide zoom — one entry at a
@@ -1631,7 +1631,7 @@
     document.querySelectorAll('.inspect-badge[data-panel="' + key + '"]')
       .forEach(b => { b.hidden = !active; });
     // Mirror the cue onto the lightbox view when it is showing the very panel
-    // being inspected (item B2), so an expanded chart under keyboard inspect
+    // being inspected, so an expanded chart under keyboard inspect
     // carries the same amber outline and badge as its grid card.
     const onLightbox = active && LIGHTBOX_KEY === key;
     const lbBox = document.getElementById("lightbox-chart");
@@ -1819,7 +1819,7 @@
     TIME.hoverTs = null;
     LAST_PRESET = null;
     CMP_SEL = "previous";
-    // The theme override clears back to the config default (roadmap item 30),
+    // The theme override clears back to the config default,
     // so a reset restores the palette the build shipped with.
     THEME_MODE = CONFIG_THEME;
     C = PALETTES[resolveTheme(THEME_MODE)] || PALETTES.dark || {};
@@ -1864,7 +1864,7 @@
     anomalyClusters: k => anomalyClusters(k).map(c => c.slice()),
     jumpAnomaly,
     inspect: () => (INSPECT ? { key: INSPECT.key, idx: INSPECT.idx } : null),
-    // Theme (roadmap item 30): the current mode ("auto"|"dark"|"light") and the
+    // Theme: the current mode ("auto"|"dark"|"light") and the
     // resolved active palette theme ("dark"|"light"), plus programmatic control.
     themeMode: () => THEME_MODE,
     theme: () => resolveTheme(THEME_MODE),
@@ -1922,7 +1922,7 @@
     updateThemeToggle();
     // In "auto" mode, follow a live OS light/dark switch: the CSS chrome
     // reacts on its own through prefers-color-scheme, and this redraws the
-    // chart ink to match (roadmap item 30).
+    // chart ink to match.
     if (window.matchMedia) {
       const mq = matchMedia("(prefers-color-scheme: light)");
       const onSchemeChange = () => { if (THEME_MODE === "auto") applyTheme(); };

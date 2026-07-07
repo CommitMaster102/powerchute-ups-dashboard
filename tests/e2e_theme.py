@@ -1,4 +1,4 @@
-"""E2E: auto theme (roadmap item 30).
+"""E2E: auto theme.
 
 One "auto" build ships both palettes and follows the viewer's
 prefers-color-scheme (emulated here via Playwright's emulate_media). The header

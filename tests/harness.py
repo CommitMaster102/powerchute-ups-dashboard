@@ -19,7 +19,7 @@ DASHBOARD = Path(__file__).resolve().parent.parent / "output" / "dashboard.html"
 
 # Panel keys, kept in sync with the payload built by pcss/dashboard.py
 # (the conftest session fixture asserts the page agrees). "ev" is the event
-# timeline (roadmap item 20), a categorical-row time panel.
+# timeline, a categorical-row time panel.
 PANELS = ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "cmp", "wk",
           "growth", "proj", "cad", "ev"]
 

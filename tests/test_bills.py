@@ -1,4 +1,4 @@
-"""Unit tests for bill reconciliation (roadmap item 29).
+"""Unit tests for bill reconciliation.
 
 A user-owned bills.csv records what Coopesantos actually billed for the
 whole house per billing period (period_start, kwh, amount_crc).

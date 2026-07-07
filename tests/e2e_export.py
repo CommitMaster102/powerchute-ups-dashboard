@@ -54,10 +54,10 @@ def test_png_export(dash, tmp_path):
 
 # The corner pixel of an exported panel is its baked card background — the
 # active palette's panel color. Reading it back proves the PNG follows a theme
-# switch (roadmap item 30): chart ink is concrete SVG attributes resolved from
-# the active palette, so the serialized image reflects the switch by
-# construction — but the roadmap called this out as a real risk, so it is
-# checked rather than assumed.
+# switch: chart ink is concrete SVG attributes resolved from the active
+# palette, so the serialized image reflects the switch by construction — but
+# this was called out as a real risk during design, so it is checked rather
+# than assumed.
 _CORNER_JS = """async (key) => {
     const url = await __chartsDebug.pngDataUrl(key);
     const img = new Image();

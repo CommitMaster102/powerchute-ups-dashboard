@@ -1,9 +1,9 @@
-"""Unit tests for the weekly digest (roadmap item 32).
+"""Unit tests for the weekly digest.
 
 Event-driven alerts (items 14 and 23) say when something happened; the
 digest says that nothing did, on a schedule. It is opt-in on top of
 `[alerts] enabled` (its only transport is `alerts.log`; the tray's
-`AlertWatcher` toast and item 23's webhook then deliver it for free — this
+`AlertWatcher` toast and the webhook then deliver it for free — this
 feature must not grow its own transport), gated by a marker file
 (`output/last_digest.txt`) recording the ISO (year, week) of the last run
 that actually appended a digest line, and worded from numbers the pipeline

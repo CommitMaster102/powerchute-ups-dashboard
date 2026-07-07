@@ -58,14 +58,14 @@ TRAY_LOG = OUTPUT / "tray_status.log"
 PCSS_CERT = OUTPUT / "pcss_cert.pem"
 # OS keyring (Windows Credential Manager) service name for the PCSS password.
 KEYRING_SERVICE = "stateOfUPS-PCSS"
-# Dedicated keyring entry (under the same service) for the webhook URL
-# (roadmap item 23). It is stored under this "username" purely to reuse the
-# keyring's (service, username) -> secret shape; it is not an actual account.
+# Dedicated keyring entry (under the same service) for the webhook URL.
+# It is stored under this "username" purely to reuse the keyring's
+# (service, username) -> secret shape; it is not an actual account.
 WEBHOOK_KEYRING_USERNAME = "webhook-url"
-# Scratch log for a tray-triggered analyzer run (item 24) — overwritten on
+# Scratch log for a tray-triggered analyzer run — overwritten on
 # every run, not history like tray_status.log or the scheduled-run log.
 TRAY_RUN_LOG = OUTPUT / "tray_run.log"
-# Watchdog ceiling for one tray-triggered analyzer run (item 24). A healthy
+# Watchdog ceiling for one tray-triggered analyzer run. A healthy
 # run finishes in seconds; this generous cap keeps a hung analyzer from
 # wedging the single-flight slot until the tray is restarted. On expiry the
 # process tree is killed, a failure toast fires, and the slot is released.
@@ -411,7 +411,7 @@ def _is_already_connected(html: str) -> bool:
 
 
 # ----------------------------------------------------------------------
-# Run the analyzer from the tray (item 24)
+# Run the analyzer from the tray
 # ----------------------------------------------------------------------
 class SingleFlightRun:
     """Tracks whether a tray-triggered analyzer run is already active.
@@ -630,7 +630,7 @@ class AlertWatcher:
         # Negative infinity so the very first alert always notifies, whatever
         # clock the caller passes in.
         self._last_notify = float("-inf")
-        # weekly_digest lines (roadmap item 32) fire once per ISO week, so
+        # weekly_digest lines fire once per ISO week, so
         # dropping one to cooldown is not the same "seen again soon" fatigue
         # control an ordinary repeated anomaly gets — it is losing the only
         # delivery that line will ever get this week. A digest line seen
@@ -685,7 +685,7 @@ class AlertWatcher:
 
 
 # ----------------------------------------------------------------------
-# Webhook delivery (item 23) — a second delivery path next to the toast,
+# Webhook delivery — a second delivery path next to the toast,
 # reusing AlertWatcher's tail/cooldown decision rather than duplicating it.
 # ----------------------------------------------------------------------
 def get_webhook_url() -> str | None:
@@ -1214,8 +1214,8 @@ def parse_cli_args(argv: list[str]) -> argparse.Namespace:
 
     Normal operation takes no flags at all (this is what run_tray.bat and
     the tray shortcut invoke). --set-webhook-url and --clear-webhook-url are
-    one-shot setup commands (roadmap item 23): each does its job and exits
-    without starting the tray icon.
+    one-shot setup commands: each does its job and exits without starting
+    the tray icon.
     """
     parser = argparse.ArgumentParser(description="PCSS battery tray icon.")
     parser.add_argument(

@@ -1,9 +1,9 @@
-"""Unit tests for battery lifecycle annotations (roadmap item 26).
+"""Unit tests for battery lifecycle annotations.
 
 A user-owned annotations.csv records dated lifecycle entries — battery
 replaced, a new appliance added, the UPS moved — so the archive's history
 stays interpretable years later. `pcss.loaders.load_annotations` reads it
-defensively, exactly like `load_bills` (roadmap item 29): a missing file
+defensively, exactly like `load_bills`: a missing file
 silently disables the feature, and a malformed row is reported and skipped
 rather than raising. `pcss.stats.latest_battery_replacement` picks the
 fit-segmentation boundary `battery_replace_projection` uses: the newest

@@ -1,4 +1,4 @@
-"""Unit tests for the auto-theme contract (roadmap item 30).
+"""Unit tests for the auto-theme contract.
 
 The dashboard ships both palettes and lets a single build follow
 prefers-color-scheme, with a header toggle for manual override. These tests pin

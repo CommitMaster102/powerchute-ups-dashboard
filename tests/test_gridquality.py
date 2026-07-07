@@ -1,4 +1,4 @@
-"""Unit tests for the grid-quality trend (roadmap item 28).
+"""Unit tests for the grid-quality trend.
 
 `detect_voltage_anomalies` already finds out-of-envelope samples, but
 nothing aggregates them over time. `grid_quality_trend` in `pcss/stats.py`
@@ -9,7 +9,7 @@ per calendar month: sag count, swell count, interruption count, a
 per-recorded-day event rate (so a gap-heavy month does not read as unusually
 quiet), mean depth per direction, and the single worst envelope-violation
 sample. Every reader of this result must say the counts are events visible
-at the DataLog's own sampling cadence — the same item 6 caveat.
+at the DataLog's own sampling cadence — the same caveat.
 
 Tests are grouped by layer: classification/merging of sag and swell events,
 per-recorded-day normalization, mean-depth/worst-event arithmetic, the
@@ -335,7 +335,7 @@ def test_table_html_shows_dash_for_missing_direction_mean():
 
 
 def test_table_html_handles_nat_worst_event_across_months():
-    """Finding 1 (critical, roadmap item 28 review): a multi-month frame
+    """Finding 1 (critical): a multi-month frame
     that mixes a real worst-event month with an event-less month must not
     raise (the event-less month's worst_event_ts is `pd.NaT`, and
     `f"{NaT:%Y-%m-%d %H:%M}"` raises ValueError under the old `is not None`

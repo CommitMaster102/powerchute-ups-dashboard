@@ -1,4 +1,4 @@
-"""E2E: keyboard sample step-through (roadmap item 21). Enter toggles inspect
+"""E2E: keyboard sample step-through. Enter toggles inspect
 mode on a focused line-kind chart, ArrowLeft/ArrowRight walk its full sample
 array one entry at a time (the tooltip follows via the same code path as a
 hover), Escape leaves inspect mode, and arrows resume panning once it is off.
@@ -206,7 +206,7 @@ def test_inspect_survives_hover_of_the_same_panel_lightbox(dash):
 
 
 def test_inspect_cue_shows_on_lightbox_of_inspected_panel(dash):
-    # Item B2(a): opening the lightbox for the panel already being inspected
+    # Case (a): opening the lightbox for the panel already being inspected
     # must carry the inspect cue (outline + badge) onto the expanded view too.
     hover_panel(dash, "lv")
     dash.keyboard.press("Enter")
@@ -224,7 +224,7 @@ def test_inspect_cue_shows_on_lightbox_of_inspected_panel(dash):
 
 
 def test_opening_a_different_panels_lightbox_exits_inspect(dash):
-    # Item B2(b): expanding a DIFFERENT panel via its tool (no hover/focus
+    # Case (b): expanding a DIFFERENT panel via its tool (no hover/focus
     # crossing) must drop inspect mode rather than leave it orphaned on "lv".
     hover_panel(dash, "lv")
     dash.keyboard.press("Enter")

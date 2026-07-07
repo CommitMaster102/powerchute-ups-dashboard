@@ -38,7 +38,7 @@ def _restore_pcss_config_state():
     """Snapshot every pcss.config module-level attribute before each test and
     restore it afterward.
 
-    pcss.config is module-level state by design (see CLAUDE.md): load_config()
+    pcss.config is module-level state by design: load_config()
     mutates constants such as ARCHIVE_ENABLED in place rather than returning a
     Config object, so any test that calls load_config() (directly, or
     indirectly through analyze_ups.main()) with a config.toml that overrides a
@@ -137,7 +137,7 @@ def _write_synthetic_agent(agent: Path) -> Path:
             "\n".join(el) + "\n", encoding="utf-8")
 
     # Copy the real, personal-data-free EventLog fixture into the synthetic
-    # agent so the event timeline panel (roadmap item 20) has events to render
+    # agent so the event timeline panel has events to render
     # and the parser runs inside the E2E build. Its events (2026-06-06 to
     # 2026-07-06) overlap the synthetic DataLog window above deliberately, so
     # its fixed 2026-06-29 outage falls inside that window and drives the
@@ -153,7 +153,7 @@ def _write_synthetic_agent(agent: Path) -> Path:
 def _write_synthetic_annotations(out_dir: Path) -> Path:
     """One battery_replaced entry inside the synthesized DataLog's range
     (2026-06-27 through 2026-06-30), so the annotation-marker render path
-    (roadmap item 26) is exercised in the E2E build."""
+    is exercised in the E2E build."""
     p = out_dir / "annotations.csv"
     p.write_text(
         "date,kind,label\n2026-06-29,battery_replaced,New battery installed\n",
@@ -189,7 +189,7 @@ def _build_dashboard(tmp_path_factory, theme: str) -> Path:
     )
     import analyze_ups
     # The synthetic logs carry fixed June/July 2026 dates. The analyzer reads
-    # the wall clock exactly once (roadmap item 31, for the staleness
+    # the wall clock exactly once (for the staleness
     # watchdog); left to the real clock, this fixture would read as
     # staleness-critical forever, drifting further as real time passes.
     # STATEOFUPS_NOW is a test-only override (read in
@@ -222,7 +222,7 @@ def dashboard_path(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="session")
 def auto_dashboard_path(tmp_path_factory) -> Path:
-    """An "auto"-theme build (roadmap item 30) for the theme suite: a single
+    """An "auto"-theme build for the theme suite: a single
     build that follows prefers-color-scheme (emulated via emulate_media) and
     that the header toggle overrides live, so no second per-theme build is
     needed."""

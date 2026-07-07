@@ -1,4 +1,4 @@
-"""Unit tests for the "run the analyzer from the tray" helpers (item 24).
+"""Unit tests for the "run the analyzer from the tray" helpers.
 
 Covers the pure decision logic that backs the "Actualizar dashboard" menu
 item: command construction with a venv fallback, the --no-snapshot decision
@@ -163,7 +163,7 @@ def test_tail_of_log_missing_file_returns_placeholder(tmp_path):
     assert result  # non-empty placeholder, never raises
 
 
-# ---------------------------------------------------------------- watchdog timeout (item 24 / B9)
+# ---------------------------------------------------------------- watchdog timeout
 class _FakeProc:
     """A stand-in for a spawned analyzer process. Its first wait raises
     TimeoutExpired (a wedged run); any later wait returns a code."""

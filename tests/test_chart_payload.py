@@ -113,7 +113,7 @@ def test_gap_spans_empty():
     assert _gap_spans(pd.DataFrame()) == []
 
 
-# ---------------------------------------------------------------- annotation markers (item 26)
+# ---------------------------------------------------------------- annotation markers
 def test_annotation_markers_shape_and_epoch_ms():
     annotations = pd.DataFrame({
         "date": [pd.Timestamp("2026-05-01").date()],
@@ -142,7 +142,7 @@ def test_annotation_markers_empty_or_none():
     assert _annotation_markers(pd.DataFrame(columns=["date", "kind", "label"])) == []
 
 
-# ---------------------------------------------------------------- event timeline panel (item 20)
+# ---------------------------------------------------------------- event timeline panel
 def test_panel_ev_none_on_empty():
     assert _panel_ev(None) is None
     assert _panel_ev(pd.DataFrame(columns=["ts", "ts_ms", "oid", "active", "name"])) is None
@@ -177,7 +177,7 @@ def test_panel_ev_event_timestamps_are_epoch_ms():
 
 def test_panel_ev_default_filter_flags():
     """Power and battery rows ship visible; the communication churn ships
-    hidden (the roadmap noise point). The legend toggles the rest."""
+    hidden because it is noise. The legend toggles the rest."""
     panel = _panel_ev(_events())
     visible = {r["cat"]: r["visible"] for r in panel["rows"]}
     assert visible["power"] is True
@@ -315,7 +315,7 @@ def test_panel_cmp_needs_two_periods():
 
 
 def test_panel_cmp_periods_carries_every_period_with_label_and_partial():
-    """Roadmap item 22: selection needs every billing period in the payload
+    """Selection needs every billing period in the payload
     (not just the last two), each with its display label, day-offset x/y
     series, and whether the recorded span covers it fully."""
     from pcss.stats import compute_energy_summary
@@ -356,7 +356,7 @@ def test_panel_cmp_default_baseline_is_previous_period():
 
 def test_panel_cmp_no_server_side_decimation():
     """A year of monthly periods at hourly resolution is a few thousand
-    points total (the roadmap's own judgment call); _panel_cmp must not trim
+    points total (a deliberate judgment call); _panel_cmp must not trim
     any period's series down."""
     from pcss.stats import compute_energy_summary
     edf = pd.concat(
@@ -544,7 +544,7 @@ def test_accessibility_surface():
 
 
 def test_inspect_badge_text_is_localizable(monkeypatch):
-    """The inspect-mode badge text (roadmap item 21) is server-rendered
+    """The inspect-mode badge text is server-rendered
     directly into the card markup, the same as every other card title or
     subtitle — translated through ``_STRINGS_ES``/``_L`` rather than riding
     the JS payload, since charts.js only ever toggles its ``hidden``
@@ -558,8 +558,8 @@ def test_inspect_badge_text_is_localizable(monkeypatch):
 
 
 def test_inspect_badge_and_live_region_present():
-    """Every line-kind chart card carries a hidden inspect-mode badge
-    (roadmap item 21), toggled visible by charts.js while that panel is in
+    """Every line-kind chart card carries a hidden inspect-mode badge,
+    toggled visible by charts.js while that panel is in
     inspect mode. Bar, heatmap, and the event-timeline cards do not: inspect
     mode walks a line panel's per-sample arrays, a shape those three chart
     kinds do not have. The page also carries exactly one aria-live region

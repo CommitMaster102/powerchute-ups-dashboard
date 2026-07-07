@@ -1,4 +1,4 @@
-"""Unit tests for baseline-deviation energy alerts (roadmap item 19).
+"""Unit tests for baseline-deviation energy alerts.
 
 The weekday and weekend hourly profiles that the Weekday vs Weekend
 dashboard card already draws (`pcss.dashboard._panel_wk`) define what a
@@ -304,9 +304,9 @@ def test_deviation_pct_threshold_respected():
     assert test_date not in set(strict_result["flagged"]["date"])
 
 
-# ---------------------------------------------------------------- leave-one-out (item B8)
+# ---------------------------------------------------------------- leave-one-out
 def test_leave_one_out_flags_day_that_self_diluted_baseline_misses():
-    """Leave-one-out baselines (polish wave B, item B8): a day is compared
+    """Leave-one-out baselines: a day is compared
     against a baseline built from its PEERS only, not one its own samples
     diluted. This borderline weekend day is missed by the old self-included
     baseline but caught once the day is excluded from its own comparison.

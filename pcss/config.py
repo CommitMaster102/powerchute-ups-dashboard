@@ -25,14 +25,14 @@ OUTPUT.mkdir(parents=True, exist_ok=True)
 SIZE_HISTORY_CSV = OUTPUT / "size_history.csv"
 DASHBOARD_HTML = OUTPUT / "dashboard.html"
 
-# User-owned bill records for reconciliation (roadmap item 29): a CSV with
+# User-owned bill records for reconciliation: a CSV with
 # columns period_start, kwh, amount_crc, next to config.toml at the repo
 # root by default. The analyzer only ever reads this file, never writes it.
 # A missing file simply disables the feature — bill reconciliation is opt-in
 # per bill, not a required habit.
 BILLS_FILE = Path(__file__).resolve().parent.parent / "bills.csv"
 
-# User-owned dated lifecycle entries (roadmap item 26): a CSV with columns
+# User-owned dated lifecycle entries: a CSV with columns
 # date, kind, label, next to config.toml at the repo root by default. The
 # recognized kind "battery_replaced" marks a fit-segmentation boundary for
 # battery_replace_projection; any other kind still rides through as a plain
@@ -87,7 +87,7 @@ CO2_KG_PER_KWH = 0.098
 RUNTIME_CURVE_W = np.array([0,   100, 150, 250, 500, 600, 800, 1200])
 RUNTIME_CURVE_MIN = np.array([60, 40,  30,  15,  5,   3.5, 2,   0])
 
-# Minimum number of usable discharge observations (roadmap item 16) before
+# Minimum number of usable discharge observations before
 # calibrate_runtime_curve() will fit a measured curve at all. An observation
 # needs a real capacity drop and a nearby energylog power sample, so most
 # short outages contribute nothing; below this floor the honest result is
@@ -110,7 +110,7 @@ HIGH_LOAD_PCT = 80.0
 ON_BATTERY_VOLTAGE_V = 50.0
 ON_BATTERY_CAPACITY_DROP_PCT = 1.0
 
-# Self-test detection (roadmap item 18): a battery-capacity drop of at least
+# Self-test detection: a battery-capacity drop of at least
 # SELFTEST_DIP_PCT percentage points between consecutive samples, recovering
 # to near the pre-dip level within SELFTEST_RECOVERY_SAMPLES samples, with
 # line voltage staying inside the normal envelope throughout, reads as a UPS
@@ -130,7 +130,7 @@ SELFTEST_RECOVERY_SAMPLES = 4
 BATTERY_REPLACE_VOLTAGE_V = 25.6
 BATTERY_TREND_MIN_DAYS = 60.0
 
-# Baseline-deviation energy alerts (roadmap item 19): a day's own hourly
+# Baseline-deviation energy alerts: a day's own hourly
 # power profile is compared against the weekday or weekend baseline built
 # from the full energylog history (pcss.stats.weekday_weekend_profiles), and
 # flagged when the mean absolute deviation across the 24 hours — as a
@@ -167,7 +167,7 @@ RUNTIME_CRIT_MIN = 7.0
 # Dashboard color theme: "auto" (the default — a single build that follows the
 # viewer's prefers-color-scheme), "dark", or "light". "dark" and "light" pin
 # the initial theme exactly as before; "auto" ships both palettes and lets a
-# header toggle override at view time (roadmap item 30).
+# header toggle override at view time.
 DASHBOARD_THEME = "auto"
 # UPS model name shown in the dashboard header.
 DASHBOARD_MODEL = "APC BX2000M-LM"
@@ -182,7 +182,7 @@ DASHBOARD_LANGUAGE = "en"
 # reload, so the restored view state is kept.
 DASHBOARD_REFRESH_MINUTES = 0.0
 
-# Payload budget for multi-year archives (roadmap item 25): the cheap
+# Payload budget for multi-year archives: the cheap
 # alternative to server-side decimation. 0 (the default) changes nothing at
 # all — every panel ships full history, exactly as before this setting
 # existed. A positive value windows only the raw per-sample frames fed to
@@ -204,7 +204,7 @@ DASHBOARD_MAX_DAYS = 0.0
 ALERTS_ENABLED = False
 ALERTS_LOG = OUTPUT / "alerts.log"
 
-# Push notification channel (roadmap item 23): when true, the tray posts
+# Push notification channel: when true, the tray posts
 # each new alerts.log line to a webhook URL as well as raising the toast.
 # This key only says whether the channel is turned on; the URL itself is
 # never configured here — it lives in the OS keyring (tray_status.py's
@@ -214,7 +214,7 @@ ALERTS_LOG = OUTPUT / "alerts.log"
 # rather than sending anything. Off by default.
 WEBHOOK_ENABLED = False
 
-# Weekly digest (roadmap item 32): opt-in on top of ALERTS_ENABLED, since
+# Weekly digest: opt-in on top of ALERTS_ENABLED, since
 # alerts.log is its only transport — the toast and the item-23 webhook then
 # deliver it for free, and this feature must not grow one of its own. Once
 # per ISO week, analyze_ups.py appends one summary line alongside whatever

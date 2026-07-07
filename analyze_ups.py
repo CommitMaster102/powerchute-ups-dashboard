@@ -106,7 +106,7 @@ def banner(s: str):
 
 
 def _calibration_console_lines(calibration: dict | None) -> list[str]:
-    """The RUNTIME-CURVE CALIBRATION console lines (roadmap item 16).
+    """The RUNTIME-CURVE CALIBRATION console lines.
 
     Reports the count of usable discharges behind the fit and either the
     recovered drain-rate constant k with the observed load span it was fitted
@@ -132,8 +132,8 @@ def _calibration_console_lines(calibration: dict | None) -> list[str]:
 
 
 def _calibration_for_json(calibration: dict | None) -> dict:
-    """The runtime-curve calibration (roadmap item 16) as machine-clean values
-    for --json. A missing or non-finite numeric (NaN) becomes null rather than
+    """The runtime-curve calibration as machine-clean values for --json.
+    A missing or non-finite numeric (NaN) becomes null rather than
     a non-standard JSON token, the same NaN-safe convention the grid-quality
     serializer follows."""
     cal = calibration or {}
@@ -164,9 +164,9 @@ def _date_filter(df: pd.DataFrame, since: pd.Timestamp | None, until: pd.Timesta
 
 
 def _dashboard_window(datalog_df: pd.DataFrame, max_days: float) -> pd.Timestamp | None:
-    """The cut point for the dashboard-only payload budget (roadmap item
-    25): the newest max_days days, anchored to the newest DataLog sample
-    rather than the wall clock. Returns the cutoff timestamp to trim the
+    """The cut point for the dashboard-only payload budget: the newest
+    max_days days, anchored to the newest DataLog sample rather than the
+    wall clock. Returns the cutoff timestamp to trim the
     dashboard's raw frames to, or None when nothing should be trimmed —
     max_days is 0 or negative (the default, a deliberate no-op), there is
     no DataLog data to anchor on, or max_days is already at least as large
@@ -191,10 +191,10 @@ def _window_df(df: pd.DataFrame | None, col: str, cutoff: pd.Timestamp,
     high-load episodes, and on-battery episodes — a row is kept when THAT
     column is at/after cutoff instead, so an entry that began before the
     cutoff but extends into the window keeps its still-visible tail rather
-    than being dropped whole (roadmap item 25 review finding 4: filtering a
-    span on its start alone silently discards the visible portion of one
-    straddling the cutoff). end_col is only used when it is actually present
-    on df; otherwise this falls back to col, same as before end_col existed.
+    than being dropped whole (filtering a span on its start alone silently
+    discards the visible portion of one straddling the cutoff). end_col is
+    only used when it is actually present on df; otherwise this falls back
+    to col, same as before end_col existed.
 
     A frame that is None, empty, or missing the relevant column passes
     through unchanged, so a caller can apply this uniformly without
@@ -209,7 +209,7 @@ def _window_df(df: pd.DataFrame | None, col: str, cutoff: pd.Timestamp,
 
 def _wall_clock_now() -> pd.Timestamp:
     """The single wall-clock read the pipeline makes, for the staleness
-    watchdog (roadmap item 31) and the weekly digest gate (item 32).
+    watchdog and the weekly digest gate.
 
     Honors the test-only STATEOFUPS_NOW environment variable, an ISO timestamp
     the hermetic E2E fixture (tests/conftest.py) sets so its fixed-date
@@ -233,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         used_cfg = config.load_config(args.config, agent_dir=args.agent_dir, output=args.output)
     except ValueError as e:
-        # A malformed [[tariff.history]] entry (roadmap item 17) raises a loud,
+        # A malformed [[tariff.history]] entry raises a loud,
         # already-worded "config error: ..." ValueError from _parse_tariff_history.
         # Surface just that message and exit nonzero, rather than dumping a
         # traceback at a user who only mistyped a date in config.toml.
@@ -430,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
             say(f"  Forecast: not enough of the period recorded yet "
                 f"({forecast['evidence_days']}/{forecast['min_days']:.0f} days) — no projection.")
 
-    # Bill reconciliation (roadmap item 29): a user-owned bills.csv is opt-in
+    # Bill reconciliation: a user-owned bills.csv is opt-in
     # and, missing, disables the feature with no warning at all. A malformed
     # row or a period_start that does not align to a billing-period boundary
     # is reported here unconditionally (like the DataLog malformed-row
@@ -453,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"implied rate CRC {row.implied_rate_crc_per_kwh:,.2f}/kWh   "
                 f"vs tariff CRC {row.tariff_low:g}/{row.tariff_high:g} ({row.rate_tag})")
 
-    # Battery lifecycle annotations (roadmap item 26): a user-owned
+    # Battery lifecycle annotations: a user-owned
     # annotations.csv is opt-in and, missing, disables the feature with no
     # warning at all. A malformed row is reported here unconditionally (the
     # same pattern as the bills.csv warnings above), and the recognized
@@ -462,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     for msg in annotation_warnings:
         print(f"  [warn] {msg}")
 
-    # Runtime-curve calibration (roadmap item 16): fits a measured
+    # Runtime-curve calibration: fits a measured
     # capacity-percent-per-minute-per-watt model from observed on-battery
     # discharges, to confirm or correct the hand-estimated [runtime_curve]
     # table. Uses the authoritative EventLog spans (ev_spans), not the
@@ -526,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
         for frm, to, dmin in gaps[["from", "to", "duration_min"]].head(5).itertuples(index=False, name=None):
             say(f"    {frm} -> {to}  ({dmin:.1f} min)")
 
-    # Baseline-deviation energy alerts (roadmap item 19): each complete day's
+    # Baseline-deviation energy alerts: each complete day's
     # own hourly profile against the weekday/weekend baseline
     # (pcss.stats.weekday_weekend_profiles, shared with the wk dashboard
     # card). This flags a deviation from the recorded baseline, never a
@@ -568,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
     if alert_path:
         say(f"  [alert] appended to {alert_path}")
 
-    # Grid-quality trend (roadmap item 28): the envelope violations and
+    # Grid-quality trend: the envelope violations and
     # interruption episodes above, aggregated per calendar month with a rate
     # per recorded day so gap-heavy months read honestly. `episodes` is the
     # resolved authoritative-or-inferred frame from just above, so the
@@ -613,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         say("  No power data yet.")
 
-    # Runtime-curve calibration (roadmap item 16): the same structured result
+    # Runtime-curve calibration: the same structured result
     # that feeds the rt panel's measured overlay, reported here so a headless
     # or scheduled run surfaces the fit (or its honest below-floor status)
     # without opening the dashboard. calibration was computed once earlier from
@@ -622,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     for _line in _calibration_console_lines(calibration):
         say(_line)
 
-    # Self-test detection (roadmap item 18): event-based when the PCSS
+    # Self-test detection: event-based when the PCSS
     # self-test event id is known (still unobserved as of this writing; see
     # pcss.eventlog.SELF_TEST_EVENT_IDS), shape-based otherwise. Feeds two
     # things: the sag-under-load trend below, and an explicit mask on the
@@ -661,10 +661,10 @@ def main(argv: list[str] | None = None) -> int:
         say(f"  Not enough history ({config.BATTERY_TREND_MIN_DAYS:.0f}+ days needed); "
             "the archive accumulates it over time.")
 
-    # Weekly digest (roadmap item 32): a cadence-driven summary alongside the
+    # Weekly digest: a cadence-driven summary alongside the
     # event-driven alerts above, gated to once per ISO week. Runs after every
     # number it summarizes has been computed, using the same injected wall
-    # clock (item 31) the staleness watchdog already read.
+    # clock the staleness watchdog already read.
     #
     # Guarded: the alerts.log append or the marker write can fail (disk full,
     # an AV lock on the file), and that must never crash a run whose analysis
@@ -712,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:
             "last_ts": events_df["ts"].iloc[-1],
         }
 
-    # Payload budget for multi-year archives (roadmap item 25): everything
+    # Payload budget for multi-year archives: everything
     # above this point — console output, --json, alerts, the archive append,
     # and every fitted stats surface (battery, forecast, reconciled_bills,
     # grid_quality, ...) — has already run against the full history. From
@@ -746,13 +746,13 @@ def main(argv: list[str] | None = None) -> int:
         dash_datalog_df = _window_df(datalog_df, "ts", dash_cutoff)
         dash_energy_df = _window_df(energy_df, "ts", dash_cutoff)
         dash_hist = _window_df(hist, "timestamp", dash_cutoff)
-        # The event timeline (roadmap item 20) is a per-sample surface too, so
+        # The event timeline is a per-sample surface too, so
         # it follows the same window as the DataLog/energylog frames.
         dash_events = _window_df(events_df, "ts", dash_cutoff)
         # gaps/high-load episodes/on-battery episodes are spans: keep an
         # entry whose end reaches into the window even if it started before
         # the cutoff, so the still-visible portion renders instead of the
-        # whole entry being dropped (roadmap item 25 review finding 4).
+        # whole entry being dropped.
         dash_gaps = _window_df(gaps, "from", dash_cutoff, end_col="to")
         dash_voltage_anomalies = _window_df(voltage_anomalies, "ts", dash_cutoff)
         dash_high_load = _window_df(high_load, "start", dash_cutoff, end_col="end")
@@ -801,7 +801,7 @@ def _periods_for_json(monthly: pd.DataFrame) -> list[dict]:
 
 
 def _bills_for_json(reconciled: pd.DataFrame) -> list[dict]:
-    """The reconciled-bills table (roadmap item 29) as plain dicts for
+    """The reconciled-bills table as plain dicts for
     --json — only meaningful (and only called) once at least one bill
     reconciles, so the key is simply absent otherwise."""
     cols = ["period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
@@ -821,7 +821,7 @@ def _bills_for_json(reconciled: pd.DataFrame) -> list[dict]:
 
 
 def _grid_quality_for_json(gq: pd.DataFrame) -> dict:
-    """The per-month grid-quality trend (roadmap item 28) for --json — only
+    """The per-month grid-quality trend for --json — only
     meaningful (and only called) once at least one month has data, so the
     key is simply absent otherwise. The cadence-honesty label rides this
     machine-readable surface too: cadence_min carries the configured
@@ -904,14 +904,14 @@ def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None
     """Opt-in (config [alerts] enabled): append a timestamped line to
     alerts.log when the analyzed window has voltage anomalies, sustained
     high-load, inferred on-battery episodes, a stale data feed, or days that
-    deviate from the recorded baseline (roadmap item 19,
-    pcss.stats.detect_baseline_deviations — a deviation flag, never a fault
-    claim). The tray process watches this file and raises a notification for
+    deviate from the recorded baseline (pcss.stats.detect_baseline_deviations
+    — a deviation flag, never a fault claim). The tray process watches this
+    file and raises a notification for
     new lines; email stays an extension point.
 
-    The line is stamped with `now`, the pipeline's single wall-clock read
-    (roadmap item 31), rather than a fresh pd.Timestamp.now() call, so the
-    alert, the staleness watchdog, and the weekly digest all agree on one
+    The line is stamped with `now`, the pipeline's single wall-clock read,
+    rather than a fresh pd.Timestamp.now() call, so the alert, the
+    staleness watchdog, and the weekly digest all agree on one
     "now". A None `now` (a direct caller that does not thread it through)
     falls back to the wall clock."""
     if not config.ALERTS_ENABLED:
@@ -933,7 +933,7 @@ def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None
 
 
 # ======================================================================
-# Weekly digest (roadmap item 32)
+# Weekly digest
 # ======================================================================
 def _iso_year_week(ts) -> tuple[int, int]:
     """(ISO year, ISO week number) for a date/datetime/Timestamp.
@@ -974,7 +974,7 @@ def _parse_digest_marker(text: str | None) -> tuple[int, int] | None:
 
 def _should_fire_weekly_digest(marker_text: str | None, today) -> bool:
     """True when `today` falls in a newer ISO week than the one recorded by
-    the digest marker (roadmap item 32) — the gate that turns "the analyzer
+    the digest marker — the gate that turns "the analyzer
     runs every day" into "the digest fires once, on the first run of a new
     week." A missing or malformed marker fires unconditionally, the same
     "nothing recorded yet, so it's due" rule scheduled_run.ps1's own
@@ -1014,12 +1014,12 @@ def _weekly_digest_data(energy_summary: dict, forecast: dict,
                         battery: dict, now: pd.Timestamp,
                         staleness: dict | None = None) -> dict:
     """Reduce the pipeline's already-computed summaries to the plain values
-    the weekly digest line is worded from (roadmap item 32). No statistic is
+    the weekly digest line is worded from. No statistic is
     computed here — everything is picked straight out of energy_summary
     (compute_energy_summary), forecast (forecast_period_cost), the anomaly
     and episode frames already detected earlier in main(), battery
     (battery_replace_projection), and staleness (pcss.stats.assess_staleness,
-    item 31's watchdog, already computed once per run); the two "_7d" counts
+    the watchdog, already computed once per run); the two "_7d" counts
     are filtered to the trailing 7 days ending at `now`, which is the only
     new work this function does.
     """
@@ -1071,7 +1071,7 @@ def _weekly_digest_data(energy_summary: dict, forecast: dict,
 
 
 def _build_weekly_digest_line(data: dict, now: pd.Timestamp) -> str:
-    """Assemble the one-line weekly digest (roadmap item 32) from the dict
+    """Assemble the one-line weekly digest from the dict
     _weekly_digest_data produces.
 
     Pure string formatting: no statistic is computed here either, only
@@ -1109,7 +1109,7 @@ def _build_weekly_digest_line(data: dict, now: pd.Timestamp) -> str:
             f"({data['biggest_day_kwh']:.2f} kWh)"
         )
 
-    # A staleness caveat (item 31's watchdog), so a clean-week reading is not
+    # A staleness caveat (the watchdog's verdict), so a clean-week reading is not
     # mistaken for current data when the collection itself has lagged —
     # omitted entirely when the feed is fresh, the same "say nothing extra"
     # rule every other optional clause here follows.
@@ -1127,8 +1127,8 @@ def _maybe_write_weekly_digest(energy_summary: dict, forecast: dict,
     """Opt-in (config [alerts] enabled AND [alerts] weekly_digest): once per
     ISO week, append one compact summary line to alerts.log alongside
     whatever event-driven anomaly line _maybe_write_alerts may also have
-    written this run (roadmap item 32). alerts.log is the digest's only
-    transport — the tray's AlertWatcher toast and item 23's webhook channel
+    written this run. alerts.log is the digest's only
+    transport — the tray's AlertWatcher toast and the webhook channel
     then deliver it for free, with no new transport added here. The gate is
     output/last_digest.txt (config.LAST_DIGEST_MARKER), advanced only after
     the line is actually appended, so a rerun later the same week is a

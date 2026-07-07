@@ -64,7 +64,7 @@ def test_preset_pills_anchor_each_panel(dash):
 
 def test_preset_pills_carry_aria_pressed_kept_current(dash):
     """The preset pills are a toggle group: exactly the active one reports
-    aria-pressed=true, and it moves with the selection (item B3)."""
+    aria-pressed=true, and it moves with the selection."""
     dash.click(".preset-pill[data-days='1']")
     dash.wait_for_timeout(80)
     assert dash.locator(".preset-pill[data-days='1']").get_attribute("aria-pressed") == "true"

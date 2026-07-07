@@ -1,4 +1,4 @@
-"""Unit tests for the log-staleness watchdog (roadmap item 31).
+"""Unit tests for the log-staleness watchdog.
 
 Nothing else notices when PCSS stops writing: a dead serial link, a stopped
 service, or a wedged agent just means every analyzer run re-analyzes aging

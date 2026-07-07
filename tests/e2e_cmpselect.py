@@ -1,5 +1,4 @@
-"""E2E: selectable comparison periods on the Period Comparison card
-(roadmap item 22).
+"""E2E: selectable comparison periods on the Period Comparison card.
 
 The shared hermetic fixture's energylog spans only two billing periods
 (2026-06/2026-07) — enough to exercise the default "previous" comparison
@@ -100,7 +99,7 @@ def test_quarter_pill_switches_baseline_changes_render_and_hash(_browser, cmpsel
         # The pill row reflects the active mode.
         assert page.locator('.cmp-pill[data-mode="quarter"]').get_attribute("class") \
             and "is-active" in page.locator('.cmp-pill[data-mode="quarter"]').get_attribute("class")
-        # aria-pressed tracks the active baseline pill and clears the other (item B3).
+        # aria-pressed tracks the active baseline pill and clears the other.
         assert page.locator('.cmp-pill[data-mode="quarter"]').get_attribute("aria-pressed") == "true"
         assert page.locator('.cmp-pill[data-mode="previous"]').get_attribute("aria-pressed") == "false"
         # The baseline's label is visible in the legend, so a shared
@@ -173,8 +172,8 @@ def test_csv_export_reflects_selected_comparison(_browser, cmpselect_dashboard_p
         header = text.splitlines()[0]
         assert "2026-03" in header
         assert "2026-05" not in header
-        # A row-level value that provably belongs to the 2026-03 baseline
-        # (item B3): March is a full 31-day period at 200 W hourly, so its
+        # A row-level value that provably belongs to the 2026-03 baseline:
+        # March is a full 31-day period at 200 W hourly, so its
         # cumulative kWh reaches 31 * 24 * 0.2 = 148.8. The un-selected 2026-05
         # baseline (300 W) would instead top out at 223.2, which must be absent.
         assert "148.8" in text

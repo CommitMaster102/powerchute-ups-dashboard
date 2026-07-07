@@ -133,7 +133,7 @@ def test_unknown_oid_gets_numeric_label():
     assert ev.resolve_name("3.5.1.5.4.1", True, {}) == "On Battery"
 
 
-# ---------------------------------------------------------------- category mapping (item 20)
+# ---------------------------------------------------------------- category mapping
 def test_categorize_event_known_prefixes():
     # The mains-outage family (On Battery, No Longer On Battery, Overload) is
     # power; the battery family (Low Battery, Discharged, Time-on-battery) is
@@ -167,7 +167,7 @@ def test_categorize_event_unknown_falls_to_other():
 
 def test_event_default_visible_is_signal_categories():
     # Power, battery, and shutdown ship visible; the communication/monitoring
-    # (and unknown "other") churn ships hidden — the roadmap noise point.
+    # (and unknown "other") churn ships hidden because it is noise.
     assert set(ev.EVENT_DEFAULT_VISIBLE) == {"power", "battery", "shutdown"}
     for cat in ("communication", "monitoring", "other"):
         assert cat not in ev.EVENT_DEFAULT_VISIBLE

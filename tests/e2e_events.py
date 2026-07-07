@@ -1,4 +1,4 @@
-"""E2E: the event timeline panel (roadmap item 20).
+"""E2E: the event timeline panel.
 
 A fourth chart shape — one categorical row per event category, a dot per
 occurrence, time on the x axis. It joins the standard time-window machinery
@@ -47,7 +47,7 @@ def _click_legend(dash, cat):
 def test_default_filter_hides_communication_until_toggled(dash):
     """Power and battery ship visible; the communication churn ships hidden.
     Its legend row is present but dimmed, and its dots appear only once the
-    legend entry is clicked (the roadmap noise point)."""
+    legend entry is clicked (event churn ships hidden because it is noise)."""
     leg = dash.locator("#panel-ev .ev-legend[data-cat='communication']")
     assert leg.count() == 1, "communication legend row missing"
     assert leg.evaluate("el => el.getAttribute('opacity')") == "0.4", \

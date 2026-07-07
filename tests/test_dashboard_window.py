@@ -1,5 +1,5 @@
-"""Tests for the [dashboard] max_days payload-budget window (roadmap item
-25) — the cheap alternative to server-side decimation. max_days = 0, the
+"""Tests for the [dashboard] max_days payload-budget window — the cheap
+alternative to server-side decimation. max_days = 0, the
 default, must leave the dashboard byte-identical. A positive value narrows
 only the raw per-sample frames fed to build_dashboard (DataLog, energylog,
 the size-history growth series, and the gap/anomaly/episode overlays that
@@ -406,7 +406,7 @@ def test_analyze_windows_self_tests_before_dashboard(tmp_path, restore_config_an
 
 
 def test_window_df_keeps_span_straddling_cutoff_via_end_col():
-    """Finding 4 (review, roadmap item 25): gaps/high-load episodes/
+    """Finding 4 (review): gaps/high-load episodes/
     on-battery episodes were windowed on their start column alone, so an
     entry that began before the cutoff but extends into the window was
     dropped whole rather than showing its still-visible tail. Passing

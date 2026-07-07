@@ -1,5 +1,4 @@
-"""Unit tests for self-test detection and battery health under load
-(roadmap item 18).
+"""Unit tests for self-test detection and battery health under load.
 
 The Battery Charge card's sawtooth comes from the UPS's periodic
 self-tests. `detect_self_tests` in `pcss/stats.py` finds them from the

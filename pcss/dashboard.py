@@ -41,11 +41,11 @@ _CHARTS_JS_TEMPLATE = (Path(__file__).resolve().parent / "charts.js").read_text(
 
 # The dark palette mirrors the C dict in the design mockup; the light palette
 # derives the same hues for a white card scheme. Both ship in every build's
-# payload (roadmap item 30): panel builders emit palette-neutral color role
-# names (the keys below, for example "blue" or "amber"), and pcss/charts.js
-# resolves each role to a concrete hex from whichever palette is active at draw
-# time. The "heat" entry is the four-stop rgb ramp the heatmap interpolates
-# (low to high), so the hourly power map follows the active theme too.
+# payload: panel builders emit palette-neutral color role names (the keys
+# below, for example "blue" or "amber"), and pcss/charts.js resolves each
+# role to a concrete hex from whichever palette is active at draw time. The
+# "heat" entry is the four-stop rgb ramp the heatmap interpolates (low to
+# high), so the hourly power map follows the active theme too.
 PALETTES = {
     "dark": {
         "bg": "#101216", "bg2": "#161a22", "panel": "#181b21",
@@ -345,8 +345,8 @@ def _episode_spans(eps: pd.DataFrame) -> list[list[int]]:
 
 
 def _annotation_markers(annotations: pd.DataFrame | None) -> list[dict]:
-    """Battery lifecycle annotations (roadmap item 26) as a top-level payload
-    list: one {x, label} dict per entry, x being the epoch-ms midnight of the
+    """Battery lifecycle annotations as a top-level payload list: one {x,
+    label} dict per entry, x being the epoch-ms midnight of the
     entry's date under the same naive-local-as-UTC encoding every timestamp
     on this payload uses. charts.js draws each as a dashed vertical marker on
     every time-axis panel. A blank label (the loader allows one) falls back
@@ -474,9 +474,9 @@ def _panel_bc(datalog_df, self_tests: pd.DataFrame | None = None) -> dict | None
     if xy is None:
         return None
     lo = min(min(xy[1]), 96)
-    # Self-test markers (roadmap item 18): one dot per detected test, at the
-    # nearest Battery Capacity reading — the same marker shape the Line
-    # Voltage card uses for anomalies, reused here rather than a new type.
+    # Self-test markers: one dot per detected test, at the nearest Battery
+    # Capacity reading — the same marker shape the Line Voltage card uses
+    # for anomalies, reused here rather than a new type.
     markers: list[dict] = []
     if self_tests is not None and not self_tests.empty:
         bc = datalog_df.dropna(subset=["Battery Capacity"])[["ts", "Battery Capacity"]].sort_values("ts")
@@ -494,10 +494,10 @@ def _panel_bc(datalog_df, self_tests: pd.DataFrame | None = None) -> dict | None
 
 
 def _self_test_sub(n_tests: int, median_sag_v: float | None) -> str:
-    """Battery Charge card subtitle (roadmap item 18): the count of detected
-    self-tests and, when known, their median voltage sag. With none detected
-    the card keeps its original "% capacity" wording rather than announcing
-    a "0 self-tests" that nobody asked about."""
+    """Battery Charge card subtitle: the count of detected self-tests and,
+    when known, their median voltage sag. With none detected the card keeps
+    its original "% capacity" wording rather than announcing a "0 self-tests"
+    that nobody asked about."""
     if n_tests == 0:
         return _L("% capacity")
     bits = [_count(n_tests, _L("self-test"), _L("self-tests"))]
@@ -510,9 +510,9 @@ def _panel_rt(energy_df, calibration: dict | None = None) -> tuple[dict | None, 
     """Runtime curve + the latest operating point. Returns (panel, latest_w,
     latest_runtime_min); the latter two also feed the KPI row.
 
-    ``calibration`` is the result of ``pcss.stats.calibrate_runtime_curve``
-    (roadmap item 16): once enough discharges have been observed
-    (``status == "calibrated"``), a second, measured series rides alongside
+    ``calibration`` is the result of ``pcss.stats.calibrate_runtime_curve``:
+    once enough discharges have been observed (``status == "calibrated"``),
+    a second, measured series rides alongside
     the configured curve — visually distinct and legend-toggleable like any
     other series. Below the evidence floor (or with no calibration at all),
     only the configured curve is drawn; the honest note about discharge
@@ -563,9 +563,9 @@ def _panel_kw(energy_summary) -> dict | None:
 
 
 def _panel_daily(energy_summary, flagged: pd.DataFrame | None = None) -> dict | None:
-    """Daily Energy bars, with the baseline-deviation flags (roadmap item
-    19) riding the same panel rather than a new one: a flagged day's bar
-    takes the amber accent color (the ``d.color`` per-bar override
+    """Daily Energy bars, with the baseline-deviation flags riding the same
+    panel rather than a new one: a flagged day's bar takes the amber accent
+    color (the ``d.color`` per-bar override
     ``pcss/charts.js`` already renders, the same convention
     ``_panel_cad`` uses to highlight one bin), and the panel also carries a
     ``markers`` list (bar index, the bar's own kWh as ``y``, ``type: "dot"``,
@@ -611,15 +611,14 @@ def _panel_cmp(energy_summary) -> dict | None:
     period overlaid on one selected baseline — answers "is this period
     normal?". Needs at least two periods of energylog history.
 
-    Roadmap item 22 (selectable comparison periods): the payload carries
-    every period, not only the last two, so the client can overlay the
-    current period against the previous one (the default), the same period
-    one quarter back, or any period picked from a list — charts.js rebuilds
-    the rendered pair from ``periods`` on selection instead of asking the
-    server to rebuild the page. A year of monthly periods at hourly
-    resolution is only a few thousand points total, which is exactly the
-    scale the roadmap entry itself judged "fine at hourly resolution" — so,
-    deliberately, no server-side decimation is applied here.
+    Selectable comparison periods: the payload carries every period, not
+    only the last two, so the client can overlay the current period against
+    the previous one (the default), the same period one quarter back, or
+    any period picked from a list — charts.js rebuilds the rendered pair
+    from ``periods`` on selection instead of asking the server to rebuild
+    the page. A year of monthly periods at hourly resolution is only a few
+    thousand points total, which is exactly a scale judged fine at hourly
+    resolution — so, deliberately, no server-side decimation is applied here.
     """
     if not energy_summary or "samples" not in energy_summary:
         return None
@@ -669,7 +668,7 @@ def _panel_cmp(energy_summary) -> dict | None:
 def _cmp_pills_html(n_periods: int) -> str:
     """Pills for the two named comparison modes ("previous period", "same
     period one quarter back"). The pick-a-period select lives separately in
-    the card tools tray (``_cmp_select_html``) — see roadmap item 22.
+    the card tools tray (``_cmp_select_html``).
 
     "Quarter" needs a period three cycles back; with fewer than four periods
     in the payload it renders disabled instead of silently comparing against
@@ -680,8 +679,8 @@ def _cmp_pills_html(n_periods: int) -> str:
     else:
         quarter_title = _L("Compare against the same period one quarter ago")
         quarter_attrs = f' title="{_esc(quarter_title)}"'
-    # The two baseline pills are a toggle group, so each carries aria-pressed
-    # (item B3); charts.js keeps it in sync with the active selection.
+    # The two baseline pills are a toggle group, so each carries aria-pressed;
+    # charts.js keeps it in sync with the active selection.
     return (
         '<span class="cmp-pills" role="group">'
         f'<button class="cmp-pill" data-mode="previous" type="button" aria-pressed="false" '
@@ -709,9 +708,9 @@ def _cmp_select_html(periods: list[dict]) -> str:
 def _forecast_sub(forecast: dict | None) -> str:
     """Word the end-of-period cost forecast (pcss.stats.forecast_period_cost)
     for the Period Comparison card subtitle. Always speaks as a projection
-    ("projected", "at the current pace") — the honesty rule from roadmap
-    item 27 — except for the "tier limit already exceeded" fact, which
-    describes kWh already recorded this period rather than a future date."""
+    ("projected", "at the current pace") — the honesty rule — except for the
+    "tier limit already exceeded" fact, which describes kWh already recorded
+    this period rather than a future date."""
     if not forecast:
         forecast = {}
     if forecast.get("status") != "projected":
@@ -733,8 +732,8 @@ def _panel_wk(energy_df) -> dict | None:
     """Mean power by hour of day, weekday against weekend.
 
     The profile math itself lives in ``pcss.stats.weekday_weekend_profiles``,
-    shared with the baseline-deviation detector (roadmap item 19) so the two
-    views of "what a normal day looks like" cannot drift apart.
+    shared with the baseline-deviation detector so the two views of "what a
+    normal day looks like" cannot drift apart.
     """
     profiles = weekday_weekend_profiles(energy_df)
     series = []
@@ -811,7 +810,7 @@ def _panel_cad(datalog_df) -> dict | None:
     }
 
 
-# Event timeline categories (roadmap item 20): the display order and the
+# Event timeline categories: the display order and the
 # English category label localized through _L. The palette color per category
 # is resolved from the passed palette in _panel_ev. Kept beside the panel
 # builder so the payload the renderer consumes carries localized row labels,
@@ -825,7 +824,7 @@ _EVENT_CATEGORY_LABEL = {
 
 def _panel_ev(events_df) -> dict | None:
     """Event timeline: one categorical row per event category, one dot per
-    occurrence, time on the x axis (roadmap item 20).
+    occurrence, time on the x axis.
 
     Each event crosses the boundary as an epoch-ms integer (the naive local
     wall-clock encoded as if UTC, the shared timezone contract) carrying its
@@ -833,10 +832,10 @@ def _panel_ev(events_df) -> dict | None:
     hover tooltip, and the machine-standard CSV export from this one payload.
     Rows ship the power, battery, and shutdown categories visible and the
     communication and monitoring housekeeping hidden — about 95 percent of
-    recorded events are that churn (the roadmap noise point) — and the legend
-    toggles them. A category with no events in the frame gets no row. Returns
-    None when there are no events, so the client-side empty-state note
-    renders.
+    recorded events are that churn, which is noisy rather than informative —
+    and the legend toggles them. A category with no events in the frame gets
+    no row. Returns None when there are no events, so the client-side
+    empty-state note renders.
     """
     if events_df is None or events_df.empty:
         return None
@@ -882,9 +881,9 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt):
     """The five header cards. Returns (cards, sparks, severities) where
     severities feed the health pill (info does not count against health).
 
-    Card colors are palette-neutral role names (roadmap item 30): the KPI
-    markup renders each as ``var(--<role>)`` so the accent, pill, and
-    sparkline follow the active theme without a rebuild."""
+    Card colors are palette-neutral role names: the KPI markup renders each
+    as ``var(--<role>)`` so the accent, pill, and sparkline follow the
+    active theme without a rebuild."""
     cards: list[dict] = []
     sparks: list[dict | None] = []
     sevs: list[str] = []
@@ -1047,7 +1046,7 @@ def _sr_text(spec) -> str:
 
 
 def _tools_html(key: str, zoomable: bool, anomaly_nav: int = 0, extra: str = "") -> str:
-    # The tool tooltips are localized like every other UI string (item B5): the
+    # The tool tooltips are localized like every other UI string: the
     # button glyphs stay language-neutral, but their title text routes through
     # _L so a Spanish build reads "Exportar PNG" rather than "Export PNG".
     anom = (f'<button class="tool-btn tool-anom" data-panel="{key}" '
@@ -1071,9 +1070,9 @@ def _chart_card(key: str, span: int, title: str, sub: str, zoomable: bool,
                 header_extra: str = "", extra_tool: str = "") -> str:
     sub_style = f' style="color:{sub_color}"' if sub_color else ""
     aria = _esc(f"{title} {_L('chart')}. {sr_text}".strip())
-    # The inspect-mode badge (roadmap item 21) only exists on line-kind
-    # panels — the ones charts.js lets a screen-reader user walk sample by
-    # sample with the arrow keys — and starts hidden; charts.js toggles it
+    # The inspect-mode badge only exists on line-kind panels — the ones
+    # charts.js lets a screen-reader user walk sample by sample with the
+    # arrow keys — and starts hidden; charts.js toggles it
     # (and the chart box's `is-inspecting` outline) while that mode is on.
     badge = (f'<span class="inspect-badge" data-panel="{key}" hidden>{_esc(_L("inspecting"))}</span>'
              if inspectable else "")
@@ -1090,8 +1089,8 @@ def _chart_card(key: str, span: int, title: str, sub: str, zoomable: bool,
 def _section_head(title: str, note: str, presets: bool = False) -> str:
     pills = ""
     if presets:
-        # The preset pills are a toggle group, so each carries aria-pressed
-        # (item B3); charts.js keeps it in sync with the active window.
+        # The preset pills are a toggle group, so each carries aria-pressed;
+        # charts.js keeps it in sync with the active window.
         pills = ('<span class="presets" role="group">'
                  f'<button class="preset-pill" data-days="all" aria-pressed="false">{_esc(_L("All"))}</button>'
                  '<button class="preset-pill" data-days="30" aria-pressed="false">30 d</button>'
@@ -1103,9 +1102,9 @@ def _section_head(title: str, note: str, presets: bool = False) -> str:
 
 
 def _kpi_row_html(cards: list[dict]) -> str:
-    # Each card's color is a palette-neutral role name (roadmap item 30);
-    # rendering it as var(--<role>) lets the accent and pill follow the active
-    # theme without a rebuild.
+    # Each card's color is a palette-neutral role name; rendering it as
+    # var(--<role>) lets the accent and pill follow the active theme
+    # without a rebuild.
     out = ['<div class="kpis">']
     for i, k in enumerate(cards):
         c = f"var(--{k['color']})"
@@ -1161,14 +1160,14 @@ def _periods_table_html(monthly: pd.DataFrame | None) -> str:
 
 
 def _bills_table_html(reconciled: pd.DataFrame | None) -> str:
-    """Bill reconciliation table (roadmap item 29): for each period where a
-    user-entered bills.csv row lines up with the analyzer's own
-    per-billing-period UPS kWh, the UPS-metered share of the billed
-    consumption next to the bill's own implied rate and the tariff's
-    effective rates for that period (config.tariff_rates_for, item 17,
-    reused rather than duplicated). Only rendered once at least one bill
-    reconciles (build_dashboard gates the whole block on that), so the page
-    is unchanged for anyone who never uses bills.csv."""
+    """Bill reconciliation table: for each period where a user-entered
+    bills.csv row lines up with the analyzer's own per-billing-period UPS
+    kWh, the UPS-metered share of the billed consumption next to the bill's
+    own implied rate and the tariff's effective rates for that period
+    (config.tariff_rates_for, reused rather than duplicated). Only
+    rendered once at least one bill reconciles (build_dashboard gates the
+    whole block on that), so the page is unchanged for anyone who never
+    uses bills.csv."""
     if reconciled is None or reconciled.empty:
         return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
     head_cols = [_L("Period"), "UPS kWh", _L("Billed kWh"), f"{_L('Share')} %",
@@ -1199,10 +1198,10 @@ def _bills_table_html(reconciled: pd.DataFrame | None) -> str:
 
 
 def _grid_quality_table_html(gq: pd.DataFrame | None) -> str:
-    """Grid-quality trend table (roadmap item 28): one row per calendar
-    month with the sag/swell/interruption counts, the per-recorded-day event
-    rate (so a gap-heavy month reads honestly), the mean depth per direction,
-    and the worst event. A direction with no events this month shows an em
+    """Grid-quality trend table: one row per calendar month with the
+    sag/swell/interruption counts, the per-recorded-day event rate (so a
+    gap-heavy month reads honestly), the mean depth per direction, and the
+    worst event. A direction with no events this month shows an em
     dash rather than a NaN. Only rendered once at least one month has data
     (build_dashboard gates the whole block on that), and the card subtitle
     carries the cadence-honesty wording — these are events visible at the
@@ -1261,8 +1260,8 @@ def _stats_table_html(stats_table: pd.DataFrame) -> str:
 
 def _summary_list_html(rows: list[tuple[str, str, str | None]]) -> str:
     """rows: (key, value, role-or-None). A key of '#' renders a mini section
-    label instead of a data row. The color, when present, is a palette-neutral
-    role name (roadmap item 30) rendered as ``var(--<role>)`` so the accent
+    label instead of a data row. The color, when present, is a
+    palette-neutral role name rendered as ``var(--<role>)`` so the accent
     follows the active theme."""
     out = []
     for k, v, role in rows:
@@ -1340,10 +1339,10 @@ def _summary_rows(datalog_df, energy_summary, crossval, sizes, hist_stats,
 
 
 def _palette_vars(pal: dict) -> str:
-    """The page-chrome CSS custom properties for one palette (roadmap item
-    30). Only the chrome (background, cards, text, tables) rides these
-    variables; chart ink is resolved from palette role names by charts.js at
-    draw time, never through CSS variables inside the SVG."""
+    """The page-chrome CSS custom properties for one palette. Only the
+    chrome (background, cards, text, tables) rides these variables; chart
+    ink is resolved from palette role names by charts.js at draw time,
+    never through CSS variables inside the SVG."""
     return (
         f"  --bg: {pal['bg']}; --bg2: {pal['bg2']}; --panel: {pal['panel']}; --border: {pal['border']};\n"
         f"  --border-hover: {pal['borderHover']}; --text: {pal['text']}; --title: {pal['title']};\n"
@@ -1354,8 +1353,8 @@ def _palette_vars(pal: dict) -> str:
 
 
 def _shell_css() -> str:
-    # Both palettes ship as CSS custom properties (roadmap item 30). The dark
-    # palette is the base; an explicit data-theme="light" pins light; a
+    # Both palettes ship as CSS custom properties. The dark palette is the
+    # base; an explicit data-theme="light" pins light; a
     # data-theme="auto" build follows the viewer's prefers-color-scheme. The
     # header toggle (charts.js) rewrites data-theme at view time and redraws
     # the charts, so no rebuild is needed to switch.
@@ -1445,8 +1444,8 @@ h1 {{ font-size: 27px; font-weight: 600; margin: 5px 0 0; color: var(--title); l
   background: transparent; border: 1px solid var(--border); color: var(--faint); }}
 .tool-btn:hover {{ color: var(--text); border-color: var(--border-hover); }}
 .tool-reset {{ color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, transparent); }}
-/* Period Comparison baseline selector (roadmap item 22): the "previous" and
-   "quarter" pills reuse the preset-pill look and stay visible in the card
+/* Period Comparison baseline selector: the "previous" and "quarter" pills
+   reuse the preset-pill look and stay visible in the card
    header (the common case, one click); the pick-a-period select is a rarer
    escape hatch and lives in the hover-revealed card-tools tray instead. */
 .cmp-pills {{ display: inline-flex; gap: 4px; }}
@@ -1464,8 +1463,8 @@ h1 {{ font-size: 27px; font-weight: 600; margin: 5px 0 0; color: var(--title); l
 .chart-box svg {{ cursor: crosshair; }}
 .chart-box:focus-visible {{ outline: 2px solid var(--blue); outline-offset: 2px;
   border-radius: 8px; }}
-/* Keyboard sample step-through (roadmap item 21): a visibly distinct cue —
-   brighter and a different color than the plain keyboard-focus outline
+/* Keyboard sample step-through: a visibly distinct cue — brighter and a
+   different color than the plain keyboard-focus outline
    above — so a sighted keyboard user can tell inspect mode apart from mere
    focus, plus a small textual badge next to the card tools for the same
    reason. Both are shown/hidden by charts.js, never by CSS state alone. */
@@ -1621,9 +1620,9 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     payload = {
         # The config theme ("auto" | "dark" | "light"); "auto" lets charts.js
         # follow prefers-color-scheme, and the header toggle overrides it. Both
-        # palettes ride the payload so a switch needs no rebuild (roadmap item
-        # 30); charts.js resolves the role names the panels emit against the
-        # active palette at draw time.
+        # palettes ride the payload so a switch needs no rebuild; charts.js
+        # resolves the role names the panels emit against the active
+        # palette at draw time.
         "theme": config.DASHBOARD_THEME,
         "palettes": {"dark": PALETTES["dark"], "light": PALETTES["light"]},
         "gaps": _gap_spans(gaps),
@@ -1670,8 +1669,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                   f"{_L('not enough history to project replace-by')}")
     else:
         bv_sub = f"{bv_slope:+.4f} V/{_L('day')} · {_L('aging') if bv_slope < 0 else _L('stable')}"
-    # Battery lifecycle annotations (roadmap item 26): once a battery_replaced
-    # boundary is in play, name the battery's age alongside whatever the fit
+    # Battery lifecycle annotations: once a battery_replaced boundary is in
+    # play, name the battery's age alongside whatever the fit
     # itself reports above — segmentation and age are separate facts.
     if battery.get("battery_age_days") is not None:
         bv_sub += (f" · {_L('battery age')} {battery['battery_age_days']:.0f} {_L('days')} "
@@ -1686,8 +1685,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 
     rt_sub = (f"{latest_w:.0f}W → {latest_rt:.0f} min" if latest_rt is not None
               else _L("runtime curve"))
-    # Runtime-curve calibration (roadmap item 16): name the number of
-    # discharges behind the measured overlay once calibrated, or the honest
+    # Runtime-curve calibration: name the number of discharges behind the
+    # measured overlay once calibrated, or the honest
     # floor note when there is not yet enough discharge data — the same
     # pattern as the battery replace-by projection's history floor.
     cal = calibration or {}
@@ -1696,7 +1695,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         cal_bit = (f"{_L('measured from')} "
                    f"{_count(cal['n_episodes'], _L('discharge'), _L('discharges'))}")
         # The single global k is extrapolated across every configured watt
-        # point, so name the load span it was actually fitted from (item B7).
+        # point, so name the load span it was actually fitted from.
         # A degenerate range (every discharge at one wattage) reads as a
         # single figure rather than a nonsensical "N-N W".
         w_lo = cal.get("watts_observed_min")
@@ -1709,18 +1708,18 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                    f"({cal.get('n_episodes', 0)}/{cal_min_episodes:.0f})")
     rt_sub = f"{rt_sub} · {cal_bit}"
     kw_sub = f"kWh · ₡ (₡{config.PCSS_FLAT_RATE:g}/kWh)"
-    # Baseline-deviation flags (roadmap item 19): silent when nothing is
-    # flagged (whether because the history is clean or below the floor —
-    # either way there is nothing to say), named only when at least one
-    # complete day deviates from the recorded baseline.
+    # Baseline-deviation flags: silent when nothing is flagged (whether
+    # because the history is clean or below the floor — either way there is
+    # nothing to say), named only when at least one complete day deviates
+    # from the recorded baseline.
     daily_sub = _L("kWh / day")
     n_flagged = len(baseline.get("flagged", []))
     if n_flagged:
         daily_sub = f"{daily_sub} · {_count(n_flagged, _L('day deviates from the recorded baseline'), _L('days deviate from the recorded baseline'))}"
     proj_sub = f"≈ {proj_1yr_kb / 1024:.1f} MB / yr" if proj_1yr_kb else _L("current rate")
-    # Event timeline subtitle (roadmap item 20): the total event count and the
-    # "by category" framing, or the empty note when the EventLog did not parse
-    # or holds no events.
+    # Event timeline subtitle: the total event count and the "by category"
+    # framing, or the empty note when the EventLog did not parse or holds
+    # no events.
     if events is not None and not events.empty:
         ev_sub = f"{len(events)} {_L('Events')} · {_L('events by category')}"
     else:
@@ -1752,8 +1751,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             f"{_L('envelope')} {config.VOLTAGE_NORMAL_LOW:g}–{config.VOLTAGE_NORMAL_HIGH:g} V · "
             f"{_L('high-load')} {config.HIGH_LOAD_PCT:g}% · {_L('theme')} {config.DASHBOARD_THEME}")
 
-    # Payload budget for multi-year archives (roadmap item 25): honesty note
-    # for the cheap [dashboard] max_days window. Only rendered when the
+    # Payload budget for multi-year archives: honesty note for the cheap
+    # [dashboard] max_days window. Only rendered when the
     # caller (analyze_ups.py) reports that the window actually trimmed
     # something — dashboard_window_days is None both when max_days is 0 (the
     # default) and when max_days turned out larger than the recorded span,
@@ -1789,8 +1788,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         )
 
     # The Bill Reconciliation table only exists once at least one bills.csv
-    # entry reconciles (roadmap item 29) — with none, this stays "" so the
-    # page is unchanged for anyone who never uses bills.csv.
+    # entry reconciles — with none, this stays "" so the page is unchanged
+    # for anyone who never uses bills.csv.
     bills_block = ""
     if bill_reconciliation is not None and not bill_reconciliation.empty:
         bills_block = (
@@ -1804,8 +1803,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             '  </div>'
         )
 
-    # The Grid Quality Trend table (roadmap item 28) only exists once at
-    # least one month has samples — with none, this stays "" so the page is
+    # The Grid Quality Trend table only exists once at least one month has
+    # samples — with none, this stays "" so the page is
     # unchanged. The subtitle states the cadence caveat with the configured
     # interval: these are events visible at the sampling cadence, not all
     # grid events.
@@ -1830,9 +1829,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         spec = panels.get(key)
         inspectable = bool(spec and spec.get("kind") == "line")
         header_extra = extra_tool = ""
-        # The Period Comparison card's baseline selector (roadmap item 22)
-        # only exists once the payload actually carries every period to
-        # choose from.
+        # The Period Comparison card's baseline selector only exists once
+        # the payload actually carries every period to choose from.
         if key == "cmp" and spec and spec.get("periods"):
             header_extra = _cmp_pills_html(len(spec["periods"]))
             extra_tool = _cmp_select_html(spec["periods"])
@@ -1842,8 +1840,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                            extra_tool=extra_tool)
 
     # The initial data-theme attribute pins the chrome for a static page and
-    # before charts.js runs (roadmap item 30): "dark"/"light" render exactly as
-    # before, "auto" defers to prefers-color-scheme via the CSS blocks above.
+    # before charts.js runs: "dark"/"light" render exactly as before, "auto"
+    # defers to prefers-color-scheme via the CSS blocks above.
     theme_btn_label = _esc(f"{_L('theme')}: {_L(config.DASHBOARD_THEME)}")
     page = f"""<!DOCTYPE html>
 <html lang="en" data-theme="{config.DASHBOARD_THEME}">

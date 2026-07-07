@@ -53,7 +53,7 @@ FALLBACK_NAMES = {
     "3.5.1.5.6.10": "Monitoring Started",
 }
 
-# Event categories for the timeline panel (roadmap item 20). Each key is an
+# Event categories for the timeline panel. Each key is an
 # ObjectId prefix; an event's category is the value of the longest prefix that
 # aligns to the id's dot-separated segments, so a specific id such as the
 # graceful-shutdown "3.5.1.5.3.19" can override the broader battery family it
@@ -101,7 +101,7 @@ def categorize_event(oid: str) -> str:
 ON_BATTERY_OID = "3.5.1.5.4.1"
 OFF_BATTERY_OID = "3.5.1.5.4.2"
 
-# The PCSS self-test event id (roadmap item 18) is still unknown: the
+# The PCSS self-test event id is still unknown: the
 # one-month capture behind this project's fixtures never happened to catch a
 # self-test event. Detection falls back instead to the capacity-dip shape in
 # pcss.stats.detect_self_tests. When a self-test is finally observed, it will

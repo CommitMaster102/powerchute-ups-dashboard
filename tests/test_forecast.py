@@ -1,7 +1,7 @@
-"""Unit tests for the end-of-period cost forecast (roadmap item 27).
+"""Unit tests for the end-of-period cost forecast.
 
-The billing-period grouping (item 8) and the tariff-history rate lookup
-(item 17) make an end-of-period forecast mostly a lookup: project the current
+The billing-period grouping and the tariff-history rate lookup make an
+end-of-period forecast mostly a lookup: project the current
 period's recorded kWh to the period's end date, price it both flat and
 tiered, and name the date the tier limit will be crossed. `forecast_period_cost`
 in `pcss/stats.py` does the math; `pcss/dashboard.py`'s `_forecast_sub` words
@@ -124,7 +124,7 @@ def test_already_crossed_tier_limit():
 
 
 def test_uses_tariff_history_rates_for_current_period(monkeypatch):
-    """With [[tariff.history]] configured (item 17), the forecast prices the
+    """With [[tariff.history]] configured, the forecast prices the
     current period with the rates in force on the period's own start date —
     reusing config.tariff_rates_for rather than a second rate lookup."""
     monkeypatch.setattr(config, "TARIFF_HISTORY", [

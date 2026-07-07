@@ -1,5 +1,4 @@
-"""E2E: baseline-deviation markers on the Daily Energy panel (roadmap item
-19).
+"""E2E: baseline-deviation markers on the Daily Energy panel.
 
 The shared hermetic fixture's energylog spans only about four days — well
 under the 14-day baseline floor — so it can never produce a flagged day and

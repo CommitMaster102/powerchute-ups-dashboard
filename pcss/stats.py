@@ -241,7 +241,7 @@ def grid_quality_trend(datalog_df: pd.DataFrame, gaps: pd.DataFrame | None = Non
                        episodes: pd.DataFrame | None = None,
                        voltage_low: float | None = None,
                        voltage_high: float | None = None) -> pd.DataFrame:
-    """Aggregate grid-quality events per calendar month (roadmap item 28).
+    """Aggregate grid-quality events per calendar month.
 
     The envelope violations that ``detect_voltage_anomalies`` reports one
     sample at a time are classified here by direction — a sample below
@@ -271,7 +271,7 @@ def grid_quality_trend(datalog_df: pd.DataFrame, gaps: pd.DataFrame | None = Non
     deviant sample — its timestamp, voltage, and direction — or None values
     when the month had only interruptions.
 
-    Cadence honesty (the item 6 caveat): the DataLog's sampling cadence
+    Cadence honesty: the DataLog's sampling cadence
     misses short events entirely, so these are counts of events visible at
     that cadence, not of all grid events; every surface that shows this
     result must say so, naming the configured
@@ -425,8 +425,8 @@ def detect_baseline_deviations(energy_df: pd.DataFrame, deviation_pct: float | N
     itself — the same profiles the Weekday vs Weekend dashboard card draws.
     The deviation metric is the mean absolute difference between the day's
     profile and the baseline profile across their shared hours, expressed as
-    a percent of the baseline profile's own mean power: the blunter
-    mean-absolute-deviation option the roadmap offers, not a per-hour
+    a percent of the baseline profile's own mean power: a deliberately
+    blunter mean-absolute-deviation measure, not a per-hour
     z-score. A day is flagged when that percent exceeds ``deviation_pct``
     (``config.BASELINE_DEVIATION_PCT`` by default).
 
@@ -467,7 +467,7 @@ def detect_baseline_deviations(energy_df: pd.DataFrame, deviation_pct: float | N
     if not candidate_dates:
         return out
 
-    # Leave-one-out baselines (polish wave B, item B8): each evaluated day is
+    # Leave-one-out baselines: each evaluated day is
     # compared against a baseline built from its PEERS only — its own samples
     # are excluded from the per-(day_type, hour) means it is measured against.
     # Including a day in the very baseline it is judged against dilutes exactly
@@ -572,7 +572,7 @@ def detect_self_tests(datalog_df: pd.DataFrame, dip_pct: float | None = None,
     Two routes, in order of preference:
 
     Event-based (authoritative): when ``events`` is given and
-    ``pcss.eventlog.SELF_TEST_EVENT_IDS`` (roadmap item 18) is non-empty,
+    ``pcss.eventlog.SELF_TEST_EVENT_IDS`` is non-empty,
     every parsed event whose id is in that tuple anchors one self-test record
     at its own timestamp, and this replaces the shape heuristic below
     entirely for this call — the same way the EventLog's own outage spans
@@ -717,14 +717,14 @@ def self_test_sag_trend(tests: pd.DataFrame | None, min_days: float | None = Non
 def latest_battery_replacement(annotations: pd.DataFrame | None,
                                as_of: pd.Timestamp | datetime) -> pd.Timestamp | None:
     """The newest `battery_replaced` entry in a user-owned annotations.csv
-    (roadmap item 26) whose date is at or before `as_of` — typically the
+    whose date is at or before `as_of` — typically the
     newest sample in the frame being fit. A `battery_replaced` entry dated
     later than the data being analyzed marks no boundary yet (a battery
     replacement planned for next month must not truncate today's fit down to
     nothing), so it is excluded rather than treated as the newest one.
 
     Reused as-is by `battery_replace_projection`'s fit segmentation below,
-    and intended for roadmap item 16's runtime calibration to reuse the same
+    and intended for the runtime calibration to reuse the same
     boundary once it lands. Returns None when `annotations` is empty/None or
     holds no qualifying `battery_replaced` entry.
     """
@@ -753,8 +753,8 @@ def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = Non
     extrapolates to ``threshold_v``. Below ``min_days`` of history the honest
     answer is "not enough history": a slope over a few weeks is noise.
 
-    ``annotations`` is a user-owned annotations.csv frame (roadmap item 26,
-    ``pcss.loaders.load_annotations``). When it holds a ``battery_replaced``
+    ``annotations`` is a user-owned annotations.csv frame
+    (``pcss.loaders.load_annotations``). When it holds a ``battery_replaced``
     entry that is not dated later than the newest sample here
     (``latest_battery_replacement``), the fit runs only on samples at or
     after that date — a trend fit spanning a battery replacement would
@@ -763,12 +763,12 @@ def battery_replace_projection(df: pd.DataFrame, threshold_v: float | None = Non
     battery's age in days. With no qualifying annotation, behavior is
     unchanged from before this feature existed.
 
-    ``self_tests`` is a ``detect_self_tests``-shaped frame (roadmap item 18):
+    ``self_tests`` is a ``detect_self_tests``-shaped frame:
     when given, every sample whose timestamp falls inside a detected test's
     ``[dip_start, dip_end]`` window is dropped before the fit runs. The
     rolling-median fit below already damps the self-test sawtooth on its
-    own, but excluding the windows outright is the roadmap's own "excluding
-    them explicitly" — belt and braces, not a replacement for the median.
+    own, but excluding the windows outright is belt and braces, not a
+    replacement for the median.
 
     Returns a dict with ``status`` ("insufficient_history", "stable", or
     "projected"), ``slope_v_per_day``, ``replace_date``, ``days_to_replace``,
@@ -859,8 +859,8 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     period. Periods the recorded span does not fully cover carry
     partial=True so an incomplete tier split is never mistaken for a bill.
 
-    When config.TARIFF_HISTORY holds one or more [[tariff.history]] entries
-    (item 17), each period's cost is priced with the rates in force on the
+    When config.TARIFF_HISTORY holds one or more [[tariff.history]] entries,
+    each period's cost is priced with the rates in force on the
     period's own start date instead of today's flat rates, and the "monthly"
     frame gains a rate_tag column ("current rates" or "rates from
     YYYY-MM-DD") saying which rates priced it — otherwise a rate boundary
@@ -961,7 +961,7 @@ def forecast_period_cost(energy_summary: dict, *, min_days: float | None = None)
     The projection itself is the plain per-day mean: the period's recorded
     kWh divided by its evidence days, multiplied by the number of days in
     the whole period, then priced with the rates in force for the period's
-    start date (config.tariff_rates_for, item 17) — both the PCSS flat rate
+    start date (config.tariff_rates_for) — both the PCSS flat rate
     and the Coopesantos tiered rate (compute_tiered_cost). If the projected
     total would cross the tier limit before the period ends, the crossing
     date is the same linear rate solved backward from the period start; if
@@ -973,7 +973,7 @@ def forecast_period_cost(energy_summary: dict, *, min_days: float | None = None)
     period_start, period_end (date or None), min_days, evidence_days (int),
     projected_kwh, projected_cost_pcss, projected_cost_tiered (float or
     None), tier_cross_date (date or None), already_crossed (bool), and
-    rate_tag (str or None — item 17's "which rates priced this" label).
+    rate_tag (str or None — the "which rates priced this" label).
     """
     if min_days is None:
         min_days = config.FORECAST_MIN_DAYS
@@ -1032,7 +1032,7 @@ _BILL_RECONCILE_COLUMNS = [
 
 
 def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.DataFrame, list[str]]:
-    """Join a user-owned bills.csv (roadmap item 29) against the analyzer's
+    """Join a user-owned bills.csv against the analyzer's
     own per-billing-period UPS kWh, to answer what share of a real,
     whole-house bill the UPS's own outlets account for — the UPS-metered
     share of the billed consumption, never a household total, since the UPS
@@ -1060,7 +1060,7 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
     analyzer's own Coopesantos-tiered cost for the period), billed_amount_crc,
     implied_rate_crc_per_kwh (amount_crc / kwh — the bill's own blended
     rate), the tariff's own effective rates for the period (tariff_low,
-    tariff_high, tariff_flat, rate_tag — config.tariff_rates_for, item 17,
+    tariff_high, tariff_flat, rate_tag — config.tariff_rates_for,
     reused rather than duplicated), and partial (whether the analyzer's own
     coverage of that period was incomplete, from compute_energy_summary).
     """
@@ -1138,7 +1138,7 @@ def compute_tiered_cost(kwh: float, *, low: float | None = None, high: float | N
                         tier_limit: float | None = None) -> float:
     """Coopesantos T-RE Residencial: first tier_limit kWh at low, rest at
     high. Defaults to the current flat [tariff] config keys; a per-period
-    historical lookup (item 17) passes explicit rates instead."""
+    historical lookup passes explicit rates instead."""
     if pd.isna(kwh) or kwh <= 0:
         return 0.0
     low = config.COOPESANTOS_LOW_RATE if low is None else low
@@ -1195,7 +1195,7 @@ def calibrate_runtime_curve(spans: pd.DataFrame, datalog_df: pd.DataFrame,
     (excluding 0 W, where ``100 / (k * W)`` is undefined) as
     ``100 / (k * W)`` — the runtime a full battery would give at each load.
 
-    ``annotations`` reuses ``latest_battery_replacement`` (roadmap item 26):
+    ``annotations`` reuses ``latest_battery_replacement``:
     when a ``battery_replaced`` entry is not dated later than the newest
     DataLog sample here, only spans starting at or after that boundary feed
     the fit, so a replaced battery's discharges do not contaminate the
@@ -1272,8 +1272,8 @@ def calibrate_runtime_curve(spans: pd.DataFrame, datalog_df: pd.DataFrame,
     out["n_episodes"] = int(len(joined))
     # The measured overlay extrapolates one global k across every configured
     # watt point, so the observed load span the fit was actually drawn from
-    # (roadmap item 16, item B7) rides the result even below the floor — the
-    # honest range the rt card subtitle names.
+    # rides the result even below the floor — the honest range the rt card
+    # subtitle names.
     if len(joined):
         out["watts_observed_min"] = float(joined["power_w"].min())
         out["watts_observed_max"] = float(joined["power_w"].max())

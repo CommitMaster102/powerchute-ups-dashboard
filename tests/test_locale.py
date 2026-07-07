@@ -1,12 +1,11 @@
-"""Spanish-locale pins for dashboard surfaces that previously had none
-(polish wave B, item B5b).
+"""Spanish-locale pins for dashboard surfaces that previously had none.
 
 The dashboard localizes its UI strings through ``pcss.dashboard._L`` and the
 ``_STRINGS_ES`` table (``[dashboard] language = "es"``). Numbers and dates
 stay en-US in every language. These tests pin the Spanish wording for four
 features whose localization was until now unverified: the staleness health
-pill (roadmap item 31), the tariff rate tag (item 17), the battery-age
-subtitle (item 26), and the bill-reconciliation table headers (item 29).
+pill, the tariff rate tag, the battery-age subtitle, and the
+bill-reconciliation table headers.
 """
 from __future__ import annotations
 
@@ -34,7 +33,7 @@ def _minimal_inputs():
     )
 
 
-# ---------------------------------------------------------------- staleness pill (item 31)
+# ---------------------------------------------------------------- staleness pill
 def test_staleness_pill_wording_spanish(spanish):
     staleness = {"level": "crit", "age_hours": 50.0}
     html = build_dashboard(**_minimal_inputs(), staleness=staleness)
@@ -42,7 +41,7 @@ def test_staleness_pill_wording_spanish(spanish):
     assert "sin muestras nuevas en" in html              # the "no new samples in" clause
 
 
-# ---------------------------------------------------------------- tariff rate tag (item 17)
+# ---------------------------------------------------------------- tariff rate tag
 def test_rate_tag_label_current_rates_spanish(spanish):
     assert _rate_tag_label("current rates") == "tarifas actuales"
 
@@ -52,7 +51,7 @@ def test_rate_tag_label_dated_keeps_the_date_spanish(spanish):
     assert _rate_tag_label("rates from 2026-01-01") == "tarifas desde 2026-01-01"
 
 
-# ---------------------------------------------------------------- battery-age subtitle (item 26)
+# ---------------------------------------------------------------- battery-age subtitle
 def test_battery_age_subtitle_spanish(spanish):
     battery = {
         "status": "insufficient_history",
@@ -65,7 +64,7 @@ def test_battery_age_subtitle_spanish(spanish):
     assert "desde 2026-03-01" in html
 
 
-# ---------------------------------------------------------------- bill reconciliation table (item 29)
+# ---------------------------------------------------------------- bill reconciliation table
 def test_bill_reconciliation_headers_spanish(spanish):
     reconciled = pd.DataFrame([{
         "period": "2026-06", "ups_kwh": 10.0, "billed_kwh": 100.0, "share_pct": 10.0,
@@ -80,9 +79,9 @@ def test_bill_reconciliation_headers_spanish(spanish):
     assert "Notas" in html              # Notes
 
 
-# ---------------------------------------------------------------- card-tool tooltips (item B5a)
+# ---------------------------------------------------------------- card-tool tooltips
 def test_card_tool_tooltips_spanish(spanish):
-    """The per-card tool button titles route through _L now (item B5a), so a
+    """The per-card tool button titles route through _L now, so a
     Spanish build reads "Exportar CSV" rather than the English source text."""
     html = build_dashboard(**_minimal_inputs())
     assert 'title="Exportar PNG"' in html

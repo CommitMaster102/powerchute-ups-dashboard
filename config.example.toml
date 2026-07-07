@@ -7,8 +7,8 @@
 # Where PCSS writes its logs. Change if PCSS is reinstalled elsewhere.
 pcss_agent = 'C:\Program Files\APC\PowerChute Serial Shutdown\agent'
 # Path to a user-owned CSV of actual whole-house bills, for bill
-# reconciliation against the analyzer's own tariff arithmetic (roadmap item
-# 29). Columns: period_start (YYYY-MM-DD, must exactly match a
+# reconciliation against the analyzer's own tariff arithmetic. Columns:
+# period_start (YYYY-MM-DD, must exactly match a
 # billing-period start for billing_cycle_start_day below), kwh (the billed
 # kWh for the whole house), amount_crc (the billed amount); header row
 # required. See bills.example.csv for the exact shape. Defaults to
@@ -20,7 +20,7 @@ bills_file = 'bills.csv'
 # Path to a user-owned CSV of dated lifecycle entries — battery replaced, a
 # new appliance added, the UPS moved — for the battery replace-by
 # projection's fit segmentation and labeled markers on the dashboard's time
-# panels (roadmap item 26). Columns: date (YYYY-MM-DD), kind (freeform text;
+# panels. Columns: date (YYYY-MM-DD), kind (freeform text;
 # the analyzer only ever recognizes "battery_replaced" as a fit-segmentation
 # boundary), label (a short note shown on the marker). See
 # annotations.example.csv for the exact shape. Defaults to annotations.csv
@@ -134,7 +134,7 @@ language = "en"
 # (emits a meta refresh matched to your scheduled-task cadence). 0 disables
 # it. The permalink hash keeps the view state across the reload.
 refresh_minutes = 0
-# Payload budget for a multi-year archive (roadmap item 25). 0 (the default)
+# Payload budget for a multi-year archive. 0 (the default)
 # changes nothing: every chart ships full history, same as before this
 # setting existed. A positive value windows the dashboard's charts to the
 # newest max_days days, anchored to the newest DataLog sample, and the
@@ -144,14 +144,14 @@ refresh_minutes = 0
 # surfaces (battery replace-by, cost forecast, bill reconciliation,
 # grid-quality trend), all computed before the window is applied. The
 # archive on disk is never touched or truncated. This is the cheap
-# alternative to server-side decimation the roadmap weighed and shipped
-# instead; see ROADMAP.md item 25 for why.
+# alternative to the server-side decimation that was weighed and shipped
+# instead.
 max_days = 0
 
 [runtime_curve]          # empirical BX2000M-LM: watts -> minutes of runtime
 watts   = [0, 100, 150, 250, 500, 600, 800, 1200]
 minutes = [60, 40, 30, 15, 5, 3.5, 2, 0]
-# Minimum number of usable discharge observations (roadmap item 16) before the
+# Minimum number of usable discharge observations before the
 # Estimated Runtime card draws a measured overlay next to this configured
 # curve. An observation needs a real capacity drop (at least one percentage
 # point) and an energylog power sample within the outage span, so most short
@@ -167,7 +167,7 @@ calibration_min_episodes = 3
 # watches that file and raises a Windows toast for new lines (30-minute
 # cooldown). Off by default.
 enabled = false
-# Roadmap item 23: opt-in push channel alongside the toast. When true, the
+# Opt-in push channel alongside the toast. When true, the
 # tray also POSTs each new alerts.log line as a plain-text body to a webhook
 # URL (ntfy.sh, a Telegram bot, or any HTTP endpoint), so an alert reaches a
 # phone even when nobody is at the PC. This key only says the channel is
@@ -177,7 +177,7 @@ enabled = false
 # `tray_status.py --clear-webhook-url`. With this true and no URL stored,
 # the tray logs a no-op rather than sending anything. Off by default.
 webhook_enabled = false
-# Roadmap item 32: opt-in weekly digest, riding the same alerts.log transport
+# Opt-in weekly digest, riding the same alerts.log transport
 # as everything above (no new transport). Requires enabled = true as well,
 # since alerts.log is its only delivery path. Once per ISO week (a marker
 # file, output/last_digest.txt, makes a rerun later the same week a no-op),
@@ -185,7 +185,7 @@ webhook_enabled = false
 # anomaly line that run may also have written: kWh and tiered cost so far in
 # the current billing period (worded as partial when the period is still
 # open), the end-of-period cost forecast once enough of the period is
-# recorded (roadmap item 27), the count of voltage anomalies and on-battery
+# recorded, the count of voltage anomalies and on-battery
 # episodes in the last 7 days, the battery replace-by status, and the
 # biggest energy day of the last 7 days. A clause is omitted rather than
 # guessed when its number is not available yet. Off by default.
