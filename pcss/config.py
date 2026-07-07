@@ -87,6 +87,14 @@ CO2_KG_PER_KWH = 0.098
 RUNTIME_CURVE_W = np.array([0,   100, 150, 250, 500, 600, 800, 1200])
 RUNTIME_CURVE_MIN = np.array([60, 40,  30,  15,  5,   3.5, 2,   0])
 
+# Minimum number of usable discharge observations (roadmap item 16) before
+# calibrate_runtime_curve() will fit a measured curve at all. An observation
+# needs a real capacity drop and a nearby energylog power sample, so most
+# short outages contribute nothing; below this floor the honest result is
+# "not enough discharge data yet", the same pattern as
+# BATTERY_TREND_MIN_DAYS below.
+CALIBRATION_MIN_EPISODES = 3
+
 # Voltage envelope considered normal for 120V grids (NEC ±5%).
 VOLTAGE_NORMAL_LOW = 114.0
 VOLTAGE_NORMAL_HIGH = 126.0
@@ -269,7 +277,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
     global STALE_WARN_HOURS, STALE_CRIT_HOURS
     global ON_BATTERY_VOLTAGE_V, ON_BATTERY_CAPACITY_DROP_PCT
-    global BATTERY_REPLACE_VOLTAGE_V, BATTERY_TREND_MIN_DAYS
+    global BATTERY_REPLACE_VOLTAGE_V, BATTERY_TREND_MIN_DAYS, CALIBRATION_MIN_EPISODES
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
     global DASHBOARD_THEME, DASHBOARD_MODEL, DASHBOARD_REFRESH_MINUTES, DASHBOARD_LANGUAGE
     global ALERTS_ENABLED, ARCHIVE_ENABLED
@@ -346,6 +354,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     if rc.get("watts") and rc.get("minutes"):
         RUNTIME_CURVE_W = np.array(rc["watts"], dtype=float)
         RUNTIME_CURVE_MIN = np.array(rc["minutes"], dtype=float)
+    CALIBRATION_MIN_EPISODES = int(rc.get("calibration_min_episodes", CALIBRATION_MIN_EPISODES))
 
     ALERTS_ENABLED = bool(data.get("alerts", {}).get("enabled", ALERTS_ENABLED))
     ARCHIVE_ENABLED = bool(data.get("archive", {}).get("enabled", ARCHIVE_ENABLED))

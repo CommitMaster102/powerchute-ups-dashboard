@@ -115,6 +115,14 @@ refresh_minutes = 0
 [runtime_curve]          # empirical BX2000M-LM: watts -> minutes of runtime
 watts   = [0, 100, 150, 250, 500, 600, 800, 1200]
 minutes = [60, 40, 30, 15, 5, 3.5, 2, 0]
+# Minimum number of usable discharge observations (roadmap item 16) before the
+# Estimated Runtime card draws a measured overlay next to this configured
+# curve. An observation needs a real capacity drop (at least one percentage
+# point) and an energylog power sample within the outage span, so most short
+# outages contribute nothing. Below this floor the card names the honest
+# "not enough discharge data yet" instead of drawing a curve fitted to too
+# few discharges.
+calibration_min_episodes = 3
 
 [alerts]
 # Opt-in. When true, a run that finds voltage anomalies, sustained high-load

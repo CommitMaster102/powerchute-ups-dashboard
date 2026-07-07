@@ -634,6 +634,129 @@ def estimate_runtime(power_w: float) -> float:
     return float(np.interp(power_w, config.RUNTIME_CURVE_W, config.RUNTIME_CURVE_MIN))
 
 
+def calibrate_runtime_curve(spans: pd.DataFrame, datalog_df: pd.DataFrame,
+                            energy_df: pd.DataFrame,
+                            annotations: pd.DataFrame | None = None,
+                            min_episodes: int | None = None,
+                            min_capacity_drop_pct: float = 1.0,
+                            power_tolerance: pd.Timedelta | None = None) -> dict:
+    """Fit a measured runtime curve from observed on-battery discharges.
+
+    ``spans`` is an ``on_battery_spans``-shaped frame (start, end,
+    duration_min, open) — the authoritative EventLog outage spans, not the
+    DataLog-inferred fallback, so durations are exact to the millisecond.
+    Each closed span (``open`` False, ``end`` known) becomes a candidate
+    observation:
+
+    - capacity consumed: the last DataLog Battery Capacity sample at or
+      before the span's start, minus the first sample at or after its end.
+      A span whose drop is below ``min_capacity_drop_pct`` (one percentage
+      point by default) drained no measurable capacity — most real outages
+      last only seconds and fall here — so it is discarded rather than
+      counted as a zero-drain observation.
+    - duration: the span's own start/end, used as-is (no cadence padding,
+      unlike the DataLog-only episode inference).
+    - power: the energylog sample nearest the span's midpoint
+      (``merge_asof``, within ``power_tolerance``, 15 minutes by default —
+      three energylog intervals). A span with no power sample within
+      tolerance cannot be priced in watts and is discarded.
+
+    The kept observations give one (power, drain-rate) pair each, where
+    drain rate is the capacity drop divided by the duration in minutes.
+    Below ``min_episodes`` usable observations
+    (``config.CALIBRATION_MIN_EPISODES`` by default, mirroring the
+    ``battery_trend_min_days`` honesty floor), the result reports
+    ``"insufficient_evidence"`` and carries no curve. Otherwise a
+    through-origin least-squares fit recovers ``k``, the drain rate in
+    capacity percent per minute per watt, and a measured watts-to-minutes
+    curve is evaluated at the configured ``[runtime_curve]`` watt points
+    (excluding 0 W, where ``100 / (k * W)`` is undefined) as
+    ``100 / (k * W)`` — the runtime a full battery would give at each load.
+
+    ``annotations`` reuses ``latest_battery_replacement`` (roadmap item 26):
+    when a ``battery_replaced`` entry is not dated later than the newest
+    DataLog sample here, only spans starting at or after that boundary feed
+    the fit, so a replaced battery's discharges do not contaminate the
+    current one's curve — the same boundary ``battery_replace_projection``
+    already applies to its own trend fit.
+
+    Returns a dict with ``status`` (``"insufficient_evidence"`` or
+    ``"calibrated"``), ``n_episodes`` (usable observations found, even below
+    the floor), ``min_episodes``, ``k``, ``watts``, and ``minutes`` (the
+    latter three ``None`` unless calibrated).
+    """
+    if min_episodes is None:
+        min_episodes = config.CALIBRATION_MIN_EPISODES
+    if power_tolerance is None:
+        power_tolerance = pd.Timedelta(minutes=15)
+    out: dict = {"status": "insufficient_evidence", "n_episodes": 0,
+                 "min_episodes": min_episodes, "k": None, "watts": None, "minutes": None}
+
+    if spans is None or spans.empty or datalog_df.empty or energy_df.empty:
+        return out
+    if "Battery Capacity" not in datalog_df.columns or "power_w" not in energy_df.columns:
+        return out
+
+    closed = spans if "open" not in spans.columns else spans[~spans["open"].fillna(False)]
+    closed = closed.dropna(subset=["start", "end"])
+    if closed.empty:
+        return out
+
+    dl = datalog_df.dropna(subset=["Battery Capacity"]).sort_values("ts")
+    edf = energy_df.dropna(subset=["power_w"]).sort_values("ts")
+    if dl.empty or edf.empty:
+        return out
+
+    boundary = latest_battery_replacement(annotations, dl["ts"].iloc[-1])
+    if boundary is not None:
+        closed = closed[closed["start"] >= boundary]
+    if closed.empty:
+        return out
+
+    records = []
+    for start, end in closed[["start", "end"]].itertuples(index=False, name=None):
+        duration_min = (end - start).total_seconds() / 60.0
+        if duration_min <= 0:
+            continue
+        before = dl[dl["ts"] <= start]
+        after = dl[dl["ts"] >= end]
+        if before.empty or after.empty:
+            continue
+        drop = float(before["Battery Capacity"].iloc[-1] - after["Battery Capacity"].iloc[0])
+        if not (drop >= min_capacity_drop_pct):
+            continue
+        records.append({"drop": drop, "duration_min": duration_min,
+                        "midpoint": start + (end - start) / 2})
+    if not records:
+        return out
+
+    mids = pd.DataFrame(records).sort_values("midpoint").reset_index(drop=True)
+    joined = pd.merge_asof(
+        mids, edf[["ts", "power_w"]].rename(columns={"ts": "midpoint"}),
+        on="midpoint", direction="nearest", tolerance=power_tolerance)
+    joined = joined.dropna(subset=["power_w"])
+    joined = joined[joined["power_w"] > 0]
+
+    out["n_episodes"] = int(len(joined))
+    if len(joined) < min_episodes:
+        return out
+
+    watts_obs = joined["power_w"].to_numpy(dtype=float)
+    rates_obs = (joined["drop"] / joined["duration_min"]).to_numpy(dtype=float)
+    k = float(np.sum(watts_obs * rates_obs) / np.sum(watts_obs ** 2))
+
+    curve_w = np.asarray(config.RUNTIME_CURVE_W, dtype=float)
+    mask = curve_w > 0
+    watts_out = curve_w[mask]
+    minutes_out = 100.0 / (k * watts_out)
+
+    out["status"] = "calibrated"
+    out["k"] = k
+    out["watts"] = watts_out.tolist()
+    out["minutes"] = minutes_out.tolist()
+    return out
+
+
 def cross_validate_load(datalog_df: pd.DataFrame, energylog_df: pd.DataFrame) -> dict:
     """
     For each DataLog 'UPS Load' sample, find the nearest energylog sample

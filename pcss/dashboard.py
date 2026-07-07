@@ -86,6 +86,11 @@ _STRINGS_ES = {
     "% capacity": "% de capacidad",
     "Estimated Runtime": "Autonomía estimada",
     "runtime curve": "curva de autonomía",
+    "measured": "medido",
+    "measured from": "medido a partir de",
+    "discharge": "descarga",
+    "discharges": "descargas",
+    "not enough discharge data yet": "aún no hay suficientes datos de descarga",
     "Cumulative Energy & Cost": "Energía y costo acumulados",
     "Daily Energy": "Energía diaria",
     "kWh / day": "kWh / día",
@@ -407,9 +412,18 @@ def _panel_bc(datalog_df, pal) -> dict | None:
     }
 
 
-def _panel_rt(energy_df, pal) -> tuple[dict | None, float | None, float | None]:
+def _panel_rt(energy_df, pal, calibration: dict | None = None) -> tuple[dict | None, float | None, float | None]:
     """Runtime curve + the latest operating point. Returns (panel, latest_w,
-    latest_runtime_min); the latter two also feed the KPI row."""
+    latest_runtime_min); the latter two also feed the KPI row.
+
+    ``calibration`` is the result of ``pcss.stats.calibrate_runtime_curve``
+    (roadmap item 16): once enough discharges have been observed
+    (``status == "calibrated"``), a second, measured series rides alongside
+    the configured curve — visually distinct and legend-toggleable like any
+    other series. Below the evidence floor (or with no calibration at all),
+    only the configured curve is drawn; the honest note about discharge
+    count lives in the card subtitle built by ``build_dashboard``, not here.
+    """
     w_max = float(np.max(config.RUNTIME_CURVE_W))
     w_axis = np.linspace(0, w_max, 120)
     rt_axis = np.interp(w_axis, config.RUNTIME_CURVE_W, config.RUNTIME_CURVE_MIN)
@@ -420,11 +434,16 @@ def _panel_rt(energy_df, pal) -> tuple[dict | None, float | None, float | None]:
         latest_rt = float(estimate_runtime(latest_w))
         markers = [{"x": round(latest_w, 1), "y": round(latest_rt, 1), "type": "star",
                     "color": pal["red"], "label": f"Now {latest_rt:.0f}m"}]
+    series = [_line_series(_L("runtime"), pal["violet"], _vals(w_axis, 1), _vals(rt_axis, 1),
+                           width=2, fill=True)]
+    if calibration and calibration.get("status") == "calibrated" and calibration.get("watts"):
+        series.append(_line_series(_L("measured"), pal["teal"],
+                                   _vals(calibration["watts"], 1),
+                                   _vals(calibration["minutes"], 1), width=2, dash="5 4"))
     panel = {
         "kind": "line", "unit": "min", "dec": 1, "xkind": "linear", "xunit": "W",
-        "vb": [460, 250], "xDomain": [0, w_max],
-        "series": [_line_series(_L("runtime"), pal["violet"], _vals(w_axis, 1), _vals(rt_axis, 1),
-                                width=2, fill=True)],
+        "legend": True, "vb": [460, 250], "xDomain": [0, w_max],
+        "series": series,
         "markers": markers,
     }
     return panel, latest_w, latest_rt
@@ -1158,7 +1177,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     staleness: dict | None = None,
                     forecast: dict | None = None,
                     bill_reconciliation: pd.DataFrame | None = None,
-                    annotations: pd.DataFrame | None = None) -> str:
+                    annotations: pd.DataFrame | None = None,
+                    calibration: dict | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
@@ -1169,7 +1189,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         forecast = forecast_period_cost(energy_summary)
 
     bv_panel, bv_slope = _panel_bv(datalog_df, pal)
-    rt_panel, latest_w, latest_rt = _panel_rt(energy_df, pal)
+    rt_panel, latest_w, latest_rt = _panel_rt(energy_df, pal, calibration)
     proj_panel, proj_1yr_kb = _panel_proj(dl_stats, pal)
     panels = {
         "lv": _panel_lv(datalog_df, voltage_anomalies, pal),
@@ -1256,6 +1276,19 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                    f"({_L('since')} {battery['battery_installed_on']:%Y-%m-%d})")
     rt_sub = (f"{latest_w:.0f}W → {latest_rt:.0f} min" if latest_rt is not None
               else _L("runtime curve"))
+    # Runtime-curve calibration (roadmap item 16): name the number of
+    # discharges behind the measured overlay once calibrated, or the honest
+    # floor note when there is not yet enough discharge data — the same
+    # pattern as the battery replace-by projection's history floor.
+    cal = calibration or {}
+    cal_min_episodes = cal.get("min_episodes", config.CALIBRATION_MIN_EPISODES)
+    if cal.get("status") == "calibrated":
+        cal_bit = (f"{_L('measured from')} "
+                   f"{_count(cal['n_episodes'], _L('discharge'), _L('discharges'))}")
+    else:
+        cal_bit = (f"{_L('not enough discharge data yet')} "
+                   f"({cal.get('n_episodes', 0)}/{cal_min_episodes:.0f})")
+    rt_sub = f"{rt_sub} · {cal_bit}"
     kw_sub = f"kWh · ₡ (₡{config.PCSS_FLAT_RATE:g}/kWh)"
     proj_sub = f"≈ {proj_1yr_kb / 1024:.1f} MB / yr" if proj_1yr_kb else _L("current rate")
     energy_note = (f"{energy_summary['total_kwh']:.1f} kWh · "

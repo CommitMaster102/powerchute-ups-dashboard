@@ -40,38 +40,9 @@ Shipped so far (details in the archive at the bottom):
 | 27 | End-of-period cost forecast | `pcss/stats.py` (`forecast_period_cost`) |
 | 29 | Bill reconciliation | `pcss/loaders.py` (`load_bills`), `pcss/stats.py` (`reconcile_bills`) |
 | 26 | Battery lifecycle annotations | `pcss/loaders.py` (`load_annotations`), `pcss/stats.py` (`latest_battery_replacement`, `battery_replace_projection`) |
+| 16 | Runtime-curve calibration from observed discharges | `pcss/stats.py` (`calibrate_runtime_curve`) |
 
 ## Data and analysis
-
-### 16. Runtime-curve calibration from observed discharges
-
-The `[runtime_curve]` watts-to-minutes table is hand-estimated. Every real
-outage is now a measurement: the EventLog spans (item 5) give the exact
-on-battery duration to the millisecond, the DataLog gives the battery
-capacity consumed, and the energylog gives the mean power draw during the
-span. Accumulated in the archives, those observations support a fitted
-"capacity percent per minute at W watts" model that can confirm or correct
-the configured curve — shown on the Estimated Runtime card as a measured
-overlay next to the configured line.
-
-Challenges:
-
-- Sample scarcity: four of the five outages recorded so far lasted seconds,
-  which drains no measurable capacity. Only episodes long enough to straddle
-  a DataLog sample are usable, so the model needs a minimum-evidence floor
-  and the honest "not enough discharge data yet" output, like the
-  replace-by projection's `battery_trend_min_days`.
-- Load is not constant during a discharge; the energylog's 5-minute samples
-  give a mean, and an episode shorter than one interval has no power sample
-  at all. The join is per-span, not per-sample (`merge_asof` against the
-  span midpoint is probably enough).
-- Battery age and temperature shift the curve over time; either weight
-  recent episodes more heavily or fit per calendar quarter once the archive
-  is deep enough.
-- Where it lands: a new function in `pcss/stats.py` feeding `_panel_rt` in
-  `pcss/dashboard.py` (a second series plus a subtitle note), with the
-  observations sourced from `output/archive/events.csv` and the DataLog
-  archive.
 
 ### 18. Self-test detection and battery health under load
 
@@ -930,3 +901,64 @@ Challenges:
 - Rendering: a labeled vertical marker is a new small shape in
   `pcss/charts.js` next to the existing point markers, and it must stay
   legible next to the gap and episode strips on a busy axis.
+
+### 16. Runtime-curve calibration from observed discharges
+
+SHIPPED: `calibrate_runtime_curve` in `pcss/stats.py` turns observed
+on-battery discharges into a fitted "capacity percent per minute at W
+watts" model. It reads the authoritative EventLog spans from
+`on_battery_spans` (not the DataLog-inferred fallback), so durations are
+exact to the millisecond, and for each closed span computes: capacity
+consumed (the last DataLog Battery Capacity sample at or before the span's
+start, minus the first sample at or after its end — kept only when the
+drop is at least one percentage point, since most real outages last
+seconds and drain nothing measurable); duration (the span's own exact
+start/end); and power (the energylog sample nearest the span's midpoint via
+`merge_asof`, within a tolerance — a span with no power sample nearby is
+discarded). A through-origin least-squares fit of drain rate against watts
+across the surviving observations recovers `k`, and the measured
+watts-to-minutes curve is `100 / (k * W)` evaluated at the configured
+`[runtime_curve]` watt points (0 W excluded, where that formula is
+undefined). Below `[runtime_curve] calibration_min_episodes` (default 3)
+usable observations, the result reports the honest "insufficient_evidence"
+and no curve is fitted — the same floor pattern as
+`battery_replace_projection`'s `battery_trend_min_days`. The function
+reuses `latest_battery_replacement` (item 26) so only discharges recorded
+after the newest annotated battery replacement feed the fit, exactly as
+that item's own note anticipated. `_panel_rt` in `pcss/dashboard.py` draws
+the measured curve as a second, legend-toggleable series next to the
+configured curve, and the Estimated Runtime card subtitle names the
+discharge count behind it ("measured from N discharges") or the honest
+floor note, localized via `_STRINGS_ES`. `analyze_ups.py` sources the spans
+from the merged event archive (the same wiring the dashboard's episode
+strips already use) and passes the frames into the calibration call.
+Per-quarter fitting and recency weighting stayed out of scope, as the
+roadmap called for below. `tests/test_calibration.py`.
+
+The `[runtime_curve]` watts-to-minutes table is hand-estimated. Every real
+outage is now a measurement: the EventLog spans (item 5) give the exact
+on-battery duration to the millisecond, the DataLog gives the battery
+capacity consumed, and the energylog gives the mean power draw during the
+span. Accumulated in the archives, those observations support a fitted
+"capacity percent per minute at W watts" model that can confirm or correct
+the configured curve — shown on the Estimated Runtime card as a measured
+overlay next to the configured line.
+
+Challenges:
+
+- Sample scarcity: four of the five outages recorded so far lasted seconds,
+  which drains no measurable capacity. Only episodes long enough to straddle
+  a DataLog sample are usable, so the model needs a minimum-evidence floor
+  and the honest "not enough discharge data yet" output, like the
+  replace-by projection's `battery_trend_min_days`.
+- Load is not constant during a discharge; the energylog's 5-minute samples
+  give a mean, and an episode shorter than one interval has no power sample
+  at all. The join is per-span, not per-sample (`merge_asof` against the
+  span midpoint is probably enough).
+- Battery age and temperature shift the curve over time; either weight
+  recent episodes more heavily or fit per calendar quarter once the archive
+  is deep enough.
+- Where it lands: a new function in `pcss/stats.py` feeding `_panel_rt` in
+  `pcss/dashboard.py` (a second series plus a subtitle note), with the
+  observations sourced from `output/archive/events.csv` and the DataLog
+  archive.

@@ -41,6 +41,7 @@ from pcss.loaders import (
 from pcss.stats import (
     assess_staleness,
     battery_replace_projection,
+    calibrate_runtime_curve,
     compute_energy_summary,
     compute_stats_summary,
     cross_validate_load,
@@ -330,6 +331,16 @@ def main(argv: list[str] | None = None) -> int:
     for msg in annotation_warnings:
         print(f"  [warn] {msg}")
 
+    # Runtime-curve calibration (roadmap item 16): fits a measured
+    # capacity-percent-per-minute-per-watt model from observed on-battery
+    # discharges, to confirm or correct the hand-estimated [runtime_curve]
+    # table. Uses the authoritative EventLog spans (ev_spans), not the
+    # DataLog-inferred fallback below, so durations are exact; the same
+    # battery-replacement boundary as the replace-by projection keeps a
+    # replaced battery's discharges out of the fit.
+    calibration = calibrate_runtime_curve(ev_spans, datalog_df, energy_df,
+                                          annotations=annotations_df)
+
     section("ANOMALIES & EVENTS")
     voltage_anomalies = detect_voltage_anomalies(datalog_df)
     say(f"  Voltage out of {config.VOLTAGE_NORMAL_LOW}-{config.VOLTAGE_NORMAL_HIGH}V envelope: "
@@ -465,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
         stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
         events_summary, staleness, forecast, reconciled_bills, annotations_df,
+        calibration,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
