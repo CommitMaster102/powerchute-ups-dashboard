@@ -824,8 +824,8 @@
 
   // ------------------------------------------------------------------
   // Theme control (roadmap item 30). applyTheme swaps the active palette and
-  // redraws every chart plus the sparklines; the header toggle cycles
-  // auto -> dark -> light; the override rides the permalink hash (encoded only
+  // redraws every chart plus the sparklines; the header toggle cycles from
+  // auto to dark to light; the override rides the permalink hash (encoded only
   // when it differs from the config default) and resetAll clears it back to
   // that default. __chartsDebug exposes the resolved active theme for tests.
   // ------------------------------------------------------------------
@@ -834,6 +834,12 @@
     document.documentElement.setAttribute("data-theme", THEME_MODE);
     Object.keys(STATE).forEach(rerenderPanel);
     renderSparks();
+    // A pinned tooltip is a snapshot of ttLive's innerHTML taken at pin time,
+    // dot colors baked in from the prior palette. Rebuilding it would need the
+    // resolved series color per row, which LAST_HOVER does not carry; hiding
+    // it is the simpler and honest choice over showing stale hues until the
+    // next hover.
+    if (PINNED) unpin();
   }
   function updateThemeToggle() {
     const b = document.getElementById("theme-btn");
@@ -971,12 +977,14 @@
         v.overlay.replaceChildren();
         if (r < 0) return;
         const g = v.geom;
+        // The row/cell outline is the active palette's text role rather than
+        // a hardcoded white, so it stays visible on the light heat ramp too.
         svgEl("rect", { x: g.p.l, y: g.p.t + r * g.ch, width: g.iw, height: g.ch,
-                        fill: "none", stroke: "rgba(255,255,255,.5)", "stroke-width": 1,
+                        fill: "none", stroke: C.text, "stroke-opacity": 0.5, "stroke-width": 1,
                         "vector-effect": "non-scaling-stroke" }, v.overlay);
         const c = new Date(ts).getUTCHours();
         svgEl("rect", { x: g.p.l + c * g.cw, y: g.p.t + r * g.ch, width: g.cw, height: g.ch,
-                        fill: "none", stroke: "#fff", "stroke-width": 1.5,
+                        fill: "none", stroke: C.text, "stroke-width": 1.5,
                         "vector-effect": "non-scaling-stroke" }, v.overlay);
       });
     });
@@ -1030,7 +1038,11 @@
       if (snappedTs < g.xd[0] || snappedTs > g.xd[1]) { v.overlay.replaceChildren(); return; }
       v.overlay.replaceChildren();
       const x = g.sx(snappedTs);
-      svgEl("line", { x1: x, x2: x, y1: g.p.t, y2: g.p.t + g.ih, stroke: "rgba(255,255,255,.28)", "stroke-width": 1, "stroke-dasharray": "3 3", "vector-effect": "non-scaling-stroke" }, v.overlay);
+      // The crosshair guide is drawn in the active palette's text role at low
+      // opacity rather than a hardcoded white, so it stays visible against a
+      // light background too and follows a live theme switch like every other
+      // chart mark.
+      svgEl("line", { x1: x, x2: x, y1: g.p.t, y2: g.p.t + g.ih, stroke: C.text, "stroke-opacity": 0.28, "stroke-width": 1, "stroke-dasharray": "3 3", "vector-effect": "non-scaling-stroke" }, v.overlay);
       rows.forEach(r => {
         const sy = r.right ? g.syR : g.syL;
         svgEl("circle", { cx: g.sx(r.x), cy: sy(r.y), r: 3.6, fill: r.color, stroke: C.panel, "stroke-width": 1.5 }, v.overlay);
@@ -1157,7 +1169,9 @@
           fmtVal(data[i].y, spec.dec) + " " + (spec.unit || "") + "</span></div>";
         placeTooltip(ttLive, ev.clientX, ev.clientY);
         view.overlay.replaceChildren();
-        svgEl("rect", { x: g.p.l + i * g.bw + g.bw * 0.16 - 1.5, y: g.p.t, width: g.bw * 0.68 + 3, height: g.ih, fill: "rgba(255,255,255,.05)", stroke: "rgba(255,255,255,.18)", "stroke-width": 1, rx: 3 }, view.overlay);
+        // Same palette-derived overlay as the crosshair guide: the text role
+        // at low opacity, so the highlighted bar shows on either theme.
+        svgEl("rect", { x: g.p.l + i * g.bw + g.bw * 0.16 - 1.5, y: g.p.t, width: g.bw * 0.68 + 3, height: g.ih, fill: C.text, "fill-opacity": 0.05, stroke: C.text, "stroke-opacity": 0.18, "stroke-width": 1, rx: 3 }, view.overlay);
       } else if (spec.kind === "heatmap") {
         const c = Math.floor((pt.x - g.p.l) / g.cw), r = Math.floor((pt.y - g.p.t) / g.ch);
         if (c < 0 || c >= g.cols || r < 0 || r >= g.rows) { hideHover(key); return; }
@@ -1169,7 +1183,8 @@
           (v == null ? (S.noData || "no data") : fmtVal(v, 0) + " " + (spec.unit || "")) + "</span></div>";
         placeTooltip(ttLive, ev.clientX, ev.clientY);
         view.overlay.replaceChildren();
-        svgEl("rect", { x: g.p.l + c * g.cw, y: g.p.t + r * g.ch, width: g.cw, height: g.ch, fill: "none", stroke: "#fff", "stroke-width": 1.2, "vector-effect": "non-scaling-stroke" }, view.overlay);
+        // Same palette-derived outline as highlightHeatmap, not a hardcoded white.
+        svgEl("rect", { x: g.p.l + c * g.cw, y: g.p.t + r * g.ch, width: g.cw, height: g.ch, fill: "none", stroke: C.text, "stroke-width": 1.2, "vector-effect": "non-scaling-stroke" }, view.overlay);
       } else if (spec.kind === "events") {
         hoverEventsAt(view, pt, ev.clientX, ev.clientY);
       }

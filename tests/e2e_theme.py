@@ -12,7 +12,7 @@ assertion lives in tests/e2e_export.py.
 from __future__ import annotations
 
 import pytest
-from harness import wait_ready
+from harness import hover_panel, wait_ready
 
 pytestmark = pytest.mark.e2e
 
@@ -20,11 +20,29 @@ DARK_BG = "#101216"
 LIGHT_BG = "#f4f6f9"
 DARK_BLUE = "#5aa9f0"
 LIGHT_BLUE = "#2b7cd3"
+DARK_TEXT = "#e8eaef"
+LIGHT_TEXT = "#1c2530"
 
 
 def _bg(page):
     return page.evaluate(
         "getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()")
+
+
+def _crosshair_stroke(page, key="lv"):
+    """The hover crosshair guide's stroke attribute (a <line> in that panel's
+    overlay group)."""
+    return page.evaluate(
+        f"document.querySelector('#panel-{key} svg .chart-overlay line')"
+        ".getAttribute('stroke')")
+
+
+def _heatmap_outline_strokes(page):
+    """Stroke attributes of every outline rect drawn in the heatmap's overlay
+    on hover (the day-row outline and the hour-cell outline)."""
+    return page.evaluate(
+        "Array.from(document.querySelectorAll("
+        "'#panel-hm svg .chart-overlay rect')).map(r => r.getAttribute('stroke'))")
 
 
 def _lv_stroke(page):
@@ -128,3 +146,56 @@ def test_reset_all_clears_theme_to_config_default(auto_page, auto_dashboard_path
     auto_page.evaluate("__chartsDebug.resetAll()")
     assert auto_page.evaluate("__chartsDebug.themeMode()") == "auto"
     assert "t=" not in auto_page.evaluate("location.hash")
+
+
+# Review finding 1 (task 30, fix round 1): three hover overlays — the
+# crosshair guide, the bar-hover highlight, and the heatmap hover outline —
+# were hardcoded white and vanished against the light chrome. They now
+# resolve from the active palette's "text" role at draw time, like every
+# other chart mark.
+def test_light_theme_crosshair_overlay_is_not_white(auto_page, auto_dashboard_path):
+    _open(auto_page, auto_dashboard_path, "light")
+    hover_panel(auto_page, "lv")
+    stroke = _crosshair_stroke(auto_page)
+    assert stroke is not None
+    assert "255,255,255" not in stroke and stroke.lower() != "#fff"
+    assert stroke.lower() == LIGHT_TEXT
+
+
+def test_dark_theme_crosshair_overlay_unchanged(auto_page, auto_dashboard_path):
+    # The dark palette's text role reads near-white, so the fix stays
+    # visually equivalent to the old literal white on the theme it always
+    # worked on.
+    _open(auto_page, auto_dashboard_path, "dark")
+    hover_panel(auto_page, "lv")
+    assert _crosshair_stroke(auto_page).lower() == DARK_TEXT
+
+
+def test_light_theme_heatmap_hover_outline_is_not_white(auto_page, auto_dashboard_path):
+    _open(auto_page, auto_dashboard_path, "light")
+    hover_panel(auto_page, "hm", fx=0.6, fy=0.4)
+    strokes = _heatmap_outline_strokes(auto_page)
+    assert strokes, "no heatmap overlay outline found"
+    for s in strokes:
+        assert s is not None
+        assert "255,255,255" not in s and s.lower() != "#fff"
+        assert s.lower() == LIGHT_TEXT
+
+
+# Review finding 2 (task 30, fix round 1): applyTheme redrew every panel and
+# the sparklines but left a currently-pinned floating tooltip showing the
+# prior palette's dot colors until the next hover. A pinned tooltip is a
+# frozen copy of innerHTML captured at pin time and LAST_HOVER does not carry
+# the resolved series color needed to rebuild it, so the simpler and honest
+# fix is to clear the pin on a live switch rather than show stale hues.
+def test_pinned_tooltip_hides_on_live_theme_switch(auto_page, auto_dashboard_path):
+    _open(auto_page, auto_dashboard_path, "dark")
+    box = hover_panel(auto_page, "lv")
+    auto_page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
+    auto_page.wait_for_timeout(60)
+    assert auto_page.evaluate("__chartsDebug.pinned()") == {"key": "lv"}
+    btn = auto_page.locator("#theme-btn")
+    btn.click()   # auto -> dark (no-op palette-wise)
+    btn.click()   # dark -> light: the palette actually switches now
+    assert auto_page.evaluate("__chartsDebug.pinned()") is None
+    assert auto_page.locator(".chart-tooltip.is-pinned").evaluate("el => el.hidden")

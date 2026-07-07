@@ -1217,8 +1217,8 @@ block for `data-theme="auto"`, and the server-rendered semantic accents (KPI
 cards, health pill, summary rows) use `var(--role)`. `[dashboard] theme` gained
 an `"auto"` value, now the module default in `pcss/config.py`; `"dark"`/`"light"`
 still pin the initial theme (backward compatible), documented in
-`config.example.toml`. A header toggle (`#theme-btn`) cycles auto -> dark ->
-light, shows and localizes its current state, and its override rides the
+`config.example.toml`. A header toggle (`#theme-btn`) cycles from auto to dark
+to light, shows and localizes its current state, and its override rides the
 permalink hash (item 1's encoder gained a `t=` key, encoded only when it differs
 from the config default — chosen over `localStorage` so a shared link carries
 its theme); `restoreFromHash` replays it, a live `prefers-color-scheme` change
