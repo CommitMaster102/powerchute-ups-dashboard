@@ -130,6 +130,19 @@ language = "en"
 # (emits a meta refresh matched to your scheduled-task cadence). 0 disables
 # it. The permalink hash keeps the view state across the reload.
 refresh_minutes = 0
+# Payload budget for a multi-year archive (roadmap item 25). 0 (the default)
+# changes nothing: every chart ships full history, same as before this
+# setting existed. A positive value windows the dashboard's charts to the
+# newest max_days days, anchored to the newest DataLog sample, and the
+# footer says so once something is actually trimmed. This only affects what
+# the dashboard *visualizes* — the console summary, --json, alerts, and the
+# archive append still analyze the complete history, and so do the fitted
+# surfaces (battery replace-by, cost forecast, bill reconciliation,
+# grid-quality trend), all computed before the window is applied. The
+# archive on disk is never touched or truncated. This is the cheap
+# alternative to server-side decimation the roadmap weighed and shipped
+# instead; see ROADMAP.md item 25 for why.
+max_days = 0
 
 [runtime_curve]          # empirical BX2000M-LM: watts -> minutes of runtime
 watts   = [0, 100, 150, 250, 500, 600, 800, 1200]

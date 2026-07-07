@@ -243,6 +243,8 @@ _STRINGS_ES = {
     "Worst event": "Peor evento",
     "sag": "caída",
     "swell": "subida",
+    "Showing the last {n} days; older history remains in output/archive/.":
+        "Mostrando los últimos {n} días; el historial anterior permanece en output/archive/.",
 }
 
 
@@ -1306,7 +1308,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     calibration: dict | None = None,
                     self_tests: pd.DataFrame | None = None,
                     baseline: dict | None = None,
-                    grid_quality: pd.DataFrame | None = None) -> str:
+                    grid_quality: pd.DataFrame | None = None,
+                    dashboard_window_days: float | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
@@ -1473,6 +1476,19 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             f"{_L('envelope')} {config.VOLTAGE_NORMAL_LOW:g}–{config.VOLTAGE_NORMAL_HIGH:g} V · "
             f"{_L('high-load')} {config.HIGH_LOAD_PCT:g}% · {_L('theme')} {config.DASHBOARD_THEME}")
 
+    # Payload budget for multi-year archives (roadmap item 25): honesty note
+    # for the cheap [dashboard] max_days window. Only rendered when the
+    # caller (analyze_ups.py) reports that the window actually trimmed
+    # something — dashboard_window_days is None both when max_days is 0 (the
+    # default) and when max_days turned out larger than the recorded span,
+    # so this stays silent in both of those no-op cases.
+    window_note_html = ""
+    if dashboard_window_days:
+        window_note = _L(
+            "Showing the last {n} days; older history remains in output/archive/."
+        ).format(n=f"{dashboard_window_days:g}")
+        window_note_html = f'\n    <div class="dim">{_esc(window_note)}</div>'
+
     payload_json = json.dumps(payload, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
     charts_js = _CHARTS_JS_TEMPLATE.replace("__DASH_DATA__", payload_json)
 
@@ -1620,7 +1636,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 
   <footer>
     <div>{_esc(foot)}</div>
-    <div class="dim">{_esc(_L('Charts rendered as inline SVG — no chart library, fully offline.'))}</div>
+    <div class="dim">{_esc(_L('Charts rendered as inline SVG — no chart library, fully offline.'))}</div>{window_note_html}
   </footer>
 
 </div>

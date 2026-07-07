@@ -44,6 +44,7 @@ Shipped so far (details in the archive at the bottom):
 | 18 | Self-test detection and battery health under load | `pcss/stats.py` (`detect_self_tests`, `self_test_sag_trend`) |
 | 19 | Baseline-deviation energy alerts | `pcss/stats.py` (`detect_baseline_deviations`, `weekday_weekend_profiles`) |
 | 28 | Grid-quality trend | `pcss/stats.py` (`grid_quality_trend`) |
+| 25 | Payload budget (`max_days` window) | `analyze_ups.py` (`_dashboard_window`, `_window_df`) |
 
 ## Dashboard and interaction
 
@@ -168,30 +169,6 @@ Challenges:
   consulted rather than duplicated.
 - Failure surfacing: a nonzero exit should toast the last lines of the log,
   not fail silently.
-
-### 25. Payload budget for multi-year archives
-
-The DataLog archive grows without bound by design. At 20-minute cadence a
-year is roughly 26,000 rows per series; a few years multiplied across the
-panels will noticeably fatten `dashboard.html` (every series ships in full
-so the page stays offline). A server-side decimation pass — min/max buckets
-per series above a point budget, mirroring `decimateMinMax` in
-`pcss/charts.js` — would cap the payload while preserving spikes.
-
-Challenges:
-
-- Zooming must not lie: the client re-decimates from the shipped arrays, so
-  server-side thinning limits the maximum zoom detail for old data. The
-  budget therefore should apply only beyond a horizon (for example, full
-  resolution for the last 90 days, min/max buckets before that), and the
-  page should say so when a thinned range is displayed.
-- The tooltip and CSV export read the shipped arrays; both keep working but
-  represent the thinned data — the CSV header should mark decimated series
-  to stay machine-honest.
-- The cheap alternative — a `[dashboard] max_days` window with the archive
-  still intact on disk — should be weighed first; it may be all a personal
-  dashboard ever needs (the ponytail question: does the fancy version need
-  to exist at all?).
 
 ### 32. Weekly digest
 
@@ -1060,3 +1037,55 @@ Challenges:
 - Presentation: a reference-table block is the cheap first step; a dedicated
   bar panel is a new key that must join `PANELS` in `tests/harness.py` with
   the conftest render assertion, so the table should prove the value first.
+
+### 25. Payload budget for multi-year archives
+
+SHIPPED: the cheap alternative the item itself favored, not the server-side
+decimation pass — `[dashboard] max_days` in `pcss/config.py` (default `0`,
+no effect at all). A positive value windows only the raw per-sample frames
+fed to `build_dashboard` — the DataLog and energylog series, the
+size-history growth series, and the gap/voltage-anomaly/on-battery-episode
+overlays that ride alongside them on the same time panels — to the newest
+`max_days` days, anchored to the newest DataLog sample rather than the wall
+clock. The cut is a single pair of helpers in `analyze_ups.py`
+(`_dashboard_window` computes the cutoff or returns `None` when nothing
+should change; `_window_df` filters one frame by its own timestamp column)
+applied once, right before `build_dashboard()` is called. Everything
+computed earlier in `main()` — the console summary, `--json`, alerts, the
+archive append, and every fitted stats surface (the battery replace-by
+projection, the cost forecast, bill reconciliation, grid-quality trend) —
+still runs against the complete history, since those are computed from the
+unwindowed frames before the window is applied; the archive on disk is
+never touched or truncated either way. When the window actually removes
+rows, the dashboard footer names the days shown and points at
+`output/archive/` for the rest, localized via `_STRINGS_ES`; `max_days = 0`
+or a `max_days` larger than the recorded span both leave the page
+byte-identical, with no note. The roadmap's own ponytail question — does
+the server-side min/max decimation pass need to exist at all — is answered
+"not yet": no decimation shipped with this change, and the decimation
+variant described below (full resolution inside a horizon, thinned min/max
+buckets before it, a CSV honesty flag on decimated series) remains the
+deliberate follow-up if `max_days` alone ever proves insufficient for a
+genuinely multi-year archive. `tests/test_dashboard_window.py`.
+
+The DataLog archive grows without bound by design. At 20-minute cadence a
+year is roughly 26,000 rows per series; a few years multiplied across the
+panels will noticeably fatten `dashboard.html` (every series ships in full
+so the page stays offline). A server-side decimation pass — min/max buckets
+per series above a point budget, mirroring `decimateMinMax` in
+`pcss/charts.js` — would cap the payload while preserving spikes.
+
+Challenges:
+
+- Zooming must not lie: the client re-decimates from the shipped arrays, so
+  server-side thinning limits the maximum zoom detail for old data. The
+  budget therefore should apply only beyond a horizon (for example, full
+  resolution for the last 90 days, min/max buckets before that), and the
+  page should say so when a thinned range is displayed.
+- The tooltip and CSV export read the shipped arrays; both keep working but
+  represent the thinned data — the CSV header should mark decimated series
+  to stay machine-honest.
+- The cheap alternative — a `[dashboard] max_days` window with the archive
+  still intact on disk — should be weighed first; it may be all a personal
+  dashboard ever needs (the ponytail question: does the fancy version need
+  to exist at all?).

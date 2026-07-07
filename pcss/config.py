@@ -179,6 +179,21 @@ DASHBOARD_LANGUAGE = "en"
 # reload, so the restored view state is kept.
 DASHBOARD_REFRESH_MINUTES = 0.0
 
+# Payload budget for multi-year archives (roadmap item 25): the cheap
+# alternative to server-side decimation. 0 (the default) changes nothing at
+# all — every panel ships full history, exactly as before this setting
+# existed. A positive value windows only the raw per-sample frames fed to
+# the dashboard (DataLog, energylog, the size-history growth series, and the
+# gap/anomaly/episode overlays that ride alongside them) to the newest
+# DASHBOARD_MAX_DAYS days, anchored to the newest DataLog sample — one cut
+# applied in analyze_ups.py right before build_dashboard() is called. The
+# console summary, --json, alerts, the archive append, and every fitted
+# stats surface (the battery replace-by projection, the cost forecast, bill
+# reconciliation, grid-quality trend) still see the complete history: they
+# are computed before this window is applied, from the unwindowed frames.
+# The archive on disk is never touched or truncated either way.
+DASHBOARD_MAX_DAYS = 0.0
+
 # Opt-in alerting: when enabled (config [alerts] enabled=true), the analyzer
 # appends a line to ALERTS_LOG whenever the analyzed window has voltage
 # anomalies or sustained high-load episodes. Email/notify is a documented
@@ -307,6 +322,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global BASELINE_MIN_DAYS, BASELINE_DEVIATION_PCT
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
     global DASHBOARD_THEME, DASHBOARD_MODEL, DASHBOARD_REFRESH_MINUTES, DASHBOARD_LANGUAGE
+    global DASHBOARD_MAX_DAYS
     global ALERTS_ENABLED, ARCHIVE_ENABLED
 
     if path is None:
@@ -382,6 +398,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     lang = str(dash.get("language", DASHBOARD_LANGUAGE)).lower()
     if lang in ("en", "es"):
         DASHBOARD_LANGUAGE = lang
+    DASHBOARD_MAX_DAYS = max(0.0, float(dash.get("max_days", DASHBOARD_MAX_DAYS)))
 
     if rc.get("watts") and rc.get("minutes"):
         RUNTIME_CURVE_W = np.array(rc["watts"], dtype=float)

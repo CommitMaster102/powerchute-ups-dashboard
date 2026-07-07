@@ -114,6 +114,35 @@ def _date_filter(df: pd.DataFrame, since: pd.Timestamp | None, until: pd.Timesta
     return df.reset_index(drop=True)
 
 
+def _dashboard_window(datalog_df: pd.DataFrame, max_days: float) -> pd.Timestamp | None:
+    """The cut point for the dashboard-only payload budget (roadmap item
+    25): the newest max_days days, anchored to the newest DataLog sample
+    rather than the wall clock. Returns the cutoff timestamp to trim the
+    dashboard's raw frames to, or None when nothing should be trimmed —
+    max_days is 0 or negative (the default, a deliberate no-op), there is
+    no DataLog data to anchor on, or max_days is already at least as large
+    as the recorded span, so trimming to it would remove nothing. Either
+    way, None means the dashboard sees exactly the same frames it always
+    has: this is what keeps max_days = 0 byte-identical."""
+    if max_days <= 0 or datalog_df.empty:
+        return None
+    anchor = datalog_df["ts"].iloc[-1]
+    cutoff = anchor - pd.Timedelta(days=max_days)
+    if not (datalog_df["ts"] < cutoff).any():
+        return None
+    return cutoff
+
+
+def _window_df(df: pd.DataFrame | None, col: str, cutoff: pd.Timestamp) -> pd.DataFrame | None:
+    """Filter one dashboard-input frame to rows at or after cutoff, by its
+    own timestamp column col. A frame that is None, empty, or missing that
+    column passes through unchanged, so a caller can apply this uniformly
+    without special-casing frames that happen to have nothing to trim."""
+    if df is None or df.empty or col not in df.columns:
+        return df
+    return df[df[col] >= cutoff].reset_index(drop=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     quiet = args.quiet
@@ -538,13 +567,39 @@ def main(argv: list[str] | None = None) -> int:
             "last_ts": events_df["ts"].iloc[-1],
         }
 
+    # Payload budget for multi-year archives (roadmap item 25): everything
+    # above this point — console output, --json, alerts, the archive append,
+    # and every fitted stats surface (battery, forecast, reconciled_bills,
+    # grid_quality, ...) — has already run against the full history. From
+    # here on, only what the dashboard visualizes may be narrowed, and only
+    # the raw per-sample frames that actually scale with the archive's size:
+    # DataLog, energylog, the size-history growth series, and the
+    # gap/anomaly/episode overlays that ride alongside them on the same time
+    # panels. dash_cutoff is None (the default) whenever nothing should
+    # change, so every dash_* frame below is simply the original frame.
+    dash_cutoff = _dashboard_window(datalog_df, config.DASHBOARD_MAX_DAYS)
+    if dash_cutoff is None:
+        dash_datalog_df, dash_energy_df, dash_hist = datalog_df, energy_df, hist
+        dash_gaps, dash_voltage_anomalies = gaps, voltage_anomalies
+        dash_high_load, dash_episodes = high_load, episodes
+        dashboard_window_days = None
+    else:
+        dash_datalog_df = _window_df(datalog_df, "ts", dash_cutoff)
+        dash_energy_df = _window_df(energy_df, "ts", dash_cutoff)
+        dash_hist = _window_df(hist, "timestamp", dash_cutoff)
+        dash_gaps = _window_df(gaps, "from", dash_cutoff)
+        dash_voltage_anomalies = _window_df(voltage_anomalies, "ts", dash_cutoff)
+        dash_high_load = _window_df(high_load, "start", dash_cutoff)
+        dash_episodes = _window_df(episodes, "start", dash_cutoff)
+        dashboard_window_days = config.DASHBOARD_MAX_DAYS
+
     section("DASHBOARD")
     html = build_dashboard(
-        datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
-        stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
-        events_summary, staleness, forecast, reconciled_bills, annotations_df,
+        dash_datalog_df, dash_energy_df, dash_hist, dl_stats, hist_stats, sizes, energy_summary,
+        stats_table, dash_gaps, dash_voltage_anomalies, dash_high_load, crossval, dash_episodes,
+        battery, events_summary, staleness, forecast, reconciled_bills, annotations_df,
         calibration, self_tests=self_tests, baseline=baseline,
-        grid_quality=grid_quality,
+        grid_quality=grid_quality, dashboard_window_days=dashboard_window_days,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
