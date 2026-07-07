@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -557,6 +558,15 @@ def main(argv: list[str] | None = None) -> int:
         say(f"  Not enough history ({config.BATTERY_TREND_MIN_DAYS:.0f}+ days needed); "
             "the archive accumulates it over time.")
 
+    # Weekly digest (roadmap item 32): a cadence-driven summary alongside the
+    # event-driven alerts above, gated to once per ISO week. Runs after every
+    # number it summarizes has been computed, using the same injected wall
+    # clock (item 31) the staleness watchdog already read.
+    digest_path = _maybe_write_weekly_digest(energy_summary, forecast, voltage_anomalies,
+                                             episodes, battery, now)
+    if digest_path:
+        say(f"  [alert] weekly digest appended to {digest_path}")
+
     stats_table = compute_stats_summary(datalog_df)
 
     section("PER-METRIC STATISTICS (DataLog)")
@@ -791,6 +801,206 @@ def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None
             f"on_battery_episodes={n_ob}  baseline_deviations={n_bd}{stale_bit}\n")
     with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
         f.write(line)
+    return config.ALERTS_LOG
+
+
+# ======================================================================
+# Weekly digest (roadmap item 32)
+# ======================================================================
+def _iso_year_week(ts) -> tuple[int, int]:
+    """(ISO year, ISO week number) for a date/datetime/Timestamp.
+
+    The ISO year can differ from the calendar year for a few days around
+    New Year's (for example 2025-12-29 is ISO week 1 of 2026), which is
+    exactly why the gate below compares this pair rather than the calendar
+    year: ordinary tuple comparison of (iso_year, iso_week) already orders
+    correctly across that boundary.
+    """
+    iso = pd.Timestamp(ts).isocalendar()
+    return int(iso.year), int(iso.week)
+
+
+def _format_digest_marker(today) -> str:
+    """The marker text for output/last_digest.txt: "YYYY-Www", the ISO
+    (year, week) that a digest was last actually appended for."""
+    year, week = _iso_year_week(today)
+    return f"{year:04d}-W{week:02d}"
+
+
+def _parse_digest_marker(text: str | None) -> tuple[int, int] | None:
+    """Parse the ISO (year, week) recorded in output/last_digest.txt.
+
+    Returns None for a missing file (text is None), a blank file, or
+    content that does not match the "YYYY-Www" shape written by
+    _format_digest_marker — the caller's gate treats all three the same
+    way, as "no digest recorded yet", so it fires on the next run.
+    """
+    if not text or not text.strip():
+        return None
+    first_line = text.splitlines()[0].strip()
+    year_part, sep, week_part = first_line.partition("-W")
+    if not sep or not year_part.isdigit() or not week_part.isdigit():
+        return None
+    return int(year_part), int(week_part)
+
+
+def _should_fire_weekly_digest(marker_text: str | None, today) -> bool:
+    """True when `today` falls in a newer ISO week than the one recorded by
+    the digest marker (roadmap item 32) — the gate that turns "the analyzer
+    runs every day" into "the digest fires once, on the first run of a new
+    week." A missing or malformed marker fires unconditionally, the same
+    "nothing recorded yet, so it's due" rule scheduled_run.ps1's own
+    once-a-day marker follows; a same-week rerun is always a no-op, and a
+    marker that is somehow ahead of today (clock skew) does not fire either,
+    since today's week is not newer than what is already recorded.
+    """
+    parsed = _parse_digest_marker(marker_text)
+    if parsed is None:
+        return True
+    return _iso_year_week(today) > parsed
+
+
+def _write_weekly_digest_marker(marker_path: Path, today) -> None:
+    """Write output/last_digest.txt atomically.
+
+    The new content goes to a sibling temp file first, then an OS-level
+    rename replaces the real marker in one step, so a crash mid-write (or a
+    second process reading at the same moment) never observes a
+    half-written marker — either the old content or the new one, never
+    something in between.
+    """
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = marker_path.with_name(marker_path.name + ".tmp")
+    tmp_path.write_text(_format_digest_marker(today), encoding="utf-8")
+    os.replace(tmp_path, marker_path)
+
+
+def _weekly_digest_data(energy_summary: dict, forecast: dict,
+                        voltage_anomalies: pd.DataFrame, episodes: pd.DataFrame,
+                        battery: dict, now: pd.Timestamp) -> dict:
+    """Reduce the pipeline's already-computed summaries to the plain values
+    the weekly digest line is worded from (roadmap item 32). No statistic is
+    computed here — everything is picked straight out of energy_summary
+    (compute_energy_summary), forecast (forecast_period_cost), the anomaly
+    and episode frames already detected earlier in main(), and battery
+    (battery_replace_projection); the two "_7d" counts are filtered to the
+    trailing 7 days ending at `now`, which is the only new work this
+    function does.
+    """
+    data: dict = {
+        "period_kwh": None, "period_cost_tiered": None, "period_partial": False,
+        "forecast_kwh": None, "forecast_cost_tiered": None, "forecast_period_end": None,
+        "voltage_anomalies_7d": 0, "episodes_7d": 0,
+        "battery_status": None, "battery_replace_date": None,
+        "biggest_day_date": None, "biggest_day_kwh": None,
+    }
+
+    monthly = energy_summary.get("monthly") if energy_summary else None
+    if monthly is not None and not monthly.empty:
+        last = monthly.iloc[-1]
+        data["period_kwh"] = float(last["kwh"])
+        data["period_cost_tiered"] = float(last["cost_tiered"])
+        data["period_partial"] = bool(last["partial"])
+
+    if forecast and forecast.get("status") == "projected":
+        data["forecast_kwh"] = forecast["projected_kwh"]
+        data["forecast_cost_tiered"] = forecast["projected_cost_tiered"]
+        data["forecast_period_end"] = forecast["period_end"]
+
+    week_ago = now - pd.Timedelta(days=7)
+    if voltage_anomalies is not None and not voltage_anomalies.empty:
+        data["voltage_anomalies_7d"] = int((voltage_anomalies["ts"] >= week_ago).sum())
+    if episodes is not None and not episodes.empty:
+        # An episode counts toward the trailing window when its end falls
+        # inside it, the same "still-visible tail" rule _window_df already
+        # applies elsewhere to a span straddling a cutoff.
+        data["episodes_7d"] = int((episodes["end"] >= week_ago).sum())
+
+    if battery:
+        data["battery_status"] = battery.get("status")
+        data["battery_replace_date"] = battery.get("replace_date")
+
+    daily = energy_summary.get("daily") if energy_summary else None
+    if daily is not None and not daily.empty:
+        cutoff_date = week_ago.date()
+        recent = daily[daily["date"] >= cutoff_date]
+        if not recent.empty:
+            idx = recent["kwh"].idxmax()
+            data["biggest_day_date"] = recent.loc[idx, "date"]
+            data["biggest_day_kwh"] = float(recent.loc[idx, "kwh"])
+
+    return data
+
+
+def _build_weekly_digest_line(data: dict, now: pd.Timestamp) -> str:
+    """Assemble the one-line weekly digest (roadmap item 32) from the dict
+    _weekly_digest_data produces.
+
+    Pure string formatting: no statistic is computed here either, only
+    chosen and worded. A clause whose underlying number is unavailable is
+    left out entirely rather than guessed or shown as a placeholder, so the
+    line never claims more than the analyzer actually knows this run.
+    """
+    clauses: list[str] = []
+
+    if data.get("period_kwh") is not None:
+        partial = " (partial)" if data.get("period_partial") else ""
+        clauses.append(
+            f"period={data['period_kwh']:.2f} kWh / "
+            f"CRC {data['period_cost_tiered']:,.2f} tiered so far this period{partial}"
+        )
+
+    if data.get("forecast_kwh") is not None:
+        clauses.append(
+            f"forecast=~{data['forecast_kwh']:.2f} kWh / "
+            f"CRC {data['forecast_cost_tiered']:,.2f} tiered "
+            f"by {data['forecast_period_end']:%Y-%m-%d} (projected)"
+        )
+
+    clauses.append(f"voltage_anomalies_7d={data.get('voltage_anomalies_7d', 0)}")
+    clauses.append(f"on_battery_episodes_7d={data.get('episodes_7d', 0)}")
+
+    if data.get("battery_status") == "stable":
+        clauses.append("battery=stable")
+    elif data.get("battery_status") == "projected" and data.get("battery_replace_date") is not None:
+        clauses.append(f"battery=replace ~{data['battery_replace_date']:%Y-%m-%d}")
+
+    if data.get("biggest_day_date") is not None:
+        clauses.append(
+            f"biggest_day_7d={data['biggest_day_date']:%Y-%m-%d} "
+            f"({data['biggest_day_kwh']:.2f} kWh)"
+        )
+
+    return f"{now:%Y-%m-%d %H:%M:%S}  weekly_digest  " + "  ".join(clauses) + "\n"
+
+
+def _maybe_write_weekly_digest(energy_summary: dict, forecast: dict,
+                                voltage_anomalies: pd.DataFrame, episodes: pd.DataFrame,
+                                battery: dict, now: pd.Timestamp) -> Path | None:
+    """Opt-in (config [alerts] enabled AND [alerts] weekly_digest): once per
+    ISO week, append one compact summary line to alerts.log alongside
+    whatever event-driven anomaly line _maybe_write_alerts may also have
+    written this run (roadmap item 32). alerts.log is the digest's only
+    transport — the tray's AlertWatcher toast and item 23's webhook channel
+    then deliver it for free, with no new transport added here. The gate is
+    output/last_digest.txt (config.LAST_DIGEST_MARKER), advanced only after
+    the line is actually appended, so a rerun later the same week is a
+    no-op and a missing marker fires on the next eligible run.
+    """
+    if not (config.ALERTS_ENABLED and config.WEEKLY_DIGEST_ENABLED):
+        return None
+    try:
+        marker_text = config.LAST_DIGEST_MARKER.read_text(encoding="utf-8")
+    except OSError:
+        marker_text = None
+    if not _should_fire_weekly_digest(marker_text, now):
+        return None
+    data = _weekly_digest_data(energy_summary, forecast, voltage_anomalies, episodes,
+                               battery, now)
+    line = _build_weekly_digest_line(data, now)
+    with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
+        f.write(line)
+    _write_weekly_digest_marker(config.LAST_DIGEST_MARKER, now)
     return config.ALERTS_LOG
 
 

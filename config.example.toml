@@ -177,6 +177,19 @@ enabled = false
 # `tray_status.py --clear-webhook-url`. With this true and no URL stored,
 # the tray logs a no-op rather than sending anything. Off by default.
 webhook_enabled = false
+# Roadmap item 32: opt-in weekly digest, riding the same alerts.log transport
+# as everything above (no new transport). Requires enabled = true as well,
+# since alerts.log is its only delivery path. Once per ISO week (a marker
+# file, output/last_digest.txt, makes a rerun later the same week a no-op),
+# the analyzer appends one summary line alongside whatever event-driven
+# anomaly line that run may also have written: kWh and tiered cost so far in
+# the current billing period (worded as partial when the period is still
+# open), the end-of-period cost forecast once enough of the period is
+# recorded (roadmap item 27), the count of voltage anomalies and on-battery
+# episodes in the last 7 days, the battery replace-by status, and the
+# biggest energy day of the last 7 days. A clause is omitted rather than
+# guessed when its number is not available yet. Off by default.
+weekly_digest = false
 
 [archive]
 # PCSS keeps roughly one month of DataLog samples. When enabled (the default),

@@ -214,6 +214,18 @@ ALERTS_LOG = OUTPUT / "alerts.log"
 # rather than sending anything. Off by default.
 WEBHOOK_ENABLED = False
 
+# Weekly digest (roadmap item 32): opt-in on top of ALERTS_ENABLED, since
+# alerts.log is its only transport — the toast and the item-23 webhook then
+# deliver it for free, and this feature must not grow one of its own. Once
+# per ISO week, analyze_ups.py appends one summary line alongside whatever
+# event-driven anomaly line that run may also have written. LAST_DIGEST_MARKER
+# records the ISO (year, week) of the last run that actually appended a
+# digest line, the same directory convention as scheduled_run.ps1's own
+# output/last_scheduled_run.txt, so a same-week rerun is a no-op. Off by
+# default.
+WEEKLY_DIGEST_ENABLED = False
+LAST_DIGEST_MARKER = OUTPUT / "last_digest.txt"
+
 # DataLog archive: PCSS keeps roughly one month of DataLog samples and
 # discards older ones, so each analyzer run appends the freshly loaded rows
 # to monthly CSV partitions under ARCHIVE_DIR and the pipeline merges the
@@ -336,7 +348,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
     global DASHBOARD_THEME, DASHBOARD_MODEL, DASHBOARD_REFRESH_MINUTES, DASHBOARD_LANGUAGE
     global DASHBOARD_MAX_DAYS
-    global ALERTS_ENABLED, WEBHOOK_ENABLED, ARCHIVE_ENABLED
+    global ALERTS_ENABLED, WEBHOOK_ENABLED, WEEKLY_DIGEST_ENABLED, ARCHIVE_ENABLED
 
     if path is None:
         default = Path("config.toml")
@@ -421,6 +433,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     alerts = data.get("alerts", {})
     ALERTS_ENABLED = bool(alerts.get("enabled", ALERTS_ENABLED))
     WEBHOOK_ENABLED = bool(alerts.get("webhook_enabled", WEBHOOK_ENABLED))
+    WEEKLY_DIGEST_ENABLED = bool(alerts.get("weekly_digest", WEEKLY_DIGEST_ENABLED))
     ARCHIVE_ENABLED = bool(data.get("archive", {}).get("enabled", ARCHIVE_ENABLED))
 
     DASHBOARD_HTML = Path(output) if output else (OUTPUT / "dashboard.html")

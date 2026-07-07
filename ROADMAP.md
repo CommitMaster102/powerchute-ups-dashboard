@@ -51,30 +51,14 @@ Shipped so far (details in the archive at the bottom):
 | 30 | Auto theme | `pcss/dashboard.py` (`PALETTES`, `_shell_css`), `pcss/charts.js` (`resolveColor`, `applyTheme`, `cycleTheme`) |
 | 24 | Run the analyzer from the tray | `tray_status.py` (`run_analyzer_now`, `SingleFlightRun`, `analyzer_command`, `wants_no_snapshot`) |
 | 23 | Webhook notification channel | `tray_status.py` (`notify_alert`, `maybe_send_webhook`, `send_webhook`) |
+| 32 | Weekly digest | `analyze_ups.py` (`_maybe_write_weekly_digest`, `_build_weekly_digest_line`) |
 
-## Alerting and automation
+## Active candidates
 
-### 32. Weekly digest
-
-Event-driven alerts (items 14 and 23) say when something happened; a digest
-says that nothing did, on a schedule: kWh and cost so far this billing
-period, the forecast (item 27) once it exists, anomaly and episode counts,
-battery health, and the biggest day of the week. Fatigue-free by
-construction, because it arrives on a cadence rather than a trigger.
-
-Challenges:
-
-- Scheduling ownership: the daily scheduled run already exists
-  (`scheduled_run.ps1`); the digest is a gate — "first run on or after
-  Monday" — with a marker file alongside `output/last_scheduled_run.txt` so
-  reruns do not duplicate it.
-- Delivery: a digest line appended to `alerts.log` gets toasted by
-  `AlertWatcher` today, and the richer destination is item 23's webhook
-  channel. This item must not grow its own transport.
-- The content is summarization, not new math: everything listed already
-  exists in the console summary and `--json`. The work is choosing what a
-  short text message omits, and keeping the wording honest about partial
-  periods and projections.
+None right now — every item proposed so far has shipped. Add new candidates
+here (grouped by theme, as before) when the next idea comes up; read the
+archive below first, since it is the record of what already exists and
+which design decisions were already made.
 
 ## Shipped — implementation archive
 
@@ -1307,3 +1291,63 @@ Challenges:
   repo; the config only says which channel is enabled.
 - Delivery failure must never disturb polling — fire-and-forget with a
   short timeout and a logged error, exactly like the toast path.
+
+### 32. Weekly digest
+
+SHIPPED: opt-in on top of `[alerts] enabled` — a new `[alerts] weekly_digest`
+key (`pcss/config.py`'s `WEEKLY_DIGEST_ENABLED`, documented in
+`config.example.toml`), since alerts.log is the digest's only transport and
+this item was not to grow one of its own. The gate lives in `analyze_ups.py`:
+`_iso_year_week` / `_format_digest_marker` / `_parse_digest_marker` format and
+compare the ISO (year, week) marker `output/last_digest.txt`
+(`config.LAST_DIGEST_MARKER`, the same directory convention as
+`output/last_scheduled_run.txt`), `_should_fire_weekly_digest` fires when
+today's ISO week is newer than the one recorded (a missing or malformed
+marker fires unconditionally; a same-week rerun is always a no-op; a marker
+somehow ahead of today, from clock skew, does not fire either), and
+`_write_weekly_digest_marker` writes it atomically — a sibling temp file,
+then an `os.replace` — so a crash mid-write never leaves a half-written
+marker. The content is pure summarization of numbers the pipeline already
+computed elsewhere; nothing here is a new statistic: `_weekly_digest_data`
+reduces `compute_energy_summary`, `forecast_period_cost` (item 27), the
+voltage-anomaly and on-battery episode frames, and `battery_replace_projection`
+(item 7) into a flat dict — the current billing period's kWh and tiered cost
+(worded as partial when the period is still open), the forecast once enough
+of the period is recorded (worded as a projection), the anomaly and episode
+counts over the trailing 7 days, the battery replace-by status, and the
+biggest energy day of the last 7 days — and `_build_weekly_digest_line` words
+that dict into one compact `alerts.log` line (alongside whatever
+event-driven anomaly line the existing `_maybe_write_alerts` may also have
+written that run), omitting a clause outright rather than guessing when its
+number is unavailable. `_maybe_write_weekly_digest`
+wires the three together — both config flags gate it, then the marker gate,
+then the append and the marker advance, in that order, so the marker only
+moves forward once a digest has actually gone out — reusing the same
+delivery `AlertWatcher`'s toast and item 23's webhook already provide, with no
+new transport added. `tests/test_digest.py` covers all four layers: the
+config default and override, the gate (missing/malformed/same-week/rollover/
+clock-skew markers, and the atomic write), the line assembly (every clause
+present, and each one omitted independently when its underlying number is
+unavailable), and the wiring (`_maybe_write_weekly_digest` requiring both
+flags, and a true `analyze_ups.main()` run proving the digest fires once and
+a same-week rerun is a no-op).
+
+Event-driven alerts (items 14 and 23) say when something happened; a digest
+says that nothing did, on a schedule: kWh and cost so far this billing
+period, the forecast (item 27) once it exists, anomaly and episode counts,
+battery health, and the biggest day of the week. Fatigue-free by
+construction, because it arrives on a cadence rather than a trigger.
+
+Challenges:
+
+- Scheduling ownership: the daily scheduled run already exists
+  (`scheduled_run.ps1`); the digest is a gate — "first run on or after
+  Monday" — with a marker file alongside `output/last_scheduled_run.txt` so
+  reruns do not duplicate it.
+- Delivery: a digest line appended to `alerts.log` gets toasted by
+  `AlertWatcher` today, and the richer destination is item 23's webhook
+  channel. This item must not grow its own transport.
+- The content is summarization, not new math: everything listed already
+  exists in the console summary and `--json`. The work is choosing what a
+  short text message omits, and keeping the wording honest about partial
+  periods and projections.
