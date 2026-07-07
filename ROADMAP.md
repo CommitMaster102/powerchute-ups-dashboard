@@ -38,6 +38,7 @@ Shipped so far (details in the archive at the bottom):
 | 31 | Log-staleness watchdog | `pcss/stats.py` (`assess_staleness`) |
 | 17 | Tariff history with effective dates | `pcss/config.py` (`tariff_rates_for`), `pcss/stats.py` (`compute_energy_summary`) |
 | 27 | End-of-period cost forecast | `pcss/stats.py` (`forecast_period_cost`) |
+| 29 | Bill reconciliation | `pcss/loaders.py` (`load_bills`), `pcss/stats.py` (`reconcile_bills`) |
 
 ## Data and analysis
 
@@ -160,27 +161,6 @@ Challenges:
 - Presentation: a reference-table block is the cheap first step; a dedicated
   bar panel is a new key that must join `PANELS` in `tests/harness.py` with
   the conftest render assertion, so the table should prove the value first.
-
-### 29. Bill reconciliation
-
-The dashboard prices UPS-metered energy, but the bill covers the whole
-house. Recording actual bills (period, kWh, amount) in a small user-owned
-file would show the UPS share of household consumption per period and
-validate the tariff arithmetic against a real invoice instead of assuming
-it.
-
-Challenges:
-
-- Entry ergonomics: a `bills.csv` next to `config.toml` (or `[[bills]]`
-  entries in it), tolerant of missing periods — reconciliation is opt-in per
-  bill, not a required habit.
-- Alignment: entered periods must snap to the bounds from
-  `_billing_period_bounds` in `pcss/stats.py`; a start-day mismatch should
-  be reported, never silently mis-joined.
-- Honest labeling: the UPS sees only its own outlets, so "share of household
-  consumption" must not read as if a household meter exists.
-- Synergy with item 17: a real bill pins the effective rates for its period,
-  so reconciliation data can seed or verify the tariff history.
 
 ## Dashboard and interaction
 
@@ -865,3 +845,52 @@ Challenges:
 - Where it lands: a new function in `pcss/stats.py` next to
   `compute_energy_summary`, feeding the `_panel_cmp` subtitle in
   `pcss/dashboard.py`.
+
+### 29. Bill reconciliation
+
+SHIPPED: a user-owned `bills.csv` (`period_start`, `kwh`, `amount_crc`,
+header row required) next to `config.toml`, path configurable via
+`[paths] bills_file` (`pcss/config.py`'s `BILLS_FILE`, defaulting to
+`bills.csv` in the repo root). `pcss/loaders.py`'s `load_bills` reads it
+defensively — a missing file silently disables the feature with no warning
+at all, a missing required column ignores the whole file, and a row with an
+unparseable date or a non-numeric `kwh`/`amount_crc` is reported by line
+number and skipped — the analyzer never crashes on this file and never
+writes it. `pcss/stats.py`'s `reconcile_bills` joins the parsed rows against
+`compute_energy_summary`'s own per-billing-period UPS kWh: a bill's
+`period_start` must equal, exactly, the boundary `_billing_period_start`
+computes for the configured `billing_cycle_start_day`, or the entry is
+reported — naming the entry and the nearest valid boundary — and excluded
+rather than silently joined to the wrong period; a period that aligns but
+has no matching UPS energy data is likewise reported and excluded. Each
+reconciled period reports `ups_kwh`, `billed_kwh`, `share_pct` (worded
+everywhere as "the UPS-metered share of the billed consumption" — the UPS
+sees only its own outlets, never a whole-house meter), `ups_cost_tiered`,
+the billed amount, the bill's own implied rate (`amount_crc / kwh`), and the
+tariff's own effective rates for that period via `config.tariff_rates_for`
+(item 17, reused rather than duplicated). Surfaced as a console "BILL
+RECONCILIATION" section, a "Bill Reconciliation" reference table on the
+dashboard (`pcss/dashboard.py`, localized via `_STRINGS_ES`), and a `bills`
+key in the `--json` summary — all three appear only when at least one bill
+actually reconciles, so the feature is invisible to anyone who never creates
+the file. `bills.example.csv` documents the shape; `bills.csv` itself is
+gitignored, like `credentials.txt`. `tests/test_bills.py`.
+
+The dashboard prices UPS-metered energy, but the bill covers the whole
+house. Recording actual bills (period, kWh, amount) in a small user-owned
+file would show the UPS share of household consumption per period and
+validate the tariff arithmetic against a real invoice instead of assuming
+it.
+
+Challenges:
+
+- Entry ergonomics: a `bills.csv` next to `config.toml` (or `[[bills]]`
+  entries in it), tolerant of missing periods — reconciliation is opt-in per
+  bill, not a required habit.
+- Alignment: entered periods must snap to the bounds from
+  `_billing_period_bounds` in `pcss/stats.py`; a start-day mismatch should
+  be reported, never silently mis-joined.
+- Honest labeling: the UPS sees only its own outlets, so "share of household
+  consumption" must not read as if a household meter exists.
+- Synergy with item 17: a real bill pins the effective rates for its period,
+  so reconciliation data can seed or verify the tariff history.

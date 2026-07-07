@@ -6,6 +6,17 @@
 [paths]
 # Where PCSS writes its logs. Change if PCSS is reinstalled elsewhere.
 pcss_agent = 'C:\Program Files\APC\PowerChute Serial Shutdown\agent'
+# Path to a user-owned CSV of actual whole-house bills, for bill
+# reconciliation against the analyzer's own tariff arithmetic (roadmap item
+# 29). Columns: period_start (YYYY-MM-DD, must exactly match a
+# billing-period start for billing_cycle_start_day below), kwh (the billed
+# kWh for the whole house), amount_crc (the billed amount); header row
+# required. See bills.example.csv for the exact shape. Defaults to
+# bills.csv in the repo root; a missing file simply disables the feature —
+# reconciliation is opt-in per bill, not a required habit. The analyzer only
+# ever reads this file; it is personal data, like credentials.txt, and is
+# gitignored.
+bills_file = 'bills.csv'
 
 [tariff]                 # CRC per kWh; Coopesantos T-RE Residencial.
 coopesantos_low  = 78.17 # first `tier_limit_kwh` per billing period

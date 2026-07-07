@@ -30,6 +30,7 @@ from pcss.eventlog import (
 from pcss.loaders import (
     append_datalog_archive,
     history_summary,
+    load_bills,
     load_datalog,
     load_datalog_archive,
     load_energylog,
@@ -49,6 +50,7 @@ from pcss.stats import (
     detect_voltage_anomalies,
     estimate_runtime,
     forecast_period_cost,
+    reconcile_bills,
 )
 
 __version__ = "1.0.0"
@@ -295,6 +297,29 @@ def main(argv: list[str] | None = None) -> int:
             say(f"  Forecast: not enough of the period recorded yet "
                 f"({forecast['evidence_days']}/{forecast['min_days']:.0f} days) — no projection.")
 
+    # Bill reconciliation (roadmap item 29): a user-owned bills.csv is opt-in
+    # and, missing, disables the feature with no warning at all. A malformed
+    # row or a period_start that does not align to a billing-period boundary
+    # is reported here unconditionally (like the DataLog malformed-row
+    # warning above) so a data problem is visible even under --quiet; the
+    # reconciled-periods section itself, the dashboard table, and the --json
+    # key all stay absent unless at least one bill actually reconciles.
+    bills_df, bill_load_warnings = load_bills()
+    for msg in bill_load_warnings:
+        print(f"  [warn] {msg}")
+    reconciled_bills, bill_align_warnings = reconcile_bills(bills_df, energy_summary)
+    for msg in bill_align_warnings:
+        print(f"  [warn] {msg}")
+    if not reconciled_bills.empty:
+        section("BILL RECONCILIATION")
+        for row in reconciled_bills.itertuples(index=False):
+            say(f"  {row.period}: UPS {row.ups_kwh:.4f} kWh / billed {row.billed_kwh:.4f} kWh "
+                f"({row.share_pct:.1f}% UPS-metered share of the billed consumption)")
+            say(f"    UPS cost (tiered) CRC {row.ups_cost_tiered:,.2f}   "
+                f"billed CRC {row.billed_amount_crc:,.2f}   "
+                f"implied rate CRC {row.implied_rate_crc_per_kwh:,.2f}/kWh   "
+                f"vs tariff CRC {row.tariff_low:g}/{row.tariff_high:g} ({row.rate_tag})")
+
     section("ANOMALIES & EVENTS")
     voltage_anomalies = detect_voltage_anomalies(datalog_df)
     say(f"  Voltage out of {config.VOLTAGE_NORMAL_LOW}-{config.VOLTAGE_NORMAL_HIGH}V envelope: "
@@ -410,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_json_summary(args.json, sizes, dl_stats, hist_stats, energy_summary,
                             voltage_anomalies, high_load, on_battery, gaps, crossval,
                             archive_df, archive_added, battery,
-                            events_df, ev_status, ev_spans, forecast)
+                            events_df, ev_status, ev_spans, forecast, reconciled_bills)
         say(f"  Wrote JSON summary to {args.json}")
 
     events_summary = None
@@ -426,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     html = build_dashboard(
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
         stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
-        events_summary, staleness, forecast,
+        events_summary, staleness, forecast, reconciled_bills,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
@@ -455,10 +480,31 @@ def _periods_for_json(monthly: pd.DataFrame) -> list[dict]:
     ]
 
 
+def _bills_for_json(reconciled: pd.DataFrame) -> list[dict]:
+    """The reconciled-bills table (roadmap item 29) as plain dicts for
+    --json — only meaningful (and only called) once at least one bill
+    reconciles, so the key is simply absent otherwise."""
+    cols = ["period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
+            "billed_amount_crc", "implied_rate_crc_per_kwh",
+            "tariff_low", "tariff_high", "tariff_flat", "rate_tag", "partial"]
+    return [
+        {"period": period, "ups_kwh": ups_kwh, "billed_kwh": billed_kwh,
+         "share_pct": share_pct, "ups_cost_tiered": ups_cost_tiered,
+         "billed_amount_crc": billed_amount_crc,
+         "implied_rate_crc_per_kwh": implied_rate, "tariff_low": tariff_low,
+         "tariff_high": tariff_high, "tariff_flat": tariff_flat, "rate_tag": rate_tag,
+         "partial": bool(partial)}
+        for (period, ups_kwh, billed_kwh, share_pct, ups_cost_tiered, billed_amount_crc,
+             implied_rate, tariff_low, tariff_high, tariff_flat, rate_tag, partial)
+        in reconciled[cols].itertuples(index=False, name=None)
+    ]
+
+
 def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
                         voltage_anomalies, high_load, on_battery, gaps, crossval,
                         archive_df, archive_added, battery,
-                        events_df, ev_status, ev_spans, forecast=None) -> None:
+                        events_df, ev_status, ev_spans, forecast=None,
+                        reconciled_bills=None) -> None:
     """Structured machine-readable summary for external tooling (--json)."""
     energy_json = {k: energy_summary.get(k) for k in
                    ("total_kwh", "total_cost_pcss", "total_cost_tiered", "total_co2_kg",
@@ -497,6 +543,8 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
             "on_battery_events": int(len(ev_spans)),
         },
     }
+    if reconciled_bills is not None and not reconciled_bills.empty:
+        summary["bills"] = _bills_for_json(reconciled_bills)
     Path(path).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
 
 

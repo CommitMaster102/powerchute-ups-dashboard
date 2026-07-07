@@ -12,7 +12,7 @@ import contextlib
 import csv
 import io
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -123,6 +123,62 @@ def load_energylog(energylog_dir: Path | None = None) -> tuple[pd.DataFrame, lis
         return pd.DataFrame(), metas
     df = pd.DataFrame(all_rows).sort_values("ts").reset_index(drop=True)
     return df, metas
+
+
+# ======================================================================
+# Bill reconciliation (roadmap item 29) — a user-owned bills.csv
+# ======================================================================
+_BILLS_COLUMNS = ["period_start", "kwh", "amount_crc"]
+
+
+def load_bills(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
+    """Load the user-owned bills.csv: period_start (YYYY-MM-DD), kwh (billed
+    kWh for the whole house), amount_crc (billed amount), header row
+    required.
+
+    This file holds hand-entered personal data, so it is read defensively.
+    A missing file simply disables bill reconciliation — reconciliation is
+    opt-in per bill, not a required habit — and returns an empty frame with
+    no warnings at all. A file missing one of the required columns is
+    reported and ignored in full. A row with an unparseable period_start or
+    a non-numeric kwh/amount_crc is reported (naming the line and, where
+    possible, the offending value) and skipped; the analyzer never crashes
+    on this file. The file is only ever read here, never written.
+    """
+    path = path or config.BILLS_FILE
+    if not path.exists():
+        return pd.DataFrame(columns=_BILLS_COLUMNS), []
+
+    warnings: list[str] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        missing = set(_BILLS_COLUMNS) - set(reader.fieldnames or [])
+        if missing:
+            warnings.append(
+                f"bills file {path}: missing required column(s) "
+                f"{', '.join(sorted(missing))}; the file is ignored")
+            return pd.DataFrame(columns=_BILLS_COLUMNS), warnings
+
+        rows: list[dict] = []
+        for line_no, row in enumerate(reader, start=2):  # header occupies line 1
+            raw_date = (row.get("period_start") or "").strip()
+            try:
+                period_start = date.fromisoformat(raw_date)
+            except ValueError:
+                warnings.append(
+                    f"bills file line {line_no}: invalid period_start "
+                    f"{raw_date!r} (expected YYYY-MM-DD); row skipped")
+                continue
+            try:
+                kwh = float(row.get("kwh", ""))
+                amount_crc = float(row.get("amount_crc", ""))
+            except (TypeError, ValueError):
+                warnings.append(
+                    f"bills file line {line_no} ({raw_date}): non-numeric "
+                    "kwh or amount_crc; row skipped")
+                continue
+            rows.append({"period_start": period_start, "kwh": kwh, "amount_crc": amount_crc})
+    return pd.DataFrame(rows, columns=_BILLS_COLUMNS), warnings
 
 
 # ======================================================================

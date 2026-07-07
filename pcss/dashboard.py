@@ -206,6 +206,10 @@ _STRINGS_ES = {
     "by": "para",
     "tier limit already exceeded": "límite de franja ya superado",
     "tier crosses": "cruza el límite de franja",
+    "Bill Reconciliation": "Conciliación de facturas",
+    "UPS-metered share of the billed consumption":
+        "proporción medida por el UPS del consumo facturado",
+    "Share": "Proporción",
 }
 
 
@@ -848,6 +852,44 @@ def _periods_table_html(monthly: pd.DataFrame | None) -> str:
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 
+def _bills_table_html(reconciled: pd.DataFrame | None) -> str:
+    """Bill reconciliation table (roadmap item 29): for each period where a
+    user-entered bills.csv row lines up with the analyzer's own
+    per-billing-period UPS kWh, the UPS-metered share of the billed
+    consumption next to the bill's own implied rate and the tariff's
+    effective rates for that period (config.tariff_rates_for, item 17,
+    reused rather than duplicated). Only rendered once at least one bill
+    reconciles (build_dashboard gates the whole block on that), so the page
+    is unchanged for anyone who never uses bills.csv."""
+    if reconciled is None or reconciled.empty:
+        return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
+    head_cols = [_L("Period"), "UPS kWh", "Billed kWh", f"{_L('Share')} %",
+                 f"{_L('Tiered')} ₡", "Billed ₡", "₡/kWh", _L("Notes")]
+    head = "".join(f'<th class="{"tl" if i == 0 else "tr"}">{_esc(c)}</th>' for i, c in enumerate(head_cols))
+    rows = []
+    cols = ["period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
+            "billed_amount_crc", "implied_rate_crc_per_kwh", "tariff_low", "tariff_high",
+            "rate_tag", "partial"]
+    for (period, ups_kwh, billed_kwh, share_pct, ups_cost_tiered, billed_amount_crc,
+         implied_rate, tariff_low, tariff_high, rate_tag, partial) in reconciled[
+             cols].itertuples(index=False, name=None):
+        notes = [_L("partial")] if partial else []
+        notes.append(f"{_rate_tag_label(rate_tag)} (₡{tariff_low:g}/₡{tariff_high:g})")
+        cells = "".join([
+            f'<td class="tl hi">{_esc(period)}</td>',
+            f'<td class="tr">{ups_kwh:.4f}</td>',
+            f'<td class="tr">{billed_kwh:.4f}</td>',
+            f'<td class="tr">{share_pct:.1f}</td>',
+            f'<td class="tr">{ups_cost_tiered:,.2f}</td>',
+            f'<td class="tr">{billed_amount_crc:,.2f}</td>',
+            f'<td class="tr">{implied_rate:,.2f}</td>',
+            f'<td class="tr">{_esc(" · ".join(notes))}</td>',
+        ])
+        rows.append(f"<tr>{cells}</tr>")
+    return (f'<table class="stats-table"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>')
+
+
 def _stats_table_html(stats_table: pd.DataFrame) -> str:
     if stats_table.empty:
         return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
@@ -1098,7 +1140,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     battery: dict | None = None,
                     events_summary: dict | None = None,
                     staleness: dict | None = None,
-                    forecast: dict | None = None) -> str:
+                    forecast: dict | None = None,
+                    bill_reconciliation: pd.DataFrame | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
@@ -1241,6 +1284,22 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             '  </div>'
         )
 
+    # The Bill Reconciliation table only exists once at least one bills.csv
+    # entry reconciles (roadmap item 29) — with none, this stays "" so the
+    # page is unchanged for anyone who never uses bills.csv.
+    bills_block = ""
+    if bill_reconciliation is not None and not bill_reconciliation.empty:
+        bills_block = (
+            '  <div class="grid12">\n'
+            '    <div class="card table-card s12">\n'
+            f'      <div class="card-title">{_esc(_L("Bill Reconciliation"))}</div>\n'
+            f'      <div class="card-sub" style="margin-bottom:12px">'
+            f'{_esc(_L("UPS-metered share of the billed consumption"))}</div>\n'
+            f'      {_bills_table_html(bill_reconciliation)}\n'
+            '    </div>\n'
+            '  </div>'
+        )
+
     def _card(key, span_, title, sub, zoomable, sub_color=None, anomaly_nav=0):
         return _chart_card(key, span_, title, sub, zoomable, sub_color,
                            sr_text=_sr_text(panels.get(key)), anomaly_nav=anomaly_nav)
@@ -1296,6 +1355,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     {_card('wk', 5, _L('Weekday vs Weekend'), _L('mean W by hour'), False)}
   </div>
 {periods_block}
+{bills_block}
   {_section_head(_L('Logs & Storage'), growth_note)}
   <div class="grid12">
     {_card('growth', 6, _L('Log File Growth'), 'KB', True)}

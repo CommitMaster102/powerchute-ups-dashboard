@@ -7,6 +7,9 @@ output/
 # Secrets — localhost-only plaintext fallback; never commit
 credentials.txt
 
+# Personal bill data for reconciliation (roadmap item 29); never commit
+bills.csv
+
 # Local source backups
 backup/
 

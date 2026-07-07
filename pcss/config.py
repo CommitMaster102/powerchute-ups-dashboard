@@ -25,6 +25,13 @@ OUTPUT.mkdir(parents=True, exist_ok=True)
 SIZE_HISTORY_CSV = OUTPUT / "size_history.csv"
 DASHBOARD_HTML = OUTPUT / "dashboard.html"
 
+# User-owned bill records for reconciliation (roadmap item 29): a CSV with
+# columns period_start, kwh, amount_crc, next to config.toml at the repo
+# root by default. The analyzer only ever reads this file, never writes it.
+# A missing file simply disables the feature — bill reconciliation is opt-in
+# per bill, not a required habit.
+BILLS_FILE = Path(__file__).resolve().parent.parent / "bills.csv"
+
 # Coopesantos T-RE Residencial 2026 structural rates (CRC per kWh).
 # First 200 kWh/month at LOW_RATE, anything beyond at HIGH_RATE.
 COOPESANTOS_TIER_LIMIT_KWH = 200.0
@@ -246,7 +253,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     object through every function. Returns the config path that was used (or
     None). When `path` is None, falls back to ./config.toml if it exists.
     """
-    global PCSS_AGENT, DATALOG, EVENTLOG, ENERGYLOG_DIR, DASHBOARD_HTML
+    global PCSS_AGENT, DATALOG, EVENTLOG, ENERGYLOG_DIR, DASHBOARD_HTML, BILLS_FILE
     global COOPESANTOS_TIER_LIMIT_KWH, COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, PCSS_FLAT_RATE
     global BILLING_CYCLE_START_DAY, TARIFF_HISTORY, FORECAST_MIN_DAYS
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
@@ -279,6 +286,10 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     DATALOG = PCSS_AGENT / "DataLog"
     EVENTLOG = PCSS_AGENT / "EventLog"
     ENERGYLOG_DIR = PCSS_AGENT / "energylog"
+
+    bills_file = paths.get("bills_file")
+    if bills_file:
+        BILLS_FILE = Path(bills_file)
 
     COOPESANTOS_LOW_RATE = float(tariff.get("coopesantos_low", COOPESANTOS_LOW_RATE))
     COOPESANTOS_HIGH_RATE = float(tariff.get("coopesantos_high", COOPESANTOS_HIGH_RATE))

@@ -466,6 +466,94 @@ def forecast_period_cost(energy_summary: dict, *, min_days: float | None = None)
     return out
 
 
+_BILL_RECONCILE_COLUMNS = [
+    "period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
+    "billed_amount_crc", "implied_rate_crc_per_kwh",
+    "tariff_low", "tariff_high", "tariff_flat", "rate_tag", "partial",
+]
+
+
+def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.DataFrame, list[str]]:
+    """Join a user-owned bills.csv (roadmap item 29) against the analyzer's
+    own per-billing-period UPS kWh, to answer what share of a real,
+    whole-house bill the UPS's own outlets account for — the UPS-metered
+    share of the billed consumption, never a household total, since the UPS
+    has no visibility into any circuit but its own.
+
+    Each bill's period_start must equal, exactly, the billing-period start
+    that `_billing_period_start` computes for `config.BILLING_CYCLE_START_DAY`.
+    A mismatch is reported — naming the entry and the nearest valid boundary
+    at or before it — and excluded rather than silently joined to the wrong
+    period. A bill that aligns but has no matching row in
+    `compute_energy_summary`'s "monthly" frame (no UPS energy data recorded
+    for that period) is likewise reported and excluded. Neither case raises;
+    the analyzer never crashes on this file.
+
+    Returns (reconciled, warnings). reconciled has one row per successfully
+    joined bill: period, ups_kwh, billed_kwh, share_pct (the UPS-metered
+    share of the billed consumption, in percent), ups_cost_tiered (the
+    analyzer's own Coopesantos-tiered cost for the period), billed_amount_crc,
+    implied_rate_crc_per_kwh (amount_crc / kwh — the bill's own blended
+    rate), the tariff's own effective rates for the period (tariff_low,
+    tariff_high, tariff_flat, rate_tag — config.tariff_rates_for, item 17,
+    reused rather than duplicated), and partial (whether the analyzer's own
+    coverage of that period was incomplete, from compute_energy_summary).
+    """
+    empty = pd.DataFrame(columns=_BILL_RECONCILE_COLUMNS)
+    warnings: list[str] = []
+    if bills_df is None or bills_df.empty:
+        return empty, warnings
+
+    start_day = int(getattr(config, "BILLING_CYCLE_START_DAY", 1))
+    monthly = energy_summary.get("monthly") if energy_summary else None
+    if monthly is None or monthly.empty:
+        for row in bills_df.itertuples(index=False):
+            warnings.append(
+                f"bill for {row.period_start}: the analyzer has no UPS "
+                "energy data for this period; excluded from reconciliation")
+        return empty, warnings
+
+    monthly = monthly.set_index("month")
+    records: list[dict] = []
+    for row in bills_df.itertuples(index=False):
+        period_start = row.period_start
+        expected = _billing_period_start(pd.Timestamp(period_start), start_day).date()
+        if expected != period_start:
+            warnings.append(
+                f"bill entry {period_start}: does not align to a "
+                f"billing-period start (nearest valid boundary is "
+                f"{expected}); excluded from reconciliation")
+            continue
+        label = f"{period_start:%Y-%m}" if start_day <= 1 else f"{period_start:%Y-%m-%d}"
+        if label not in monthly.index:
+            warnings.append(
+                f"bill for {period_start}: the analyzer has no UPS energy "
+                "data for this period; excluded from reconciliation")
+            continue
+        m = monthly.loc[label]
+        billed_kwh = float(row.kwh)
+        ups_kwh = float(m["kwh"])
+        low, high, _tier_limit, flat, rate_tag = config.tariff_rates_for(period_start)
+        records.append({
+            "period": label,
+            "ups_kwh": ups_kwh,
+            "billed_kwh": billed_kwh,
+            "share_pct": (ups_kwh / billed_kwh * 100.0) if billed_kwh else float("nan"),
+            "ups_cost_tiered": float(m["cost_tiered"]),
+            "billed_amount_crc": float(row.amount_crc),
+            "implied_rate_crc_per_kwh": (
+                float(row.amount_crc) / billed_kwh if billed_kwh else float("nan")),
+            "tariff_low": low,
+            "tariff_high": high,
+            "tariff_flat": flat,
+            "rate_tag": rate_tag,
+            "partial": bool(m["partial"]),
+        })
+    if not records:
+        return empty, warnings
+    return pd.DataFrame(records, columns=_BILL_RECONCILE_COLUMNS), warnings
+
+
 def compute_tiered_cost(kwh: float, *, low: float | None = None, high: float | None = None,
                         tier_limit: float | None = None) -> float:
     """Coopesantos T-RE Residencial: first tier_limit kWh at low, rest at
