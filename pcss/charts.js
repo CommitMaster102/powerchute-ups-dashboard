@@ -373,6 +373,11 @@
         svgEl("rect", { x: lx - 3, y: p.t - 18, width: 26 + s.name.length * 6.7, height: 18, fill: "transparent" }, g);
         g.addEventListener("click", ev => {
           ev.stopPropagation();
+          // A legend toggle on the inspected panel can change which series
+          // is "first visible" (inspectRefSeries), silently re-targeting the
+          // walking index against a different array — simplest clean
+          // semantics is to just exit inspect mode on that toggle.
+          if (INSPECT && INSPECT.key === key) exitInspect();
           if (st.hidden.has(si)) st.hidden.delete(si); else st.hidden.add(si);
           if (st.hidden.size === spec.series.length) st.hidden.delete(si); // never hide everything
           rerenderPanel(key);
@@ -635,6 +640,11 @@
     if (!st) return;
     st.views.forEach(v => renderView(v));
     updateResetPill(key);
+    // A re-render replaces the SVG wholesale (fresh, empty overlay), so a
+    // panel under keyboard inspect (e.g. after a +/-/0 zoom key) needs its
+    // crosshair/tooltip re-shown at the same sample or it goes stale until
+    // the next step.
+    if (INSPECT && INSPECT.key === key) showInspectSample(key);
   }
   function renderView(view) {
     const spec = view.spec;
@@ -919,6 +929,11 @@
     cont.addEventListener("pointermove", ev => {
       const st = STATE[key], spec = st.spec;
       if (!view.geom || !view.svg) return;
+      // Inspect mode follows the panel: hovering a DIFFERENT panel than the
+      // one being inspected drops the mode rather than leaving its cue
+      // orphaned while arrows silently act elsewhere (same key — e.g. moving
+      // the mouse inside that panel's own lightbox view — is not a move).
+      if (INSPECT && INSPECT.key !== key) exitInspect();
       ACTIVE_KEY = key;
       const pt = vbPoint(view, ev);
       const g = view.geom;
@@ -1002,7 +1017,10 @@
 
     // Keyboard focus (tabindex on the chart box) targets the shortcuts at
     // this panel without needing mouse hover.
-    cont.addEventListener("focus", () => { ACTIVE_KEY = key; });
+    cont.addEventListener("focus", () => {
+      if (INSPECT && INSPECT.key !== key) exitInspect();
+      ACTIVE_KEY = key;
+    });
 
     cont.addEventListener("pointerdown", ev => {
       const st = STATE[key], spec = st.spec;

@@ -7,7 +7,7 @@ Bar, heatmap, and the event timeline are deliberately not inspectable — their
 from __future__ import annotations
 
 import pytest
-from harness import xwin
+from harness import hover_panel, xwin
 
 pytestmark = pytest.mark.e2e
 
@@ -144,3 +144,117 @@ def test_non_line_panels_are_not_inspectable(dash, key):
     dash.keyboard.press("Enter")
     dash.wait_for_timeout(60)
     assert _inspect(dash) is None
+
+
+def test_inspect_exits_when_hover_moves_to_another_panel(dash):
+    # Finding 1: inspect mode must follow the panel. Entering it on "lv" and
+    # then hovering a different panel should drop the mode entirely — the
+    # cue disappears from "lv" and the arrow keys resume acting on "ul".
+    # Zoom "ul" to a mid-range window first: panning right from the full
+    # window immediately clamps back to full and would pass even unguarded
+    # (see the same caveat in test_arrows_do_not_pan_while_inspecting above).
+    dash.evaluate("(() => { const f = __chartsDebug.fullXwin('ul');"
+                  "__chartsDebug.setWindow(f[0] + (f[1]-f[0])*0.3, f[0] + (f[1]-f[0])*0.7); })()")
+    dash.wait_for_timeout(60)
+    # hover_panel dispatches a real pointermove every call (unlike .focus(),
+    # which is a no-op re-firing on an already-focused element), so it is
+    # what reliably (re-)establishes ACTIVE_KEY here regardless of whichever
+    # panel a previous test happened to leave focused on this shared page.
+    hover_panel(dash, "lv")
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is not None
+    hover_panel(dash, "ul")
+    assert _inspect(dash) is None
+    assert not dash.locator("#panel-lv").evaluate("el => el.classList.contains('is-inspecting')")
+    assert dash.locator('.inspect-badge[data-panel="lv"]').evaluate("el => el.hidden")
+    win_before = xwin(dash, "ul")
+    dash.keyboard.press("ArrowRight")
+    dash.wait_for_timeout(60)
+    assert xwin(dash, "ul") != win_before, "arrows did not resume panning the newly active panel"
+
+
+def test_inspect_exits_when_focus_moves_to_another_panel(dash):
+    # Same as above, but via keyboard Tab (focus) rather than mouse hover.
+    hover_panel(dash, "lv")
+    dash.locator("#panel-lv").focus()
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is not None
+    dash.locator("#panel-ul").focus()
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is None
+    assert not dash.locator("#panel-lv").evaluate("el => el.classList.contains('is-inspecting')")
+    assert dash.locator('.inspect-badge[data-panel="lv"]').evaluate("el => el.hidden")
+
+
+def test_inspect_survives_hover_of_the_same_panel_lightbox(dash):
+    # Guardrail for the lightbox path named in the finding: opening the
+    # lightbox for the panel already being inspected and moving the mouse
+    # inside it must NOT exit inspect mode (same key, not a different panel).
+    hover_panel(dash, "lv")
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is not None
+    dash.evaluate("__chartsDebug.openLightbox('lv')")
+    dash.wait_for_timeout(60)
+    box = dash.locator("#lightbox-chart svg").bounding_box()
+    dash.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is not None
+    assert _inspect(dash)["key"] == "lv"
+
+
+def test_zoom_key_during_inspect_resyncs_tooltip(dash):
+    # Finding 2: +/-/0 during inspect re-render the SVG (a fresh, empty
+    # overlay) without re-invoking the inspect tooltip/crosshair — fixed by
+    # re-showing the inspected sample after the re-render.
+    hover_panel(dash, "lv")
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    dash.keyboard.press("ArrowRight")
+    dash.wait_for_timeout(60)
+    idx_before = _inspect(dash)["idx"]
+    hov_before = dash.evaluate("__chartsDebug.hover('lv')")
+    dash.keyboard.press("+")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash)["idx"] == idx_before, "a zoom key must not itself step the sample"
+    hov_after = dash.evaluate("__chartsDebug.hover('lv')")
+    assert hov_after is not None and hov_after["ts"] == hov_before["ts"]
+    overlay_children = dash.evaluate(
+        "document.querySelector('#panel-lv .chart-overlay').children.length")
+    assert overlay_children > 0, "crosshair did not re-sync after a zoom key during inspect"
+    tt = dash.locator(".chart-tooltip:not(.is-pinned)")
+    assert not tt.evaluate("el => el.hidden"), "tooltip went stale/hidden after a zoom key during inspect"
+
+
+def test_reset_key_during_inspect_resyncs_tooltip(dash):
+    # Same as above for the "0" reset-zoom key.
+    dash.evaluate("(() => { const f = __chartsDebug.fullXwin('lv');"
+                  "__chartsDebug.setWindow(f[0] + (f[1]-f[0])*0.3, f[0] + (f[1]-f[0])*0.7); })()")
+    dash.wait_for_timeout(60)
+    hover_panel(dash, "lv")
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    dash.keyboard.press("0")
+    dash.wait_for_timeout(60)
+    overlay_children = dash.evaluate(
+        "document.querySelector('#panel-lv .chart-overlay').children.length")
+    assert overlay_children > 0, "crosshair did not re-sync after the reset-zoom key during inspect"
+
+
+def test_legend_toggle_exits_inspect_mode(dash):
+    # Finding 3: toggling the inspected panel's own legend can re-target the
+    # walking reference series against a different array — simplest clean
+    # semantics is to just exit inspect mode on that toggle.
+    hover_panel(dash, "bv")
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is not None
+    assert _inspect(dash)["key"] == "bv"
+    dash.evaluate("document.querySelectorAll('#panel-bv .legend-chip')[0]"
+                  ".dispatchEvent(new MouseEvent('click', {bubbles: true}))")
+    dash.wait_for_timeout(80)
+    assert _inspect(dash) is None
+    assert not dash.locator("#panel-bv").evaluate("el => el.classList.contains('is-inspecting')")
+    assert dash.locator('.inspect-badge[data-panel="bv"]').evaluate("el => el.hidden")
