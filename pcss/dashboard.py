@@ -193,6 +193,13 @@ _STRINGS_ES = {
     "chart": "gráfico",
     "Data feed stale": "Fuente de datos desactualizada",
     "no new samples in": "sin muestras nuevas en",
+    "Billing Periods": "Períodos de facturación",
+    "Period": "Período",
+    "Tiered": "Escalonado",
+    "Notes": "Notas",
+    "partial": "parcial",
+    "current rates": "tarifas actuales",
+    "rates from": "tarifas desde",
 }
 
 
@@ -774,6 +781,44 @@ def _kpi_row_html(cards: list[dict]) -> str:
     return "".join(out)
 
 
+def _rate_tag_label(tag: str) -> str:
+    """Localize a rate-tag string from config.tariff_rates_for ("current
+    rates" or "rates from YYYY-MM-DD"). The date suffix itself stays
+    unlocalized, like every other date and number on the dashboard."""
+    prefix = "rates from "
+    if tag.startswith(prefix):
+        return f"{_L('rates from')} {tag[len(prefix):]}"
+    return _L(tag)
+
+
+def _periods_table_html(monthly: pd.DataFrame | None) -> str:
+    """Per-billing-period cost breakdown — the same figures the console
+    prints, tagged with which rates priced each period. Only rendered once
+    [[tariff.history]] entries are configured (build_dashboard gates the
+    whole card on that, so the page is unchanged without it)."""
+    if monthly is None or monthly.empty or "rate_tag" not in monthly.columns:
+        return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
+    head_cols = [_L("Period"), "kWh", "PCSS ₡", f"{_L('Tiered')} ₡", "CO₂ kg", _L("Notes")]
+    head = "".join(f'<th class="{"tl" if i == 0 else "tr"}">{_esc(c)}</th>' for i, c in enumerate(head_cols))
+    rows = []
+    for month, kwh, cost_pcss, cost_tiered, co2_kg, partial, rate_tag in monthly[
+        ["month", "kwh", "cost_pcss", "cost_tiered", "co2_kg", "partial", "rate_tag"]
+    ].itertuples(index=False, name=None):
+        notes = [_L("partial")] if partial else []
+        notes.append(_rate_tag_label(rate_tag))
+        cells = "".join([
+            f'<td class="tl hi">{_esc(month)}</td>',
+            f'<td class="tr">{kwh:.4f}</td>',
+            f'<td class="tr">{cost_pcss:,.2f}</td>',
+            f'<td class="tr">{cost_tiered:,.2f}</td>',
+            f'<td class="tr">{co2_kg:.4f}</td>',
+            f'<td class="tr">{_esc(" · ".join(notes))}</td>',
+        ])
+        rows.append(f"<tr>{cells}</tr>")
+    return (f'<table class="stats-table"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>')
+
+
 def _stats_table_html(stats_table: pd.DataFrame) -> str:
     if stats_table.empty:
         return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
@@ -1149,6 +1194,21 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         refresh_tag = ('\n<meta http-equiv="refresh" '
                        f'content="{int(config.DASHBOARD_REFRESH_MINUTES * 60)}">')
 
+    # The Billing Periods table only exists once [[tariff.history]] entries
+    # are configured — with no history this stays "" so the page is
+    # byte-identical to before this feature existed (see the template below,
+    # where the blank line either side still renders with no history).
+    periods_block = ""
+    if energy_summary and energy_summary.get("tariff_history_active"):
+        periods_block = (
+            '  <div class="grid12">\n'
+            '    <div class="card table-card s12">\n'
+            f'      <div class="card-title" style="margin-bottom:12px">{_esc(_L("Billing Periods"))}</div>\n'
+            f'      {_periods_table_html(energy_summary.get("monthly"))}\n'
+            '    </div>\n'
+            '  </div>'
+        )
+
     def _card(key, span_, title, sub, zoomable, sub_color=None, anomaly_nav=0):
         return _chart_card(key, span_, title, sub, zoomable, sub_color,
                            sr_text=_sr_text(panels.get(key)), anomaly_nav=anomaly_nav)
@@ -1203,7 +1263,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
     {_card('cmp', 7, _L('Period Comparison'), _L('cumulative kWh · same day offset'), False)}
     {_card('wk', 5, _L('Weekday vs Weekend'), _L('mean W by hour'), False)}
   </div>
-
+{periods_block}
   {_section_head(_L('Logs & Storage'), growth_note)}
   <div class="grid12">
     {_card('growth', 6, _L('Log File Growth'), 'KB', True)}

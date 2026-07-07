@@ -308,6 +308,16 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     (labeled by the period's start date) and the tier limit applies per
     period. Periods the recorded span does not fully cover carry
     partial=True so an incomplete tier split is never mistaken for a bill.
+
+    When config.TARIFF_HISTORY holds one or more [[tariff.history]] entries
+    (item 17), each period's cost is priced with the rates in force on the
+    period's own start date instead of today's flat rates, and the "monthly"
+    frame gains a rate_tag column ("current rates" or "rates from
+    YYYY-MM-DD") saying which rates priced it — otherwise a rate boundary
+    mid-history would look like a consumption change. The result dict's
+    tariff_history_active flag mirrors whether that lookup is in play; with
+    no history entries, every number here is identical to before this
+    feature existed.
     """
     if edf.empty or "power_w" not in edf.columns:
         return {}
@@ -338,16 +348,31 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     # ends before it does (one sampling interval of tolerance).
     first_ts, last_ts = s["ts"].iloc[0], s["ts"].iloc[-1]
     tol = pd.Timedelta(seconds=1.5 * float(np.median(np.asarray(sample_interval))))
+    history_active = bool(config.TARIFF_HISTORY)
     partials = []
-    for label in monthly["month"]:
+    rate_tags = []
+    period_cost_pcss = []
+    period_cost_tiered = []
+    for label, kwh_val in zip(monthly["month"], monthly["kwh"], strict=True):
         p_start, p_end = _billing_period_bounds(str(label), start_day)
         partials.append(bool(first_ts > p_start + tol or last_ts < p_end - tol))
+        if history_active:
+            low, high, tier_limit, flat, tag = config.tariff_rates_for(p_start.date())
+            rate_tags.append(tag)
+            period_cost_pcss.append(float(kwh_val) * flat)
+            period_cost_tiered.append(compute_tiered_cost(
+                float(kwh_val), low=low, high=high, tier_limit=tier_limit))
     monthly["partial"] = partials
+    if history_active:
+        monthly["cost_pcss"] = period_cost_pcss
+        monthly["cost_tiered"] = period_cost_tiered
+        monthly["rate_tag"] = rate_tags
 
     return {
         "samples": s,
         "total_kwh": total_kwh,
-        "total_cost_pcss": total_kwh * config.PCSS_FLAT_RATE,
+        "total_cost_pcss": (float(monthly["cost_pcss"].sum()) if history_active
+                            else total_kwh * config.PCSS_FLAT_RATE),
         "total_cost_tiered": float(monthly["cost_tiered"].sum()),
         "total_co2_kg": total_kwh * config.CO2_KG_PER_KWH,
         "daily": daily,
@@ -356,17 +381,23 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
         "last": s["ts"].iloc[-1],
         "n_samples": int(len(s)),
         "interval_sec": int(s["interval_sec"].median()) if "interval_sec" in s.columns else interval_sec,
+        "tariff_history_active": history_active,
     }
 
 
-def compute_tiered_cost(kwh: float) -> float:
-    """Coopesantos T-RE Residencial: first 200 kWh at LOW, rest at HIGH."""
+def compute_tiered_cost(kwh: float, *, low: float | None = None, high: float | None = None,
+                        tier_limit: float | None = None) -> float:
+    """Coopesantos T-RE Residencial: first tier_limit kWh at low, rest at
+    high. Defaults to the current flat [tariff] config keys; a per-period
+    historical lookup (item 17) passes explicit rates instead."""
     if pd.isna(kwh) or kwh <= 0:
         return 0.0
-    if kwh <= config.COOPESANTOS_TIER_LIMIT_KWH:
-        return kwh * config.COOPESANTOS_LOW_RATE
-    return (config.COOPESANTOS_TIER_LIMIT_KWH * config.COOPESANTOS_LOW_RATE
-            + (kwh - config.COOPESANTOS_TIER_LIMIT_KWH) * config.COOPESANTOS_HIGH_RATE)
+    low = config.COOPESANTOS_LOW_RATE if low is None else low
+    high = config.COOPESANTOS_HIGH_RATE if high is None else high
+    tier_limit = config.COOPESANTOS_TIER_LIMIT_KWH if tier_limit is None else tier_limit
+    if kwh <= tier_limit:
+        return kwh * low
+    return tier_limit * low + (kwh - tier_limit) * high
 
 
 def estimate_runtime(power_w: float) -> float:

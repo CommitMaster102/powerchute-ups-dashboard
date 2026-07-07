@@ -7,6 +7,8 @@ analyze_ups.py CONFIG block). Phase 2 layers a `Config` dataclass +
 from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +37,25 @@ PCSS_FLAT_RATE = 126.51
 # grouping can drift from the bill near the tier boundary. 1 keeps the
 # classic calendar-month grouping.
 BILLING_CYCLE_START_DAY = 1
+
+
+@dataclass(frozen=True)
+class TariffPeriod:
+    """One [[tariff.history]] entry: the rate set Coopesantos and PCSS had in
+    force from effective_from onward, until a later entry (if any) takes
+    over. Field names mirror the flat [tariff] keys above."""
+    effective_from: date
+    coopesantos_low: float
+    coopesantos_high: float
+    tier_limit_kwh: float
+    pcss_flat: float
+
+
+# Historical tariff rate sets, oldest first (load_config() keeps this list
+# date-sorted). Empty by default: with no [[tariff.history]] entries, every
+# billing period is priced with the flat [tariff] keys above, exactly as
+# before this feature existed.
+TARIFF_HISTORY: list[TariffPeriod] = []
 # Costa Rica grid CO2 intensity (Low Carbon Power 2024 dataset):
 CO2_KG_PER_KWH = 0.098
 
@@ -118,6 +139,69 @@ ARCHIVE_ENABLED = True
 ARCHIVE_DIR = OUTPUT / "archive"
 
 
+def tariff_rates_for(period_start: date) -> tuple[float, float, float, float, str]:
+    """The Coopesantos low/high rates, tier limit, and PCSS flat rate in
+    force for a billing period that starts on period_start.
+
+    Picks the newest TARIFF_HISTORY entry whose effective_from is at or
+    before period_start (TARIFF_HISTORY is kept date-sorted by
+    load_config()). A period starting before the earliest entry, or an empty
+    TARIFF_HISTORY, falls back to the flat [tariff] keys above. Returns
+    (low, high, tier_limit_kwh, flat, label), where label is a short tag
+    saying which rates applied: "current rates" for the flat-key fallback,
+    or "rates from YYYY-MM-DD" for a history entry.
+    """
+    chosen: TariffPeriod | None = None
+    for entry in TARIFF_HISTORY:
+        if entry.effective_from <= period_start:
+            chosen = entry
+        else:
+            break
+    if chosen is None:
+        return (COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, COOPESANTOS_TIER_LIMIT_KWH,
+                PCSS_FLAT_RATE, "current rates")
+    return (chosen.coopesantos_low, chosen.coopesantos_high, chosen.tier_limit_kwh,
+            chosen.pcss_flat, f"rates from {chosen.effective_from:%Y-%m-%d}")
+
+
+def _parse_tariff_history(entries: list[dict]) -> list[TariffPeriod]:
+    """Parse and validate [[tariff.history]] entries into a date-sorted list.
+
+    Each entry must carry effective_from (a "YYYY-MM-DD" string) plus the
+    four rate fields the flat [tariff] keys hold. A malformed or incomplete
+    entry is a user config error, and it is reported loudly and naming the
+    entry rather than being silently skipped.
+    """
+    required = ("coopesantos_low", "coopesantos_high", "tier_limit_kwh", "pcss_flat")
+    parsed: list[TariffPeriod] = []
+    for i, entry in enumerate(entries, start=1):
+        raw_date = entry.get("effective_from")
+        if not isinstance(raw_date, str):
+            raise ValueError(
+                f"config error: [[tariff.history]] entry {i} is missing "
+                f"'effective_from' (expected a quoted date like \"2026-04-01\")")
+        try:
+            effective_from = date.fromisoformat(raw_date)
+        except ValueError as exc:
+            raise ValueError(
+                f"config error: [[tariff.history]] entry {i} has an invalid "
+                f"effective_from {raw_date!r} (expected YYYY-MM-DD): {exc}") from exc
+        missing = [f for f in required if f not in entry]
+        if missing:
+            raise ValueError(
+                f"config error: [[tariff.history]] entry {i} (effective_from="
+                f"{raw_date}) is missing required field(s): {', '.join(missing)}")
+        parsed.append(TariffPeriod(
+            effective_from=effective_from,
+            coopesantos_low=float(entry["coopesantos_low"]),
+            coopesantos_high=float(entry["coopesantos_high"]),
+            tier_limit_kwh=float(entry["tier_limit_kwh"]),
+            pcss_flat=float(entry["pcss_flat"]),
+        ))
+    parsed.sort(key=lambda p: p.effective_from)
+    return parsed
+
+
 def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
                 output: Path | None = None) -> Path | None:
     """Overlay a config.toml (and CLI overrides) onto the module defaults.
@@ -130,7 +214,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     """
     global PCSS_AGENT, DATALOG, EVENTLOG, ENERGYLOG_DIR, DASHBOARD_HTML
     global COOPESANTOS_TIER_LIMIT_KWH, COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, PCSS_FLAT_RATE
-    global BILLING_CYCLE_START_DAY
+    global BILLING_CYCLE_START_DAY, TARIFF_HISTORY
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
     global STALE_WARN_HOURS, STALE_CRIT_HOURS
@@ -168,6 +252,9 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     PCSS_FLAT_RATE = float(tariff.get("pcss_flat", PCSS_FLAT_RATE))
     BILLING_CYCLE_START_DAY = max(1, min(31, int(
         tariff.get("billing_cycle_start_day", BILLING_CYCLE_START_DAY))))
+    raw_history = tariff.get("history")
+    if raw_history is not None:
+        TARIFF_HISTORY = _parse_tariff_history(raw_history)
     CO2_KG_PER_KWH = float(grid.get("co2_kg_per_kwh", CO2_KG_PER_KWH))
     VOLTAGE_NORMAL_LOW = float(th.get("voltage_normal_low", VOLTAGE_NORMAL_LOW))
     VOLTAGE_NORMAL_HIGH = float(th.get("voltage_normal_high", VOLTAGE_NORMAL_HIGH))

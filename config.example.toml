@@ -18,6 +18,27 @@ pcss_flat        = 126.51 # single rate PCSS itself reports with
 # recorded data does not fully cover are marked as partial.
 billing_cycle_start_day = 1
 
+# Coopesantos revises these rates quarterly. The four keys above are always
+# the "current" rates: they price every billing period when no history is
+# configured below, and they price any period that starts before the
+# earliest history entry (or every period, if the array is empty or left out
+# entirely — the default, needing no changes to an existing config file). Add
+# one [[tariff.history]] entry per past rate change to price each billing
+# period with the rates that were actually in force: a period is priced by
+# the newest entry whose effective_from is at or before the period's start
+# date. Once at least one entry exists, the console breakdown, the
+# dashboard's Billing Periods table, and --json all say which rates priced
+# each period (a short tag like "rates from 2026-04-01", or "current rates"
+# for the flat-key fallback) — so a rate boundary mid-history doesn't read as
+# a consumption change.
+#
+# [[tariff.history]]
+# effective_from  = "2026-04-01"
+# coopesantos_low  = 82.30
+# coopesantos_high = 133.10
+# tier_limit_kwh   = 200.0
+# pcss_flat        = 133.10
+
 [grid]
 co2_kg_per_kwh = 0.098    # Costa Rica grid intensity (Low Carbon Power 2024)
 

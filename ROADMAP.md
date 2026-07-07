@@ -36,6 +36,7 @@ Shipped so far (details in the archive at the bottom):
 | 14 | Notifications (toast route) | `AlertWatcher` in `tray_status.py` |
 | 15 | Auto-refreshing view | `[dashboard] refresh_minutes` meta refresh |
 | 31 | Log-staleness watchdog | `pcss/stats.py` (`assess_staleness`) |
+| 17 | Tariff history with effective dates | `pcss/config.py` (`tariff_rates_for`), `pcss/stats.py` (`compute_energy_summary`) |
 
 ## Data and analysis
 
@@ -68,28 +69,6 @@ Challenges:
   `pcss/dashboard.py` (a second series plus a subtitle note), with the
   observations sourced from `output/archive/events.csv` and the DataLog
   archive.
-
-### 17. Tariff history with effective dates
-
-Coopesantos revises the T-RE rates quarterly, but the config holds a single
-rate set, so every analyzer run prices the entire history at today's rates —
-past billing periods drift away from the bills they once matched. An array
-of dated rate sets (for example `[[tariff.history]]` entries with
-`effective_from`, low, high, tier limit) would price each billing period
-with the rates that were in force.
-
-Challenges:
-
-- Config shape and compatibility: the flat `[tariff]` keys must keep working
-  as the "current" rates so existing config files stay valid;
-  `load_config()` in `pcss/config.py` gains a parsed, date-sorted list.
-- The per-period grouping and tier arithmetic already exist (item 8), so
-  this is a rate lookup by period start date in `compute_energy_summary`,
-  not new math. The lookup must pick the newest entry at or before each
-  period's start, and fall back to the flat keys before the earliest entry.
-- Reporting has to say which rates priced which period (the partial-period
-  labeling pattern extends naturally), otherwise a rate boundary mid-history
-  looks like a consumption change.
 
 ### 18. Self-test detection and battery health under load
 
@@ -823,3 +802,42 @@ Challenges:
 - The tray could also check cheaply between analyzer runs (DataLog file
   mtime); if it does, it must read the same threshold from config rather
   than duplicating the number.
+
+### 17. Tariff history with effective dates
+
+SHIPPED: `[[tariff.history]]` array-of-tables entries in `config.toml`
+(`effective_from` plus the same four rate fields the flat `[tariff]` keys
+hold), parsed and date-sorted by `load_config()` into `pcss/config.py`'s
+`TARIFF_HISTORY` (a loud `ValueError` naming the entry on a malformed date or
+a missing rate field). `config.tariff_rates_for(period_start)` picks the
+newest entry at or before a period's start date, falling back to the flat
+keys — "current rates" — before the earliest entry or when the list is
+empty. `compute_energy_summary` in `pcss/stats.py` uses that lookup per
+billing period (the grouping and tier arithmetic from item 8 are unchanged)
+and tags each period with a rate_tag ("current rates" or "rates from
+YYYY-MM-DD"); with no history configured, every number and every surface is
+byte-identical to before this feature existed. When history is in play, the
+console monthly breakdown, the dashboard's new Billing Periods table
+(`pcss/dashboard.py`, localized via `_STRINGS_ES`), and the `--json`
+`energy.periods` array all say which rates priced each period.
+`tests/test_billing.py`, `tests/test_pipeline.py`, `tests/test_chart_payload.py`.
+
+Coopesantos revises the T-RE rates quarterly, but the config holds a single
+rate set, so every analyzer run prices the entire history at today's rates —
+past billing periods drift away from the bills they once matched. An array
+of dated rate sets (for example `[[tariff.history]]` entries with
+`effective_from`, low, high, tier limit) would price each billing period
+with the rates that were in force.
+
+Challenges:
+
+- Config shape and compatibility: the flat `[tariff]` keys must keep working
+  as the "current" rates so existing config files stay valid;
+  `load_config()` in `pcss/config.py` gains a parsed, date-sorted list.
+- The per-period grouping and tier arithmetic already exist (item 8), so
+  this is a rate lookup by period start date in `compute_energy_summary`,
+  not new math. The lookup must pick the newest entry at or before each
+  period's start, and fall back to the flat keys before the earliest entry.
+- Reporting has to say which rates priced which period (the partial-period
+  labeling pattern extends naturally), otherwise a rate boundary mid-history
+  looks like a consumption change.

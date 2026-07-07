@@ -264,14 +264,20 @@ def main(argv: list[str] | None = None) -> int:
                      f"Billing-period breakdown (cycle starts day {config.BILLING_CYCLE_START_DAY}):")
             say(f"  {label}")
             monthly = energy_summary["monthly"]
-            for month, kwh, cost_pcss, cost_tiered, co2_kg, partial in monthly[
-                ["month", "kwh", "cost_pcss", "cost_tiered", "co2_kg", "partial"]
-            ].itertuples(index=False, name=None):
+            history_active = energy_summary.get("tariff_history_active", False)
+            cols = ["month", "kwh", "cost_pcss", "cost_tiered", "co2_kg", "partial"]
+            if history_active:
+                cols.append("rate_tag")
+            for row in monthly[cols].itertuples(index=False, name=None):
+                month, kwh, cost_pcss, cost_tiered, co2_kg, partial = row[:6]
                 mark = " (partial)" if partial else ""
+                # A rate boundary mid-history would otherwise look like a
+                # consumption change, so say which rates priced this period.
+                tag = f" [{row[6]}]" if history_active else ""
                 say(f"    {month}: {kwh:>9.4f} kWh   "
                     f"PCSS=CRC {cost_pcss:>10,.2f}   "
                     f"Tiered=CRC {cost_tiered:>10,.2f}   "
-                    f"CO2={co2_kg:>7.4f} kg{mark}")
+                    f"CO2={co2_kg:>7.4f} kg{mark}{tag}")
 
     section("ANOMALIES & EVENTS")
     voltage_anomalies = detect_voltage_anomalies(datalog_df)
@@ -419,11 +425,30 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _periods_for_json(monthly: pd.DataFrame) -> list[dict]:
+    """The per-billing-period breakdown, tagged with which rates priced each
+    period — only meaningful (and only called) once tariff history is in
+    play, so a rate boundary mid-history does not look like a consumption
+    change to whatever reads --json."""
+    cols = ["month", "kwh", "cost_pcss", "cost_tiered", "co2_kg", "partial", "rate_tag"]
+    return [
+        {"month": month, "kwh": kwh, "cost_pcss": cost_pcss, "cost_tiered": cost_tiered,
+         "co2_kg": co2_kg, "partial": bool(partial), "rate_tag": rate_tag}
+        for month, kwh, cost_pcss, cost_tiered, co2_kg, partial, rate_tag
+        in monthly[cols].itertuples(index=False, name=None)
+    ]
+
+
 def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
                         voltage_anomalies, high_load, on_battery, gaps, crossval,
                         archive_df, archive_added, battery,
                         events_df, ev_status, ev_spans) -> None:
     """Structured machine-readable summary for external tooling (--json)."""
+    energy_json = {k: energy_summary.get(k) for k in
+                   ("total_kwh", "total_cost_pcss", "total_cost_tiered", "total_co2_kg",
+                    "n_samples", "first", "last", "interval_sec")} if energy_summary else {}
+    if energy_summary and energy_summary.get("tariff_history_active"):
+        energy_json["periods"] = _periods_for_json(energy_summary["monthly"])
     summary = {
         "sizes_bytes": sizes,
         "total_bytes": sum(sizes.values()),
@@ -438,9 +463,7 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
         },
         "growth": {k: hist_stats.get(k) for k in
                    ("snapshots", "bytes_per_day", "first_ts", "last_ts")} if hist_stats else {},
-        "energy": {k: energy_summary.get(k) for k in
-                   ("total_kwh", "total_cost_pcss", "total_cost_tiered", "total_co2_kg",
-                    "n_samples", "first", "last", "interval_sec")} if energy_summary else {},
+        "energy": energy_json,
         "anomalies": {
             "voltage_out_of_envelope": int(len(voltage_anomalies)),
             "high_load_episodes": int(len(high_load)),

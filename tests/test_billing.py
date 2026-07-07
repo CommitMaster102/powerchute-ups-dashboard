@@ -8,10 +8,13 @@ as such instead of presenting a misleading tier split.
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
 from pcss import config
+from pcss.config import TariffPeriod
 from pcss.stats import compute_energy_summary
 
 
@@ -80,3 +83,62 @@ def test_start_day_clamps_to_short_months(monkeypatch):
 def test_calendar_months_have_partial_column_too():
     es = compute_energy_summary(_edf([("2026-05-14 12:00", 1200.0)]))
     assert "partial" in es["monthly"].columns
+
+
+# ------------------------------------------------------- tariff history (item 17)
+def test_no_tariff_history_matches_pre_feature_behavior(monkeypatch):
+    """With TARIFF_HISTORY empty (the default), every period is still priced
+    with the flat [tariff] keys, exactly as before this feature existed —
+    no rate_tag column, no per-period rate lookup."""
+    monkeypatch.setattr(config, "TARIFF_HISTORY", [])
+    es = compute_energy_summary(_edf([
+        ("2026-05-14 12:00", 1200.0),
+        ("2026-05-15 12:00", 1200.0),
+    ]))
+    kwh = float(es["monthly"]["kwh"].iloc[0])
+    assert es["monthly"]["cost_pcss"].iloc[0] == pytest.approx(kwh * config.PCSS_FLAT_RATE)
+    assert es["total_cost_pcss"] == pytest.approx(es["total_kwh"] * config.PCSS_FLAT_RATE)
+    assert es["tariff_history_active"] is False
+    assert "rate_tag" not in es["monthly"].columns
+
+
+def test_history_prices_each_period_with_its_own_rates(monkeypatch):
+    """A rate boundary between two billing periods prices each period with
+    the rates that were in force on its own start date, not today's rates."""
+    monkeypatch.setattr(config, "TARIFF_HISTORY", [
+        TariffPeriod(date(2026, 1, 1), coopesantos_low=70.0, coopesantos_high=110.0,
+                     tier_limit_kwh=200.0, pcss_flat=110.0),
+        TariffPeriod(date(2026, 6, 1), coopesantos_low=80.0, coopesantos_high=130.0,
+                     tier_limit_kwh=200.0, pcss_flat=130.0),
+    ])
+    es = compute_energy_summary(_edf([
+        ("2026-05-15 12:00", 1200.0),   # May period: priced with the Jan 1 entry
+        ("2026-06-15 12:00", 1200.0),   # June period: priced with the Jun 1 entry
+    ]))
+    monthly = es["monthly"].set_index("month")
+    may_kwh = float(monthly.loc["2026-05", "kwh"])
+    jun_kwh = float(monthly.loc["2026-06", "kwh"])
+    assert monthly.loc["2026-05", "cost_pcss"] == pytest.approx(may_kwh * 110.0)
+    assert monthly.loc["2026-06", "cost_pcss"] == pytest.approx(jun_kwh * 130.0)
+    assert monthly.loc["2026-05", "cost_tiered"] == pytest.approx(may_kwh * 70.0)
+    assert monthly.loc["2026-06", "cost_tiered"] == pytest.approx(jun_kwh * 80.0)
+    assert monthly.loc["2026-05", "rate_tag"] == "rates from 2026-01-01"
+    assert monthly.loc["2026-06", "rate_tag"] == "rates from 2026-06-01"
+    assert es["tariff_history_active"] is True
+
+
+def test_period_before_earliest_history_uses_flat_keys(monkeypatch):
+    """A period that starts before the earliest [[tariff.history]] entry
+    falls back to the flat [tariff] keys, tagged as 'current rates'."""
+    monkeypatch.setattr(config, "TARIFF_HISTORY", [
+        TariffPeriod(date(2027, 1, 1), coopesantos_low=90.0, coopesantos_high=140.0,
+                     tier_limit_kwh=200.0, pcss_flat=140.0),
+    ])
+    es = compute_energy_summary(_edf([
+        ("2026-05-14 12:00", 1200.0),
+        ("2026-05-15 12:00", 1200.0),
+    ]))
+    monthly = es["monthly"].set_index("month")
+    kwh = float(monthly.loc["2026-05", "kwh"])
+    assert monthly.loc["2026-05", "rate_tag"] == "current rates"
+    assert monthly.loc["2026-05", "cost_pcss"] == pytest.approx(kwh * config.PCSS_FLAT_RATE)

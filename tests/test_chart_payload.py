@@ -395,6 +395,32 @@ def test_default_preset_only_for_long_history():
     assert _meta_for(10).get("default_preset_days") is None
 
 
+def test_no_tariff_history_dashboard_html_unchanged(monkeypatch):
+    """With TARIFF_HISTORY empty (the default), the page must be
+    byte-identical to a run with the key untouched — no Billing Periods
+    card, no stray blank-line drift from the conditional block."""
+    monkeypatch.setattr(cfg, "TARIFF_HISTORY", [])
+    baseline = build_dashboard(**_smoke_inputs())
+    monkeypatch.setattr(cfg, "TARIFF_HISTORY", [])
+    again = build_dashboard(**_smoke_inputs())
+    assert baseline == again
+    assert "Billing Periods" not in baseline
+
+
+def test_tariff_history_adds_billing_periods_table(monkeypatch):
+    """Once [[tariff.history]] entries are configured, a Billing Periods
+    table appears, tagged with which rates priced each period."""
+    from pcss.config import TariffPeriod
+    monkeypatch.setattr(cfg, "TARIFF_HISTORY", [
+        TariffPeriod(datetime(2026, 1, 1).date(), coopesantos_low=70.0,
+                     coopesantos_high=110.0, tier_limit_kwh=200.0, pcss_flat=110.0),
+    ])
+    inputs = _smoke_inputs()          # recomputes energy_summary against the patched history
+    html = build_dashboard(**inputs)
+    assert "Billing Periods" in html
+    assert "rates from 2026-01-01" in html
+
+
 def test_build_dashboard_empty_inputs():
     """A run against an empty agent dir must still produce a page (every
     panel None -> client-side empty states), not crash."""

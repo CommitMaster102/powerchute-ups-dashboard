@@ -33,7 +33,7 @@ def restore_config():
         "RUNTIME_WARN_MIN", "RUNTIME_CRIT_MIN", "DASHBOARD_THEME", "DASHBOARD_MODEL",
         "DASHBOARD_LANGUAGE", "DASHBOARD_REFRESH_MINUTES", "ARCHIVE_ENABLED",
         "BILLING_CYCLE_START_DAY", "ON_BATTERY_VOLTAGE_V", "ON_BATTERY_CAPACITY_DROP_PCT",
-        "BATTERY_REPLACE_VOLTAGE_V", "BATTERY_TREND_MIN_DAYS",
+        "BATTERY_REPLACE_VOLTAGE_V", "BATTERY_TREND_MIN_DAYS", "TARIFF_HISTORY",
     ]
     saved = {n: getattr(cfg, n) for n in names}
     yield cfg
@@ -177,6 +177,63 @@ def test_load_config_agent_dir_arg_wins(tmp_path, restore_config):
     assert agent / "DataLog" == c.DATALOG
 
 
+# ---------------------------------------------------- tariff history (item 17)
+def test_load_config_parses_tariff_history(tmp_path, restore_config):
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        'effective_from = "2026-06-01"\n'
+        "coopesantos_low = 82.30\ncoopesantos_high = 133.10\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 133.10\n"
+        "[[tariff.history]]\n"
+        'effective_from = "2026-01-01"\n'
+        "coopesantos_low = 75.00\ncoopesantos_high = 120.00\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 120.00\n",
+        encoding="utf-8",
+    )
+    c.load_config(conf)
+    # date-sorted regardless of the order the entries appeared in the file.
+    assert [p.effective_from.isoformat() for p in c.TARIFF_HISTORY] == ["2026-01-01", "2026-06-01"]
+    assert c.TARIFF_HISTORY[0].coopesantos_low == pytest.approx(75.00)
+    assert c.TARIFF_HISTORY[1].pcss_flat == pytest.approx(133.10)
+
+
+def test_load_config_no_history_leaves_tariff_history_empty(tmp_path, restore_config):
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text("[tariff]\npcss_flat = 130.0\n", encoding="utf-8")
+    c.load_config(conf)
+    assert c.TARIFF_HISTORY == []
+
+
+def test_load_config_rejects_invalid_effective_from(tmp_path, restore_config):
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        'effective_from = "not-a-date"\n'
+        "coopesantos_low = 82.30\ncoopesantos_high = 133.10\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 133.10\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"\[\[tariff\.history\]\] entry 1"):
+        c.load_config(conf)
+
+
+def test_load_config_rejects_missing_rate_field(tmp_path, restore_config):
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        'effective_from = "2026-06-01"\n'
+        "coopesantos_low = 82.30\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing required field"):
+        c.load_config(conf)
+
+
 # ---------------------------------------------------------------- analyzer integration
 def _write_multiday_agent(agent):
     agent.mkdir(parents=True, exist_ok=True)
@@ -236,3 +293,46 @@ def test_main_writes_shell(tmp_path, restore_config):
         assert token in html, f"missing shell token: {token}"
     assert "__DASH_DATA__" not in html
     assert "<script src" not in html and "<link " not in html
+
+
+def test_tariff_history_tags_console_and_json_periods(tmp_path, restore_config, capsys):
+    """End to end (item 17): with [[tariff.history]] configured, the console
+    monthly breakdown and the --json energy.periods array both say which
+    rates priced the period, so a rate boundary mid-history does not read
+    as a consumption change."""
+    import analyze_ups
+    agent = _write_multiday_agent(tmp_path / "agent")
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[archive]\nenabled = false\n"
+        "[[tariff.history]]\n"
+        'effective_from = "2026-01-01"\n'
+        "coopesantos_low = 78.17\ncoopesantos_high = 126.51\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 126.51\n",
+        encoding="utf-8",
+    )
+    j = tmp_path / "out.json"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(tmp_path / "a.html"),
+                      "--no-browser", "--no-snapshot", "--config", str(conf),
+                      "--json", str(j)])
+    console = capsys.readouterr().out
+    assert "rates from 2026-01-01" in console
+    data = json.loads(j.read_text())
+    periods = data["energy"]["periods"]
+    assert len(periods) == 1
+    assert periods[0]["month"] == "2026-05"
+    assert periods[0]["rate_tag"] == "rates from 2026-01-01"
+
+
+def test_no_tariff_history_json_has_no_periods_key(tmp_path, restore_config):
+    """Without [[tariff.history]] entries, --json carries no periods key at
+    all (not an empty list) — the energy dict is unchanged from before this
+    feature existed."""
+    import analyze_ups
+    agent = _write_multiday_agent(tmp_path / "agent")
+    j = tmp_path / "out.json"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(tmp_path / "a.html"),
+                      "--no-browser", "--quiet", "--no-snapshot",
+                      "--config", str(_hermetic_config(tmp_path)), "--json", str(j)])
+    data = json.loads(j.read_text())
+    assert "periods" not in data["energy"]
