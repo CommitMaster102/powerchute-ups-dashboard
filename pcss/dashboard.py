@@ -255,6 +255,7 @@ _STRINGS_ES = {
     "Communication": "Comunicación",
     "Monitoring": "Monitoreo",
     "Other": "Otros",
+    "inspecting": "inspeccionando",
 }
 
 
@@ -953,14 +954,20 @@ def _tools_html(key: str, zoomable: bool, anomaly_nav: int = 0) -> str:
 
 def _chart_card(key: str, span: int, title: str, sub: str, zoomable: bool,
                 sub_color: str | None = None, sr_text: str = "",
-                anomaly_nav: int = 0) -> str:
+                anomaly_nav: int = 0, inspectable: bool = False) -> str:
     sub_style = f' style="color:{sub_color}"' if sub_color else ""
     aria = _esc(f"{title} {_L('chart')}. {sr_text}".strip())
+    # The inspect-mode badge (roadmap item 21) only exists on line-kind
+    # panels — the ones charts.js lets a screen-reader user walk sample by
+    # sample with the arrow keys — and starts hidden; charts.js toggles it
+    # (and the chart box's `is-inspecting` outline) while that mode is on.
+    badge = (f'<span class="inspect-badge" data-panel="{key}" hidden>{_esc(_L("inspecting"))}</span>'
+             if inspectable else "")
     return f"""
 <div class="card chart-card s{span}">
   <div class="card-head">
     <div class="card-title">{_esc(title)}</div>
-    <div class="card-side"><span class="card-sub"{sub_style}>{_esc(sub)}</span>{_tools_html(key, zoomable, anomaly_nav)}</div>
+    <div class="card-side"><span class="card-sub"{sub_style}>{_esc(sub)}</span>{badge}{_tools_html(key, zoomable, anomaly_nav)}</div>
   </div>
   <div class="chart-box" id="panel-{key}" data-title="{_esc(title)}" role="img" tabindex="0" aria-label="{aria}"></div>
 </div>"""
@@ -1294,6 +1301,20 @@ h1 {{ font-size: 27px; font-weight: 600; margin: 5px 0 0; color: var(--title); l
 .chart-box svg {{ cursor: crosshair; }}
 .chart-box:focus-visible {{ outline: 2px solid var(--blue); outline-offset: 2px;
   border-radius: 8px; }}
+/* Keyboard sample step-through (roadmap item 21): a visibly distinct cue —
+   brighter and a different color than the plain keyboard-focus outline
+   above — so a sighted keyboard user can tell inspect mode apart from mere
+   focus, plus a small textual badge next to the card tools for the same
+   reason. Both are shown/hidden by charts.js, never by CSS state alone. */
+.chart-box.is-inspecting {{ outline: 3px solid var(--amber); outline-offset: 2px;
+  border-radius: 8px; }}
+.inspect-badge {{ font-size: 10px; padding: 2px 7px; border-radius: 6px;
+  color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 14%, transparent); }}
+/* Visually hidden but still announced by screen readers — the one
+   aria-live region the inspect-mode step announcements update. */
+.sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }}
 .chart-empty {{ padding: 40px 0 48px; text-align: center; color: var(--faint); font-size: 12.5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
 
@@ -1349,7 +1370,8 @@ footer .dim {{ color: var(--foot); }}
   .wrap {{ max-width: none; }}
   .card {{ break-inside: avoid; }}
   .sec-head {{ break-after: avoid-page; }}
-  .card-tools, .presets, #print-btn, #lightbox, .chart-tooltip {{ display: none !important; }}
+  .card-tools, .presets, #print-btn, #lightbox, .chart-tooltip, .inspect-badge {{ display: none !important; }}
+  .chart-box.is-inspecting {{ outline: none !important; }}
   * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
 }}
 #print-btn {{ margin-top: 8px; }}
@@ -1625,8 +1647,11 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         )
 
     def _card(key, span_, title, sub, zoomable, sub_color=None, anomaly_nav=0):
+        spec = panels.get(key)
+        inspectable = bool(spec and spec.get("kind") == "line")
         return _chart_card(key, span_, title, sub, zoomable, sub_color,
-                           sr_text=_sr_text(panels.get(key)), anomaly_nav=anomaly_nav)
+                           sr_text=_sr_text(spec), anomaly_nav=anomaly_nav,
+                           inspectable=inspectable)
 
     page = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1637,6 +1662,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 <style>{_shell_css(pal)}</style>
 </head>
 <body>
+<div id="inspect-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 <div class="wrap">
 
   <header>

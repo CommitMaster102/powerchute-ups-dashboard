@@ -25,6 +25,7 @@
   let ACTIVE_KEY = null;  // last-hovered panel, target for keyboard control
   let LIGHTBOX_KEY = null;
   let LAST_PRESET = null; // "30" | "7" | "1" while a preset window is applied
+  let INSPECT = null;     // { key, idx } while a panel is in keyboard inspect mode
 
   // Crosshair-sync state only (never drives zooming).
   const TIME = { hoverTs: null };
@@ -846,7 +847,10 @@
       });
     });
     if (snappedTs == null) return;
-    LAST_HOVER[key] = { ts: snappedTs, rows: rows.map(r => ({ name: r.name, x: r.x, y: r.y })) };
+    // "val" (the already-formatted-and-unit-suffixed reading, e.g. "120.3 V")
+    // rides along so the inspect-mode aria-live announcement can reuse the
+    // exact text the tooltip shows instead of re-deriving it.
+    LAST_HOVER[key] = { ts: snappedTs, rows: rows.map(r => ({ name: r.name, x: r.x, y: r.y, val: r.val })) };
     // Crosshair + dots on every view of this panel.
     st.views.forEach(v => {
       if (!v.geom || !v.overlay) return;
@@ -1328,6 +1332,101 @@
   }
 
   // ------------------------------------------------------------------
+  // Keyboard sample step-through ("inspect mode", roadmap item 21): Enter
+  // toggles it on the focused chart, ArrowLeft/ArrowRight then walk the
+  // panel's full sample array — never the decimated index decimateMinMax
+  // renders, so a step never skips a sample at a wide zoom — one entry at a
+  // time, and Escape leaves it. Only line-kind panels qualify: bar and
+  // heatmap have no per-sample index to walk, and the event timeline's dots
+  // are categorical occurrences found by 2D nearest-dot matching
+  // (hoverEventsAt), not a single ordered array, so it is excluded rather
+  // than bolted onto a different tooltip path.
+  // ------------------------------------------------------------------
+  function inspectCapable(spec) {
+    return !!(spec && spec.kind === "line" && (spec.series || []).some(s => s.x && s.x.length));
+  }
+  function inspectRefSeries(spec, st) {
+    // The first visible series with data is the walking reference — for
+    // most panels that is the one full-length raw series (overlays like a
+    // rolling mean or a fitted trend line are shorter derived series).
+    const series = spec.series || [];
+    for (let si = 0; si < series.length; si++) {
+      if (!st.hidden.has(si) && series[si].x.length) return series[si];
+    }
+    return series[0] || null;
+  }
+  function activeInspectView(key) {
+    const st = STATE[key];
+    if (!st) return null;
+    const id = (LIGHTBOX_KEY === key) ? "lb" : "grid";
+    return st.views.find(v => v.id === id) || st.views[0] || null;
+  }
+  function updateInspectCue(key, active) {
+    const box = document.getElementById("panel-" + key);
+    if (box) box.classList.toggle("is-inspecting", active);
+    document.querySelectorAll('.inspect-badge[data-panel="' + key + '"]')
+      .forEach(b => { b.hidden = !active; });
+  }
+  function showInspectSample(key) {
+    const st = STATE[key], spec = st.spec;
+    const ref = inspectRefSeries(spec, st);
+    if (!ref) return;
+    const ts = ref.x[INSPECT.idx];
+    const view = activeInspectView(key);
+    let clientX = null, clientY = null;
+    if (view && view.geom && view.svg) {
+      const g = view.geom, rect = view.svg.getBoundingClientRect();
+      clientX = rect.left + (g.sx(ts) / g.W) * rect.width;
+      clientY = rect.top + ((g.p.t + g.ih / 2) / g.H) * rect.height;
+    }
+    // Reuses the exact hover code path: crosshair, series dots, and tooltip
+    // content are identical to what a mouse hover at this x would show.
+    hoverLineAt(key, ts, clientX, clientY, false);
+  }
+  function announceInspect(key) {
+    const live = document.getElementById("inspect-live");
+    const hov = LAST_HOVER[key];
+    if (!live || !hov) return;
+    const spec = STATE[key].spec;
+    const tsLabel = (spec.xkind === "linear")
+      ? fmt(hov.ts) + (spec.xunit ? " " + spec.xunit : "")
+      : fmtFull(hov.ts);
+    // Reuses the tooltip's own name and formatted value+unit strings, so the
+    // announcement text cannot drift from what is visibly shown, and any
+    // localization already baked into those strings rides along for free.
+    const parts = hov.rows.map(r => r.name + " " + r.val);
+    live.textContent = tsLabel + ", " + parts.join(", ");
+  }
+  function toggleInspect(key) {
+    if (INSPECT && INSPECT.key === key) { exitInspect(); return; }
+    if (INSPECT) exitInspect();
+    const st = STATE[key], spec = st.spec;
+    const ref = inspectRefSeries(spec, st);
+    if (!ref || !ref.x.length) return;
+    const w = currentWindow(key, spec);
+    INSPECT = { key, idx: nearestIdx(ref.x, (w[0] + w[1]) / 2) };
+    updateInspectCue(key, true);
+    showInspectSample(key);   // entering the mode is not itself a step: no announce
+  }
+  function exitInspect() {
+    if (!INSPECT) return;
+    const key = INSPECT.key;
+    INSPECT = null;
+    updateInspectCue(key, false);
+    hideHover(key);
+  }
+  function stepInspect(dir) {
+    if (!INSPECT) return;
+    const key = INSPECT.key;
+    const st = STATE[key];
+    const ref = st && inspectRefSeries(st.spec, st);
+    if (!ref || !ref.x.length) return;
+    INSPECT.idx = Math.max(0, Math.min(ref.x.length - 1, INSPECT.idx + dir));
+    showInspectSample(key);
+    announceInspect(key);
+  }
+
+  // ------------------------------------------------------------------
   // Keyboard: arrows pan, +/- zoom, 0 reset, Esc unpin/close
   // ------------------------------------------------------------------
   function bindKeyboard() {
@@ -1336,11 +1435,21 @@
       if (ev.key === "Escape") {
         unpin();
         closeLightbox();
+        exitInspect();
         return;
       }
       const key = LIGHTBOX_KEY || ACTIVE_KEY;
       if (!key || !STATE[key]) return;
       const spec = STATE[key].spec;
+      if (ev.key === "Enter") {
+        if (inspectCapable(spec)) { toggleInspect(key); ev.preventDefault(); }
+        return;
+      }
+      if (INSPECT && INSPECT.key === key && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+        stepInspect(ev.key === "ArrowRight" ? 1 : -1);
+        ev.preventDefault();
+        return;
+      }
       if (!zoomCapable(spec)) return;
       const w = currentWindow(key, spec);
       const span = w[1] - w[0];
@@ -1425,6 +1534,10 @@
   function resetAll() {
     unpin();
     closeLightbox();
+    if (INSPECT) updateInspectCue(INSPECT.key, false);
+    INSPECT = null;
+    const live = document.getElementById("inspect-live");
+    if (live) live.textContent = "";
     if (ttLive) ttLive.hidden = true;
     TIME.hoverTs = null;
     LAST_PRESET = null;
@@ -1457,6 +1570,7 @@
     openLightbox,
     anomalyClusters: k => anomalyClusters(k).map(c => c.slice()),
     jumpAnomaly,
+    inspect: () => (INSPECT ? { key: INSPECT.key, idx: INSPECT.idx } : null),
     resetAll,
   };
 

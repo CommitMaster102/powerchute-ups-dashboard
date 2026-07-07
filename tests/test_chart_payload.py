@@ -431,6 +431,36 @@ def test_accessibility_surface():
     assert "no data" in m2.group(1).lower()
 
 
+def test_inspect_badge_text_is_localizable(monkeypatch):
+    """The inspect-mode badge text (roadmap item 21) is server-rendered
+    directly into the card markup, the same as every other card title or
+    subtitle — translated through ``_STRINGS_ES``/``_L`` rather than riding
+    the JS payload, since charts.js only ever toggles its ``hidden``
+    attribute and never needs to read or set its text."""
+    html_en = build_dashboard(**_smoke_inputs())
+    assert 'inspect-badge" data-panel="lv" hidden>inspecting<' in html_en
+
+    monkeypatch.setattr(cfg, "DASHBOARD_LANGUAGE", "es")
+    html_es = build_dashboard(**_smoke_inputs())
+    assert 'inspect-badge" data-panel="lv" hidden>inspeccionando<' in html_es
+
+
+def test_inspect_badge_and_live_region_present():
+    """Every line-kind chart card carries a hidden inspect-mode badge
+    (roadmap item 21), toggled visible by charts.js while that panel is in
+    inspect mode. Bar, heatmap, and the event-timeline cards do not: inspect
+    mode walks a line panel's per-sample arrays, a shape those three chart
+    kinds do not have. The page also carries exactly one aria-live region
+    for the step announcements."""
+    html = build_dashboard(**_smoke_inputs())
+    assert html.count('id="inspect-live"') == 1
+    assert 'aria-live="polite"' in html
+    assert 'class="inspect-badge" data-panel="lv"' in html
+    assert 'class="inspect-badge" data-panel="bv"' in html
+    for key in ("daily", "cad", "hm", "ev"):
+        assert f'inspect-badge" data-panel="{key}"' not in html, key
+
+
 # ---------------------------------------------------------------- build_dashboard smoke
 def _smoke_inputs():
     datalog = _datalog(72)

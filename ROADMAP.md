@@ -46,26 +46,9 @@ Shipped so far (details in the archive at the bottom):
 | 28 | Grid-quality trend | `pcss/stats.py` (`grid_quality_trend`) |
 | 25 | Payload budget (`max_days` window) | `analyze_ups.py` (`_dashboard_window`, `_window_df`) |
 | 20 | Event timeline panel | `pcss/charts.js` (`renderEvents`), `pcss/eventlog.py` (`categorize_event`), `pcss/dashboard.py` (`_panel_ev`) |
+| 21 | Keyboard sample step-through | `pcss/charts.js` (`toggleInspect`, `stepInspect`) |
 
 ## Dashboard and interaction
-
-### 21. Keyboard sample step-through (the open remainder of item 12)
-
-Focus a chart, press Enter, and walk sample by sample with the arrow keys —
-the tooltip follows the cursor and an `aria-live` region reads out
-"timestamp, value, unit" for screen readers. This is the piece of item 12
-that was deliberately deferred as a real feature rather than a patch.
-
-Challenges:
-
-- The arrow keys already pan the window (`bindKeyboard` in
-  `pcss/charts.js`), so stepping needs an explicit mode — Enter to toggle
-  inspect mode on the focused panel, Escape to leave it — with a visible
-  state cue so sighted keyboard users know which mode they are in.
-- The cursor must walk the full data arrays, not the decimated index that
-  `decimateMinMax` renders, or steps would skip samples at wide zoom.
-- `aria-live` etiquette: announce on step, not on every render, and keep the
-  text short; a chatty live region is worse than none.
 
 ### 22. Selectable comparison periods
 
@@ -1133,3 +1116,57 @@ Challenges:
   Communication churn from PC boots. The panel needs a default filter (power
   and battery categories on, housekeeping off) with the legend toggling the
   rest.
+
+### 21. Keyboard sample step-through (the open remainder of item 12)
+
+SHIPPED: Enter toggles inspect mode on the focused (or lightbox-expanded)
+chart box — `toggleInspect` in `pcss/charts.js` — for the eleven line-kind
+panels (`lv ul pw bv bc rt kw cmp wk growth proj`); bar, heatmap, and the
+event timeline stay out of scope, since inspect mode walks one ordered
+sample array and those three chart kinds either have no such index (bar,
+heatmap) or locate their "samples" by 2D nearest-dot matching instead
+(the event timeline's `hoverEventsAt`). `inspectCapable`/`inspectRefSeries`
+pick the first visible series with data as the walking reference (the full
+source array `decimateMinMax` reads from, never its decimated render
+index), starting at the sample nearest the current window's center.
+ArrowLeft/ArrowRight then move that index one entry at a time via
+`stepInspect`, mode-gated in `bindKeyboard` so they do not also pan the
+window while inspecting; Escape (`exitInspect`) leaves the mode and arrows
+resume panning exactly as before. Each step calls `showInspectSample`,
+which reuses `hoverLineAt` — the same tooltip, crosshair, and sync-group
+mirroring a mouse hover produces — by converting the stepped sample's chart
+coordinates back to client coordinates for tooltip placement. A single
+`#inspect-live` `aria-live="polite"` region (one per page) is updated only
+on a step, never on entry or render, with "timestamp, name value unit" text
+built from the same localized name/value/unit strings the tooltip shows
+(`LAST_HOVER` now also carries the formatted `val`). The visible state cue
+is a brighter amber outline on the chart box (`.chart-box.is-inspecting`)
+plus a small "inspecting" badge next to the card tools
+(`.inspect-badge`, localized via `_STRINGS_ES`/`_L`), both rendered only for
+inspectable panels and toggled by `updateInspectCue`. `window.__chartsDebug`
+exposes `inspect()` (the active panel key and sample index, or null) and
+`resetAll` clears the mode, its cue, and the live region text along with
+the other interaction state. Tests: `tests/e2e_inspect.py` (toggle,
+one-sample-at-a-time stepping, arrows gated while inspecting and restored
+after Escape, tooltip and aria-live update on step, other panels
+unaffected, the badge and outline track the mode, `resetAll` clears it,
+bar/heatmap/event-timeline panels stay non-inspectable) and
+`tests/test_chart_payload.py` (the inspect-badge markup appears only for
+line-kind panels, the aria-live region is present exactly once, and the
+badge text is localized).
+
+Focus a chart, press Enter, and walk sample by sample with the arrow keys —
+the tooltip follows the cursor and an `aria-live` region reads out
+"timestamp, value, unit" for screen readers. This is the piece of item 12
+that was deliberately deferred as a real feature rather than a patch.
+
+Challenges:
+
+- The arrow keys already pan the window (`bindKeyboard` in
+  `pcss/charts.js`), so stepping needs an explicit mode — Enter to toggle
+  inspect mode on the focused panel, Escape to leave it — with a visible
+  state cue so sighted keyboard users know which mode they are in.
+- The cursor must walk the full data arrays, not the decimated index that
+  `decimateMinMax` renders, or steps would skip samples at wide zoom.
+- `aria-live` etiquette: announce on step, not on every render, and keep the
+  text short; a chatty live region is worse than none.
