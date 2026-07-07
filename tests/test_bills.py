@@ -83,6 +83,48 @@ def test_non_numeric_value_is_skipped_and_reported(tmp_path):
     assert "2026-01-01" in warnings[0]
 
 
+def test_zero_kwh_row_is_skipped_and_reported(tmp_path):
+    p = _write_bills(
+        tmp_path,
+        "period_start,kwh,amount_crc\n"
+        "2026-01-01,0,45123.00\n"
+        "2026-02-01,398.0,43850.50\n",
+    )
+    df, warnings = load_bills(p)
+    assert len(df) == 1
+    assert df["period_start"].iloc[0] == date(2026, 2, 1)
+    assert len(warnings) == 1
+    assert "2026-01-01" in warnings[0]
+
+
+def test_negative_kwh_row_is_skipped_and_reported(tmp_path):
+    p = _write_bills(
+        tmp_path,
+        "period_start,kwh,amount_crc\n"
+        "2026-01-01,-10,45123.00\n"
+        "2026-02-01,398.0,43850.50\n",
+    )
+    df, warnings = load_bills(p)
+    assert len(df) == 1
+    assert df["period_start"].iloc[0] == date(2026, 2, 1)
+    assert len(warnings) == 1
+    assert "2026-01-01" in warnings[0]
+
+
+def test_negative_amount_row_is_skipped_and_reported(tmp_path):
+    p = _write_bills(
+        tmp_path,
+        "period_start,kwh,amount_crc\n"
+        "2026-01-01,412.5,-45123.00\n"
+        "2026-02-01,398.0,43850.50\n",
+    )
+    df, warnings = load_bills(p)
+    assert len(df) == 1
+    assert df["period_start"].iloc[0] == date(2026, 2, 1)
+    assert len(warnings) == 1
+    assert "2026-01-01" in warnings[0]
+
+
 def test_missing_required_column_reports_and_ignores_the_file(tmp_path):
     p = _write_bills(tmp_path, "period_start,kwh\n2026-01-01,412.5\n")
     df, warnings = load_bills(p)
@@ -145,16 +187,44 @@ def test_aligned_bill_reconciles_with_known_numbers():
     assert bool(row["partial"]) is False
 
 
-def test_boundary_mismatch_is_excluded_and_reported(monkeypatch):
+def test_boundary_mismatch_in_second_half_reports_the_following_boundary(monkeypatch):
     monkeypatch.setattr(config, "BILLING_CYCLE_START_DAY", 15)
     es = compute_energy_summary(_edf([("2026-05-20 12:00", 1200.0)]))
-    # Billing periods start on the 15th; May 1 is not a boundary — the
-    # nearest valid boundary at or before it is April 15.
+    # Billing periods run April 15 -> May 15 -> ...; May 1 is not a boundary.
+    # It sits 16 days after April 15 but only 14 days before May 15, so the
+    # truly nearest boundary is the FOLLOWING one, May 15 — not April 15.
     bills = _bills([(date(2026, 5, 1), 500.0, 60000.0)])
     reconciled, warnings = reconcile_bills(bills, es)
     assert reconciled.empty
     assert len(warnings) == 1
     assert "2026-05-01" in warnings[0]
+    assert "2026-05-15" in warnings[0]
+
+
+def test_boundary_mismatch_in_first_half_reports_the_preceding_boundary(monkeypatch):
+    monkeypatch.setattr(config, "BILLING_CYCLE_START_DAY", 15)
+    es = compute_energy_summary(_edf([("2026-04-20 12:00", 1200.0)]))
+    # Same April 15 -> May 15 period; April 20 sits only 5 days after the
+    # preceding boundary and 25 days before the following one, so the
+    # nearest boundary is the PRECEDING one, April 15.
+    bills = _bills([(date(2026, 4, 20), 500.0, 60000.0)])
+    reconciled, warnings = reconcile_bills(bills, es)
+    assert reconciled.empty
+    assert len(warnings) == 1
+    assert "2026-04-20" in warnings[0]
+    assert "2026-04-15" in warnings[0]
+
+
+def test_boundary_mismatch_exactly_midway_reports_the_earlier_boundary(monkeypatch):
+    monkeypatch.setattr(config, "BILLING_CYCLE_START_DAY", 15)
+    es = compute_energy_summary(_edf([("2026-04-30 12:00", 1200.0)]))
+    # April 15 -> May 15 is 30 days long; April 30 is exactly 15 days from
+    # each boundary — an exact tie, which resolves to the earlier boundary.
+    bills = _bills([(date(2026, 4, 30), 500.0, 60000.0)])
+    reconciled, warnings = reconcile_bills(bills, es)
+    assert reconciled.empty
+    assert len(warnings) == 1
+    assert "2026-04-30" in warnings[0]
     assert "2026-04-15" in warnings[0]
 
 
@@ -227,11 +297,17 @@ def test_console_shows_bill_reconciliation_section(tmp_path, capsys):
     agent = _write_energy_agent(tmp_path / "agent", days=31)
     # ups_kwh here must match what the pipeline itself computes; run once
     # with a placeholder bill to read the real UPS kWh back out of --json,
-    # then re-run with the bill scaled to it for an exact 24% share.
+    # then re-run with the bill scaled to it for an exact 24% share. Pin the
+    # probe pass's bills_file to a guaranteed-absent path — config.BILLS_FILE
+    # is module-level state that load_config() only ever overrides (never
+    # resets), so an earlier test in this process may have already pointed
+    # it at a real bills.csv, which would leak into this probe run.
+    probe_missing = tmp_path / "no-such-bills-probe.csv"
     probe_json = tmp_path / "probe.json"
     analyze_ups.main(["--agent-dir", str(agent), "-o", str(tmp_path / "probe.html"),
                       "--no-browser", "--quiet", "--no-snapshot",
-                      "--config", str(_hermetic_config(tmp_path)), "--json", str(probe_json)])
+                      "--config", str(_hermetic_config(tmp_path, bills_file=str(probe_missing))),
+                      "--json", str(probe_json)])
     import json as _json
     ups_kwh = _json.loads(probe_json.read_text())["energy"]["total_kwh"]
 
@@ -261,13 +337,41 @@ def test_console_omits_bill_reconciliation_when_file_missing(tmp_path, capsys):
     assert "BILL RECONCILIATION" not in out
 
 
+def test_zero_kwh_bill_produces_no_nan_anywhere(tmp_path, capsys):
+    """A degenerate kwh=0 row must never reach the share/rate arithmetic:
+    load_bills reports and skips it, so nothing reconciles and no "nan"
+    leaks into either the console or the --json summary."""
+    import analyze_ups
+    agent = _write_energy_agent(tmp_path / "agent", days=31)
+    bills_path = tmp_path / "bills.csv"
+    bills_path.write_text(
+        "period_start,kwh,amount_crc\n2026-05-01,0,45123.00\n", encoding="utf-8")
+    j = tmp_path / "out.json"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(tmp_path / "d.html"),
+                      "--no-browser", "--no-snapshot",
+                      "--config", str(_hermetic_config(tmp_path, bills_file=str(bills_path))),
+                      "--json", str(j)])
+    out = capsys.readouterr().out
+    assert "nan" not in out.lower()
+    assert "BILL RECONCILIATION" not in out
+    assert "row skipped" in out
+    import json as _json
+    data = _json.loads(j.read_text())
+    assert "bills" not in data
+    assert "nan" not in j.read_text().lower()
+
+
 def test_json_summary_has_bills_key_when_reconciled(tmp_path):
     import analyze_ups
     agent = _write_energy_agent(tmp_path / "agent", days=31)
+    # Pin the probe pass's bills_file to a guaranteed-absent path — see the
+    # comment in test_console_shows_bill_reconciliation_section.
+    probe_missing = tmp_path / "no-such-bills-probe.csv"
     probe_json = tmp_path / "probe.json"
     analyze_ups.main(["--agent-dir", str(agent), "-o", str(tmp_path / "probe.html"),
                       "--no-browser", "--quiet", "--no-snapshot",
-                      "--config", str(_hermetic_config(tmp_path)), "--json", str(probe_json)])
+                      "--config", str(_hermetic_config(tmp_path, bills_file=str(probe_missing))),
+                      "--json", str(probe_json)])
     import json as _json
     ups_kwh = _json.loads(probe_json.read_text())["energy"]["total_kwh"]
     bills_path, billed_kwh, amount_crc = _write_reconciling_bill(tmp_path, ups_kwh)
@@ -304,10 +408,14 @@ def test_json_summary_omits_bills_key_when_file_missing(tmp_path):
 def test_dashboard_shows_bill_reconciliation_table(tmp_path):
     import analyze_ups
     agent = _write_energy_agent(tmp_path / "agent", days=31)
+    # Pin the probe pass's bills_file to a guaranteed-absent path — see the
+    # comment in test_console_shows_bill_reconciliation_section.
+    probe_missing = tmp_path / "no-such-bills-probe.csv"
     probe_json = tmp_path / "probe.json"
     analyze_ups.main(["--agent-dir", str(agent), "-o", str(tmp_path / "probe.html"),
                       "--no-browser", "--quiet", "--no-snapshot",
-                      "--config", str(_hermetic_config(tmp_path)), "--json", str(probe_json)])
+                      "--config", str(_hermetic_config(tmp_path, bills_file=str(probe_missing))),
+                      "--json", str(probe_json)])
     import json as _json
     ups_kwh = _json.loads(probe_json.read_text())["energy"]["total_kwh"]
     bills_path, _billed_kwh, _amount_crc = _write_reconciling_bill(tmp_path, ups_kwh)

@@ -143,7 +143,11 @@ def load_bills(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
     reported and ignored in full. A row with an unparseable period_start or
     a non-numeric kwh/amount_crc is reported (naming the line and, where
     possible, the offending value) and skipped; the analyzer never crashes
-    on this file. The file is only ever read here, never written.
+    on this file. A kwh of zero or less, or a negative amount_crc, is
+    likewise reported and skipped rather than kept: dividing by a
+    non-positive kwh downstream would otherwise produce NaN share/rate
+    figures ("nan%" in the console, a non-standard NaN token in --json).
+    The file is only ever read here, never written.
     """
     path = path or config.BILLS_FILE
     if not path.exists():
@@ -176,6 +180,11 @@ def load_bills(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
                 warnings.append(
                     f"bills file line {line_no} ({raw_date}): non-numeric "
                     "kwh or amount_crc; row skipped")
+                continue
+            if kwh <= 0 or amount_crc < 0:
+                warnings.append(
+                    f"bills file line {line_no} ({raw_date}): kwh must be "
+                    "positive and amount_crc must not be negative; row skipped")
                 continue
             rows.append({"period_start": period_start, "kwh": kwh, "amount_crc": amount_crc})
     return pd.DataFrame(rows, columns=_BILLS_COLUMNS), warnings

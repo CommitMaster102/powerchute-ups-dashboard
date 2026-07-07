@@ -874,7 +874,7 @@ def _bills_table_html(reconciled: pd.DataFrame | None) -> str:
          implied_rate, tariff_low, tariff_high, rate_tag, partial) in reconciled[
              cols].itertuples(index=False, name=None):
         notes = [_L("partial")] if partial else []
-        notes.append(f"{_rate_tag_label(rate_tag)} (₡{tariff_low:g}/₡{tariff_high:g})")
+        notes.append(f"{_rate_tag_label(rate_tag)} (₡{tariff_low:g}/{tariff_high:g})")
         cells = "".join([
             f'<td class="tl hi">{_esc(period)}</td>',
             f'<td class="tr">{ups_kwh:.4f}</td>',

@@ -482,9 +482,12 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
 
     Each bill's period_start must equal, exactly, the billing-period start
     that `_billing_period_start` computes for `config.BILLING_CYCLE_START_DAY`.
-    A mismatch is reported — naming the entry and the nearest valid boundary
-    at or before it — and excluded rather than silently joined to the wrong
-    period. A bill that aligns but has no matching row in
+    A mismatch is reported — naming the entry and the truly nearest valid
+    boundary, whichever side of the entry it falls on (the preceding
+    period's start or the following period's start, computed via
+    `_billing_period_bounds`; a tie is reported as the earlier boundary) —
+    and excluded rather than silently joined to the wrong period. A bill
+    that aligns but has no matching row in
     `compute_energy_summary`'s "monthly" frame (no UPS energy data recorded
     for that period) is likewise reported and excluded. Neither case raises;
     the analyzer never crashes on this file.
@@ -517,12 +520,17 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
     records: list[dict] = []
     for row in bills_df.itertuples(index=False):
         period_start = row.period_start
-        expected = _billing_period_start(pd.Timestamp(period_start), start_day).date()
-        if expected != period_start:
+        preceding = _billing_period_start(pd.Timestamp(period_start), start_day).date()
+        if preceding != period_start:
+            following = _billing_period_bounds(f"{preceding:%Y-%m-%d}", start_day)[1].date()
+            nearest = (
+                following if (following - period_start) < (period_start - preceding)
+                else preceding
+            )
             warnings.append(
                 f"bill entry {period_start}: does not align to a "
                 f"billing-period start (nearest valid boundary is "
-                f"{expected}); excluded from reconciliation")
+                f"{nearest}); excluded from reconciliation")
             continue
         label = f"{period_start:%Y-%m}" if start_day <= 1 else f"{period_start:%Y-%m-%d}"
         if label not in monthly.index:
