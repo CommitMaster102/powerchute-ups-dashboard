@@ -154,6 +154,8 @@ def test_health_pill_stale_crit_outranks_existing_warn_kpi():
     health = _build_health(["warn"], None, EMPTY, EMPTY, EMPTY, PAL, staleness=staleness)
     assert health["color"] == PAL["red"]
     assert "no new samples in" in health["sub"]
+    assert "near limits" in health["sub"]
+    assert "outside normal range" not in health["sub"]
 
 
 def test_health_pill_stale_wording_distinct_from_gap_wording():

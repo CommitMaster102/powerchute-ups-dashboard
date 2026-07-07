@@ -654,8 +654,12 @@ def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, p
         else:
             label = _L("Multiple alerts") if n_crit > 1 else _L("Attention needed")
         color = pal["red"]
-        metric_bit = (f"{n_crit + n_warn} {_L('metric(s) outside normal range')} · "
-                     if (n_crit or n_warn) else "")
+        if n_crit > 0:
+            metric_bit = f"{n_crit + n_warn} {_L('metric(s) outside normal range')} · "
+        elif n_warn > 0:
+            metric_bit = f"{n_warn} {_L('metric(s) near limits')} · "
+        else:
+            metric_bit = ""
         sub = f"{stale_bit}{metric_bit}{counts}"
     elif n_warn or stale_level == "warn":
         label = _L("Data feed stale") if stale_level == "warn" and not n_warn else _L("Advisory")

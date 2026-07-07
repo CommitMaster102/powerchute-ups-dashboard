@@ -3,6 +3,7 @@ cross-validation over the loaded PCSS data."""
 from __future__ import annotations
 
 import calendar
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -91,7 +92,7 @@ def detect_gaps(df: pd.DataFrame, expected_interval_min: float | None = None) ->
     return pd.DataFrame(gaps)
 
 
-def assess_staleness(newest_sample: pd.Timestamp, now: pd.Timestamp,
+def assess_staleness(newest_sample: datetime | pd.Timestamp, now: datetime | pd.Timestamp,
                      warn_hours: float | None = None,
                      crit_hours: float | None = None) -> dict:
     """Compare the DataLog's newest sample against the wall clock.
