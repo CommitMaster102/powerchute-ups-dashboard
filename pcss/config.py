@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -164,40 +164,66 @@ def tariff_rates_for(period_start: date) -> tuple[float, float, float, float, st
             chosen.pcss_flat, f"rates from {chosen.effective_from:%Y-%m-%d}")
 
 
-def _parse_tariff_history(entries: list[dict]) -> list[TariffPeriod]:
+def _parse_tariff_history(entries: object) -> list[TariffPeriod]:
     """Parse and validate [[tariff.history]] entries into a date-sorted list.
 
-    Each entry must carry effective_from (a "YYYY-MM-DD" string) plus the
-    four rate fields the flat [tariff] keys hold. A malformed or incomplete
-    entry is a user config error, and it is reported loudly and naming the
-    entry rather than being silently skipped.
+    Each entry must carry effective_from plus the four rate fields the flat
+    [tariff] keys hold. effective_from accepts either a quoted "YYYY-MM-DD"
+    string or an unquoted TOML date literal (tomllib hands that back as a
+    datetime.date); an unquoted TOML date-time literal (datetime.datetime) is
+    also accepted and truncated to its date. A malformed or incomplete entry
+    — an unparseable date, a non-numeric rate, a missing field, or `history`
+    not being a list of tables — is a user config error, and it is reported
+    loudly and naming the entry rather than being silently skipped or left to
+    raise an unlabeled built-in exception.
     """
+    if not isinstance(entries, list):
+        raise ValueError(
+            f"config error: [tariff.history] must be a list of tables (got "
+            f"{type(entries).__name__})")
     required = ("coopesantos_low", "coopesantos_high", "tier_limit_kwh", "pcss_flat")
     parsed: list[TariffPeriod] = []
     for i, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"config error: [[tariff.history]] entry {i} must be a table "
+                f"(got {type(entry).__name__})")
         raw_date = entry.get("effective_from")
-        if not isinstance(raw_date, str):
+        if isinstance(raw_date, datetime):
+            # An unquoted TOML date-time literal parses to datetime.datetime,
+            # a subclass of date, so this check must come before the plain
+            # date check below.
+            effective_from = raw_date.date()
+        elif isinstance(raw_date, date):
+            effective_from = raw_date
+        elif isinstance(raw_date, str):
+            try:
+                effective_from = date.fromisoformat(raw_date)
+            except ValueError as exc:
+                raise ValueError(
+                    f"config error: [[tariff.history]] entry {i} has an invalid "
+                    f"effective_from {raw_date!r} (expected YYYY-MM-DD): {exc}") from exc
+        else:
             raise ValueError(
                 f"config error: [[tariff.history]] entry {i} is missing "
-                f"'effective_from' (expected a quoted date like \"2026-04-01\")")
-        try:
-            effective_from = date.fromisoformat(raw_date)
-        except ValueError as exc:
-            raise ValueError(
-                f"config error: [[tariff.history]] entry {i} has an invalid "
-                f"effective_from {raw_date!r} (expected YYYY-MM-DD): {exc}") from exc
+                f"'effective_from' (expected a date literal like 2026-04-01 or "
+                f"the quoted string \"2026-04-01\")")
         missing = [f for f in required if f not in entry]
         if missing:
             raise ValueError(
                 f"config error: [[tariff.history]] entry {i} (effective_from="
-                f"{raw_date}) is missing required field(s): {', '.join(missing)}")
-        parsed.append(TariffPeriod(
-            effective_from=effective_from,
-            coopesantos_low=float(entry["coopesantos_low"]),
-            coopesantos_high=float(entry["coopesantos_high"]),
-            tier_limit_kwh=float(entry["tier_limit_kwh"]),
-            pcss_flat=float(entry["pcss_flat"]),
-        ))
+                f"{effective_from}) is missing required field(s): {', '.join(missing)}")
+        rates: dict[str, float] = {}
+        for field in required:
+            raw_value = entry[field]
+            try:
+                rates[field] = float(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"config error: [[tariff.history]] entry {i} (effective_from="
+                    f"{effective_from}) has a non-numeric '{field}' value "
+                    f"{raw_value!r}: {exc}") from exc
+        parsed.append(TariffPeriod(effective_from=effective_from, **rates))
     parsed.sort(key=lambda p: p.effective_from)
     return parsed
 

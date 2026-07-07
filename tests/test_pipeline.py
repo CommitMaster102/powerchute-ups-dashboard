@@ -6,7 +6,7 @@ projection). The dashboard payload contract lives in test_chart_payload.py."""
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,7 @@ import pytest
 
 import pcss.config as cfg
 from pcss.common import fmt_bytes, fmt_crc, ts_2010_to_dt
+from pcss.config import TariffPeriod, _parse_tariff_history
 from pcss.loaders import load_datalog, load_energylog
 from pcss.stats import datalog_stats
 
@@ -199,12 +200,65 @@ def test_load_config_parses_tariff_history(tmp_path, restore_config):
     assert c.TARIFF_HISTORY[1].pcss_flat == pytest.approx(133.10)
 
 
-def test_load_config_no_history_leaves_tariff_history_empty(tmp_path, restore_config):
+def test_load_config_no_history_leaves_prior_tariff_history_unchanged(tmp_path, restore_config):
+    """Sibling flat-tariff keys read as `tariff.get(key, EXISTING_VALUE)`, so
+    an absent key leaves whatever the module already holds untouched rather
+    than resetting to a hardcoded default (module-level config state — see
+    load_config's docstring). TARIFF_HISTORY follows the same convention: a
+    history-less config must not silently clear an already-loaded history.
+    ([] happens to be the module default, so asserting == [] after a fresh
+    process start can't discriminate between "left alone" and "reset
+    to []" — pre-seeding a non-empty list here is what makes the assertion
+    meaningful.)"""
     c = restore_config
+    seeded = [TariffPeriod(date(2026, 1, 1), coopesantos_low=1.0, coopesantos_high=2.0,
+                           tier_limit_kwh=200.0, pcss_flat=2.0)]
+    c.TARIFF_HISTORY = seeded
     conf = tmp_path / "config.toml"
     conf.write_text("[tariff]\npcss_flat = 130.0\n", encoding="utf-8")
     c.load_config(conf)
-    assert c.TARIFF_HISTORY == []
+    assert seeded == c.TARIFF_HISTORY
+
+
+def test_parse_tariff_history_accepts_date_object():
+    """tomllib parses an unquoted TOML date literal (effective_from =
+    2026-04-01, no quotes) into a datetime.date, not a str. The old
+    isinstance(str) check misreported this as a missing 'effective_from'."""
+    entries = [{
+        "effective_from": date(2026, 4, 1),
+        "coopesantos_low": 82.30, "coopesantos_high": 133.10,
+        "tier_limit_kwh": 200.0, "pcss_flat": 133.10,
+    }]
+    parsed = _parse_tariff_history(entries)
+    assert parsed[0].effective_from == date(2026, 4, 1)
+
+
+def test_parse_tariff_history_accepts_datetime_object():
+    """An unquoted TOML date-time literal (e.g. 2026-04-01T13:30:00) parses
+    to datetime.datetime, not date — accepted and truncated to its date."""
+    entries = [{
+        "effective_from": datetime(2026, 4, 1, 13, 30),
+        "coopesantos_low": 82.30, "coopesantos_high": 133.10,
+        "tier_limit_kwh": 200.0, "pcss_flat": 133.10,
+    }]
+    parsed = _parse_tariff_history(entries)
+    assert parsed[0].effective_from == date(2026, 4, 1)
+
+
+def test_load_config_accepts_unquoted_toml_date_literal(tmp_path, restore_config):
+    """End-to-end round trip through tomllib: a config.toml with an unquoted
+    date literal (no quotes around effective_from) must parse cleanly."""
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        "effective_from = 2026-04-01\n"
+        "coopesantos_low = 82.30\ncoopesantos_high = 133.10\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 133.10\n",
+        encoding="utf-8",
+    )
+    c.load_config(conf)
+    assert c.TARIFF_HISTORY[0].effective_from == date(2026, 4, 1)
 
 
 def test_load_config_rejects_invalid_effective_from(tmp_path, restore_config):
@@ -231,6 +285,45 @@ def test_load_config_rejects_missing_rate_field(tmp_path, restore_config):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="missing required field"):
+        c.load_config(conf)
+
+
+def test_load_config_rejects_non_numeric_rate_field(tmp_path, restore_config):
+    """A non-numeric rate field (e.g. a quoted string) must raise the same
+    loud, named config-error style as the other validation failures, not a
+    raw ValueError straight out of float()."""
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        'effective_from = "2026-06-01"\n'
+        'coopesantos_low = "oops"\ncoopesantos_high = 133.10\n'
+        "tier_limit_kwh = 200.0\npcss_flat = 133.10\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"\[\[tariff\.history\]\] entry 1.*coopesantos_low"):
+        c.load_config(conf)
+
+
+def test_load_config_rejects_history_not_a_list(tmp_path, restore_config):
+    """A `history` value that isn't a list of tables (e.g. a bare string)
+    must raise a named config error, not an unlabeled AttributeError from
+    iterating something that isn't iterable the way expected."""
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text('[tariff]\nhistory = "oops"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\[tariff\.history\] must be a list"):
+        c.load_config(conf)
+
+
+def test_load_config_rejects_history_entry_not_a_table(tmp_path, restore_config):
+    """A `history` list whose entries aren't tables (e.g. plain integers)
+    must raise a named config error per entry, not an unlabeled
+    AttributeError from calling .get() on something that isn't a dict."""
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text("[tariff]\nhistory = [1, 2, 3]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\[\[tariff\.history\]\] entry 1.*table"):
         c.load_config(conf)
 
 
