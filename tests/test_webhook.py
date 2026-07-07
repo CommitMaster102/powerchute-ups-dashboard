@@ -72,6 +72,49 @@ def test_clear_webhook_url_is_harmless_when_nothing_stored(monkeypatch):
     t.clear_webhook_url()  # must not raise
 
 
+def test_set_webhook_url_keyring_unavailable_logs_and_returns_false(monkeypatch, tmp_path):
+    # Mirrors test_get_webhook_url_no_backend_returns_none_and_logs: a
+    # locked/unavailable keyring backend must be logged and swallowed, not
+    # raised as a traceback out of --set-webhook-url.
+    fake = types.ModuleType("keyring")
+    def boom(*a, **k):
+        raise RuntimeError("no backend")
+    fake.set_password = boom
+    monkeypatch.setattr(t, "keyring", fake)
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+
+    result = t.set_webhook_url("https://ntfy.sh/mytopic")  # must not raise
+
+    assert result is False
+    assert "keyring" in log_path.read_text(encoding="utf-8").lower()
+
+
+# ---------------------------------------------------------------- config lookup anchoring
+def test_load_tray_config_reads_config_toml_regardless_of_cwd(monkeypatch, tmp_path):
+    # The tray can be launched from any CWD (a pythonw shortcut, a Task
+    # Scheduler job at logon), so the config.toml lookup must anchor to
+    # SCRIPT_DIR, not the process's current working directory -- otherwise
+    # [alerts] webhook_enabled silently stays False with no symptom.
+    script_dir = tmp_path / "install"
+    script_dir.mkdir()
+    (script_dir / "config.toml").write_text(
+        "[alerts]\nwebhook_enabled = true\n", encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    monkeypatch.setattr(t, "SCRIPT_DIR", script_dir)
+    monkeypatch.chdir(elsewhere)
+    # Register the module global for monkeypatch's automatic restore,
+    # regardless of how the code under test mutates it.
+    monkeypatch.setattr(t.pcss_config, "WEBHOOK_ENABLED", t.pcss_config.WEBHOOK_ENABLED)
+
+    t._load_tray_config()
+
+    assert t.pcss_config.WEBHOOK_ENABLED is True
+
+
 # ---------------------------------------------------------------- send_webhook payload
 def test_send_webhook_posts_plain_text_body(monkeypatch):
     calls = []
@@ -88,6 +131,7 @@ def test_send_webhook_posts_plain_text_body(monkeypatch):
     assert url == "https://ntfy.sh/mytopic"
     assert kwargs["data"] == b"voltage_anomalies=2"
     assert kwargs["timeout"] == 5.0
+    assert kwargs["headers"]["Content-Type"] == "text/plain; charset=utf-8"
 
 
 def test_send_webhook_non_2xx_is_logged_not_raised(monkeypatch, tmp_path):
@@ -217,9 +261,31 @@ def test_notify_alert_skips_webhook_thread_when_disabled(monkeypatch):
     t.notify_alert(icon, "some alert", False, None)
 
     assert icon.notifications
-    # The thread is still spawned (gating happens inside maybe_send_webhook),
-    # but it must be a harmless no-op — requests.post is never called.
-    assert len(spawned) == 1
+    # The gate now runs before the thread spawn: a fully-disabled webhook
+    # channel does no extra work at all -- no thread, no daemon overhead.
+    assert spawned == []
+
+
+def test_notify_alert_skips_webhook_thread_when_enabled_but_url_missing(monkeypatch, tmp_path):
+    spawned = []
+
+    class _CountingThread(_ImmediateThread):
+        def start(self):
+            spawned.append(1)
+            super().start()
+
+    monkeypatch.setattr(t.threading, "Thread", _CountingThread)
+    monkeypatch.setattr(t.requests, "post", lambda *a, **k: pytest.fail("must not be called"))
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+
+    icon = _FakeIcon()
+    t.notify_alert(icon, "some alert", True, None)
+
+    assert icon.notifications
+    assert spawned == []
+    logged = log_path.read_text(encoding="utf-8").lower()
+    assert "no url" in logged or "no-op" in logged or "skip" in logged
 
 
 # ---------------------------------------------------------------- CLI flags

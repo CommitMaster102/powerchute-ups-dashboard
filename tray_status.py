@@ -634,11 +634,21 @@ def get_webhook_url() -> str | None:
         return None
 
 
-def set_webhook_url(url: str) -> None:
+def set_webhook_url(url: str) -> bool:
     """Store the webhook URL in the OS keyring. Mirrors the password's
     keyring-only storage: the URL never touches credentials.txt, config.toml,
-    or the repo."""
-    keyring.set_password(KEYRING_SERVICE, WEBHOOK_KEYRING_USERNAME, url)
+    or the repo.
+
+    A locked/unavailable keyring backend is logged and returns False rather
+    than raising (mirroring _resolve_password's guarded keyring.set_password
+    call above), so --set-webhook-url fails gracefully with a logged reason
+    instead of a traceback. Returns True on success."""
+    try:
+        keyring.set_password(KEYRING_SERVICE, WEBHOOK_KEYRING_USERNAME, url)
+        return True
+    except Exception as e:
+        log(f"Webhook: failed to store URL in the OS keyring ({type(e).__name__}: {e}).")
+        return False
 
 
 def clear_webhook_url() -> None:
@@ -697,12 +707,20 @@ def notify_alert(icon: Icon, alert: str, webhook_enabled: bool,
 
     The toast fires first and unconditionally — a slow or failing webhook
     (swallowed and logged inside maybe_send_webhook/send_webhook) can never
-    delay or prevent it. The webhook send runs off the polling thread; a
-    daemon thread per alert is fine at this volume (one alert per cooldown
-    window, at most).
+    delay or prevent it. The webhook_enabled/URL gate is checked here,
+    before the thread spawn, so the fully-disabled (or enabled-but-
+    unconfigured) path does no extra work at all — no thread, no daemon
+    overhead — rather than spawning a thread whose only job is to
+    immediately no-op. The logged no-op is unchanged; it now just runs
+    synchronously on the polling thread instead of inside a spawned one.
     """
     icon.notify(alert, "UPS — alerta")
     log(f"Toast: {alert}")
+    if not webhook_enabled:
+        return
+    if not webhook_url:
+        log("Webhook: enabled but no URL is configured in the keyring; skipping.")
+        return
     threading.Thread(
         target=maybe_send_webhook,
         args=(webhook_enabled, webhook_url, alert),
@@ -944,6 +962,21 @@ def _format_tooltip(state: State) -> str:
     return text[:127]
 
 
+def _load_tray_config() -> Path | None:
+    """Load config.toml anchored to SCRIPT_DIR, not the process's current
+    working directory.
+
+    The tray can be launched with any CWD (a pythonw shortcut, a Task
+    Scheduler job at logon), so resolving config.toml relative to the
+    process CWD (pcss_config.load_config()'s no-argument default) would
+    silently leave WEBHOOK_ENABLED — and every other config key — at its
+    default with no symptom. load_config() tolerates a nonexistent path
+    gracefully, so this is safe whether or not config.toml exists next to
+    tray_status.py.
+    """
+    return pcss_config.load_config(path=SCRIPT_DIR / "config.toml")
+
+
 def main():
     # Single-instance check — refuse to run if another tray is active.
     # Concurrent instances corrupt PCSS form-tokens and cause login failures.
@@ -960,7 +993,7 @@ def main():
 
     # Same config.toml the analyzer reads (module-level state in pcss.config);
     # this is how [alerts] webhook_enabled reaches the tray.
-    pcss_config.load_config()
+    _load_tray_config()
 
     cfg = load_credentials()
     client = PCSSClient(cfg["url"], cfg["username"], cfg["password"])
@@ -1129,17 +1162,23 @@ def parse_cli_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _prompt_and_set_webhook_url() -> None:
+def _prompt_and_set_webhook_url() -> int:
     """Console setup command backing --set-webhook-url: prompts for the URL
     and stores it in the OS keyring. Not covered by the pytest suite (it
-    calls input()); the storage it delegates to (set_webhook_url) is."""
+    calls input()); the storage it delegates to (set_webhook_url) is.
+
+    Returns a process exit code: 0 on success, 1 if nothing was entered or
+    the keyring store failed (set_webhook_url already logged the reason)."""
     url = input("Webhook URL (e.g. an ntfy.sh topic URL): ").strip()
     if not url:
         print("No URL entered; nothing stored.")
-        return
-    set_webhook_url(url)
+        return 1
+    if not set_webhook_url(url):
+        print(f"Failed to store the webhook URL in the OS keyring; see {TRAY_LOG}.")
+        return 1
     print(f"Webhook URL stored in the OS keyring under service '{KEYRING_SERVICE}'.")
     print("Remember to also set [alerts] webhook_enabled = true in config.toml.")
+    return 0
 
 
 def _run_clear_webhook_url() -> None:
@@ -1151,7 +1190,7 @@ def _run_clear_webhook_url() -> None:
 if __name__ == "__main__":
     cli_args = parse_cli_args(sys.argv[1:])
     if cli_args.set_webhook_url:
-        _prompt_and_set_webhook_url()
+        sys.exit(_prompt_and_set_webhook_url())
     elif cli_args.clear_webhook_url:
         _run_clear_webhook_url()
     else:
