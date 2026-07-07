@@ -61,7 +61,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+# numpy 2.x ships stubs that use PEP 695 `type` aliases, which mypy only
+# accepts when the type-check target is 3.12 or newer — targeting 3.11 makes
+# mypy fail inside numpy/__init__.pyi on any fresh install (this is what
+# broke CI). The runtime floor stays requires-python >= 3.11.
+python_version = "3.12"
 ignore_missing_imports = true   # pystray / bs4 / PIL / keyring ship partial or no stubs
 warn_unused_ignores = true
 no_implicit_optional = true
