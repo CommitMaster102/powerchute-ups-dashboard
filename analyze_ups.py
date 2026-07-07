@@ -440,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
     if grid_quality.empty:
         say("  No data to trend grid quality yet.")
     else:
-        say(f"  Events visible at the {config.DATALOG_EXPECTED_INTERVAL_MIN:.0f}-min "
+        say(f"  Events visible at the {config.DATALOG_EXPECTED_INTERVAL_MIN:g}-min "
             "sampling cadence; short events between samples are missed.")
         for row in grid_quality.itertuples(index=False):
             rate_txt = (f"{row.events_per_recorded_day:.2f}/recorded day"
@@ -448,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
             say(f"    {row.month}: sags={row.sag_count}  swells={row.swell_count}  "
                 f"interruptions={row.interruption_count}  "
                 f"({row.recorded_days:.1f} recorded days, {rate_txt})")
-            if row.worst_event_ts is not None:
+            if pd.notna(row.worst_event_ts):
                 say(f"      worst: {row.worst_event_v:.1f} V "
                     f"({row.worst_event_direction}) at {row.worst_event_ts}")
 
@@ -601,12 +601,16 @@ def _grid_quality_for_json(gq: pd.DataFrame) -> dict:
     datalog_expected_interval_min and the note says these are events visible
     at that cadence, the same caveat the console and the dashboard state. A
     NaN means "no events in that direction this month" (or "no span to rate
-    against") and becomes null rather than a non-standard NaN token."""
+    against") and becomes null rather than a non-standard NaN token. Rows
+    that mix a real worst-event month with an event-less one make pandas
+    coerce worst_event_ts to datetime64, so an event-less month's value
+    arrives as pd.NaT rather than None — `pd.isna` catches both NaN and
+    NaT, unlike the narrower `isinstance(v, float) and pd.isna(v)`."""
     records = []
     for row in gq.itertuples(index=False):
         d = row._asdict()
         for k, v in d.items():
-            if isinstance(v, float) and pd.isna(v):
+            if pd.isna(v):
                 d[k] = None
         records.append(d)
     return {

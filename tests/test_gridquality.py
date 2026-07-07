@@ -44,6 +44,33 @@ def _episodes(starts, ends=None) -> pd.DataFrame:
     return pd.DataFrame({"start": starts, "end": ends})
 
 
+def _mixed_presence_gq() -> pd.DataFrame:
+    """A genuine two-month `grid_quality_trend` result with one month
+    holding a real worst-event Timestamp and the other holding only an
+    interruption (no voltage event at all). This reproduces the review
+    finding precisely: when the underlying per-month dict rows are handed
+    to `pd.DataFrame`, pandas sees the column mixing a real Timestamp with
+    the function's documented `None` (`test_worst_event_none_when_only_
+    interruptions` above) and coerces the whole `worst_event_ts` column to
+    datetime64, turning that `None` into `pd.NaT`. `NaT is not None` is
+    True, so the naive `is not None` check downstream still treats it as
+    "an event happened"."""
+    ts_jan = pd.date_range("2026-01-01 00:00", periods=4, freq="20min")
+    ts_feb = pd.date_range("2026-02-01 00:00", periods=4, freq="20min")
+    df = pd.DataFrame({
+        "ts": list(ts_jan) + list(ts_feb),
+        "Line Voltage": [120.0, 108.0, 120.0, 120.0,
+                         120.0, 120.0, 120.0, 120.0],
+    })
+    eps = _episodes(["2026-02-01 00:20"])
+    gq = grid_quality_trend(df, episodes=eps)
+    # Sanity check that the coercion this test exists for actually happened;
+    # if pandas' own behavior ever changes, this fails loudly here instead
+    # of the assertions below silently testing nothing.
+    assert gq.iloc[1]["worst_event_ts"] is pd.NaT
+    return gq
+
+
 # ---------------------------------------------------------------- classify: direction split
 def test_classify_sag_below_low_envelope():
     df = _dl([120.0, 110.0, 120.0])   # 110 < 114 low bound
@@ -278,6 +305,25 @@ def test_table_html_shows_dash_for_missing_direction_mean():
     assert "—" in html   # em dash placeholder for "no swells this month"
 
 
+def test_table_html_handles_nat_worst_event_across_months():
+    """Finding 1 (critical, roadmap item 28 review): a multi-month frame
+    that mixes a real worst-event month with an event-less month must not
+    raise (the event-less month's worst_event_ts is `pd.NaT`, and
+    `f"{NaT:%Y-%m-%d %H:%M}"` raises ValueError under the old `is not None`
+    check), and must render the em-dash placeholder for that month's worst
+    event, not a garbled NaT string."""
+    from pcss.dashboard import _grid_quality_table_html
+    gq = _mixed_presence_gq()
+    html = _grid_quality_table_html(gq)   # must not raise ValueError
+    assert "NaT" not in html
+    # The Feb row's last cell (Worst event, the last column) is the bare em
+    # dash placeholder, not a mangled timestamp.
+    idx = html.index("2026-02")
+    feb_row_tail = html[idx:html.index("</tr>", idx) + len("</tr>")]
+    assert "nan" not in feb_row_tail.lower()
+    assert feb_row_tail.endswith('<td class="tr">—</td></tr>')
+
+
 def _dashboard_inputs(datalog_df, gaps=None, episodes=None):
     return dict(
         datalog_df=datalog_df, energy_df=pd.DataFrame(), hist=pd.DataFrame(),
@@ -382,6 +428,27 @@ def test_console_grid_quality_silent_message_when_no_datalog(tmp_path, capsys):
     assert "not enough data" in out.lower() or "no data" in out.lower()
 
 
+def test_console_worst_event_no_nat_or_nan_for_event_less_month(monkeypatch, tmp_path, capsys):
+    """Finding 1, console surface: analyze_ups.py:451's `is not None` check
+    on `worst_event_ts` must not print a garbled "worst: nan V (nan) at
+    NaT" line for a month that had only an interruption. The real DataLog
+    driving `main()` is irrelevant here — `grid_quality_trend` is
+    monkeypatched to the mixed-presence frame so this pins exactly the
+    console-rendering code path."""
+    import analyze_ups
+    gq = _mixed_presence_gq()
+    monkeypatch.setattr(analyze_ups, "grid_quality_trend", lambda *a, **k: gq)
+    agent = _write_agent_with_sag(tmp_path)
+    exit_code = analyze_ups.main([
+        "--agent-dir", str(agent), "-o", str(tmp_path / "d.html"),
+        "--no-browser", "--no-snapshot", "--config", str(_hermetic_config(tmp_path)),
+    ])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "NaT" not in out
+    assert "nan V" not in out
+
+
 # ==================================================================
 # Layer: --json key
 # ==================================================================
@@ -422,3 +489,27 @@ def test_json_summary_omits_grid_quality_key_when_no_datalog(tmp_path):
     ])
     data = json.loads(j.read_text())
     assert "grid_quality" not in data
+
+
+def test_json_worst_event_null_not_nat_string_for_event_less_month(monkeypatch, tmp_path):
+    """Finding 1, --json surface: `_grid_quality_for_json`'s NaN sanitizer
+    (`isinstance(v, float) and pd.isna(v)`) misses `pd.NaT` (it is not a
+    float), so the event-less month's worst_event_ts must not leak the
+    literal string "NaT" — it must serialize as JSON null, exactly like
+    the documented "no events this month" case."""
+    import analyze_ups
+    gq = _mixed_presence_gq()
+    monkeypatch.setattr(analyze_ups, "grid_quality_trend", lambda *a, **k: gq)
+    agent = _write_agent_with_sag(tmp_path)
+    j = tmp_path / "out.json"
+    analyze_ups.main([
+        "--agent-dir", str(agent), "-o", str(tmp_path / "d.html"),
+        "--no-browser", "--quiet", "--no-snapshot",
+        "--config", str(_hermetic_config(tmp_path)), "--json", str(j),
+    ])
+    raw = j.read_text()
+    assert '"NaT"' not in raw
+    data = json.loads(raw)
+    months = data["grid_quality"]["months"]
+    feb = next(m for m in months if m["month"] == "2026-02")
+    assert feb["worst_event_ts"] is None

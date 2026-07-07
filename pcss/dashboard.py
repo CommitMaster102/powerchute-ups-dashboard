@@ -1033,7 +1033,7 @@ def _grid_quality_table_html(gq: pd.DataFrame | None) -> str:
         sag_txt = f"{sag_depth:.1f}" if pd.notna(sag_depth) else "—"
         swell_txt = f"{swell_depth:.1f}" if pd.notna(swell_depth) else "—"
         worst_txt = (f"{worst_v:.1f} V · {_L(worst_dir)} · {worst_ts:%Y-%m-%d %H:%M}"
-                     if worst_ts is not None else "—")
+                     if pd.notna(worst_ts) else "—")
         cells = "".join([
             f'<td class="tl hi">{_esc(month)}</td>',
             f'<td class="tr">{sags}</td>',
