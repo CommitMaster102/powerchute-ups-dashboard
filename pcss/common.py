@@ -45,3 +45,13 @@ def parse_pcss_number(x):
 
 def ts_2010_to_dt(seconds: float) -> datetime:
     return EPOCH_2010 + timedelta(seconds=float(seconds))
+
+
+def fmt_age_hours(hours: float) -> str:
+    """Format an elapsed time given in hours as e.g. '5.0 h' or, once it
+    crosses two days, '4.2 d'. Used to name the age of the newest DataLog
+    sample in the staleness console line, alert line, and health-pill
+    reason (pcss/stats.py assess_staleness)."""
+    if hours < 48:
+        return f"{hours:.1f} h"
+    return f"{hours / 24:.1f} d"

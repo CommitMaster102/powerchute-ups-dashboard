@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 from pcss import config
-from pcss.common import fmt_bytes, fmt_crc
+from pcss.common import fmt_age_hours, fmt_bytes, fmt_crc
 from pcss.stats import (
     _billing_period_bounds,
     battery_replace_projection,
@@ -191,6 +191,8 @@ _STRINGS_ES = {
     "Generated": "Generado",
     "theme": "tema",
     "chart": "gráfico",
+    "Data feed stale": "Fuente de datos desactualizada",
+    "no new samples in": "sin muestras nuevas en",
 }
 
 
@@ -629,7 +631,7 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal):
 
 
 def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, pal,
-                  on_battery=None, battery=None) -> dict:
+                  on_battery=None, battery=None, staleness=None) -> dict:
     n_crit = sevs.count("crit")
     n_warn = sevs.count("warn")
     n_ob = 0 if on_battery is None else len(on_battery)
@@ -638,13 +640,28 @@ def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, p
               f"{ob_bit}"
               f"{len(high_load_episodes)} {_L('high-load')} · "
               f"{_count(len(gaps), _L('gap'), _L('gaps'))} {_L('in window')}")
-    if n_crit:
-        label = _L("Multiple alerts") if n_crit > 1 else _L("Attention needed")
+
+    # "Stale now" (the feed itself has gone quiet) is a different fact from
+    # the historical DataLog gaps folded into `counts` above, so it gets its
+    # own clause naming the concrete age instead of reusing the gap wording.
+    stale_level = (staleness or {}).get("level", "fresh")
+    stale_bit = (f"{_L('no new samples in')} {fmt_age_hours(staleness['age_hours'])} · "
+                if stale_level in ("warn", "crit") else "")
+
+    if n_crit or stale_level == "crit":
+        if stale_level == "crit" and not n_crit:
+            label = _L("Data feed stale")
+        else:
+            label = _L("Multiple alerts") if n_crit > 1 else _L("Attention needed")
         color = pal["red"]
-        sub = f"{n_crit + n_warn} {_L('metric(s) outside normal range')} · {counts}"
-    elif n_warn:
-        label, color = _L("Advisory"), pal["amber"]
-        sub = f"{n_warn} {_L('metric(s) near limits')} · {counts}"
+        metric_bit = (f"{n_crit + n_warn} {_L('metric(s) outside normal range')} · "
+                     if (n_crit or n_warn) else "")
+        sub = f"{stale_bit}{metric_bit}{counts}"
+    elif n_warn or stale_level == "warn":
+        label = _L("Data feed stale") if stale_level == "warn" and not n_warn else _L("Advisory")
+        color = pal["amber"]
+        metric_bit = f"{n_warn} {_L('metric(s) near limits')} · " if n_warn else ""
+        sub = f"{stale_bit}{metric_bit}{counts}"
     else:
         label, color = _L("All systems nominal"), pal["green"]
         if battery and battery.get("status") == "projected":
@@ -1001,7 +1018,8 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     voltage_anomalies: pd.DataFrame, high_load_episodes: pd.DataFrame,
                     crossval: dict, on_battery: pd.DataFrame | None = None,
                     battery: dict | None = None,
-                    events_summary: dict | None = None) -> str:
+                    events_summary: dict | None = None,
+                    staleness: dict | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
@@ -1031,7 +1049,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 
     kpis, sparks, sevs = _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal)
     health = _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, pal,
-                           on_battery, battery)
+                           on_battery, battery, staleness)
 
     last_sample_ms = None
     if not datalog_df.empty:

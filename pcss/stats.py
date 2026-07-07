@@ -91,6 +91,44 @@ def detect_gaps(df: pd.DataFrame, expected_interval_min: float | None = None) ->
     return pd.DataFrame(gaps)
 
 
+def assess_staleness(newest_sample: pd.Timestamp, now: pd.Timestamp,
+                     warn_hours: float | None = None,
+                     crit_hours: float | None = None) -> dict:
+    """Compare the DataLog's newest sample against the wall clock.
+
+    Both timestamps are naive local time, the same convention as
+    ``ts_2010_to_dt`` output, so subtracting them is safe with no timezone
+    conversion. The caller (``analyze_ups.py``) reads the wall clock exactly
+    once and passes it in here — this function never calls ``datetime.now()``
+    itself, which keeps it testable with an injected ``now``.
+
+    A PC being off overnight produces no samples with nothing actually wrong,
+    so the default thresholds are generous: below ``stale_warn_hours`` (12)
+    reads as fresh, at or beyond it reads as "warn", and at or beyond
+    ``stale_crit_hours`` (48) reads as "crit" — a dead serial link, a stopped
+    service, or a wedged agent, not just an ordinary quiet evening. This is a
+    distinct fact from the historical sampling gaps ``detect_gaps`` reports:
+    that function looks for gaps already closed by later samples, while this
+    one asks whether the feed is stale right now.
+
+    Returns a dict with ``level`` ("fresh", "warn", or "crit") and
+    ``age_hours`` (float, clamped to 0 if ``now`` is somehow earlier than
+    ``newest_sample`` — clock skew, not negative staleness).
+    """
+    if warn_hours is None:
+        warn_hours = config.STALE_WARN_HOURS
+    if crit_hours is None:
+        crit_hours = config.STALE_CRIT_HOURS
+    age_hours = max(0.0, (now - newest_sample).total_seconds() / 3600.0)
+    if age_hours >= crit_hours:
+        level = "crit"
+    elif age_hours >= warn_hours:
+        level = "warn"
+    else:
+        level = "fresh"
+    return {"level": level, "age_hours": age_hours}
+
+
 def detect_voltage_anomalies(df: pd.DataFrame) -> pd.DataFrame:
     """Rows where Line Voltage falls outside the 114-126V envelope."""
     if df.empty or "Line Voltage" not in df.columns:

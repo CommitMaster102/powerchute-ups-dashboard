@@ -26,6 +26,11 @@ voltage_normal_low  = 114.0  # NEC ±5% of 120V
 voltage_normal_high = 126.0
 high_load_pct       = 80.0
 datalog_expected_interval_min = 20.0
+# Log-staleness watchdog: how old the newest DataLog sample must be before the
+# console, health pill, and alerts flag a dead serial link, a stopped service,
+# or a wedged agent instead of an ordinary quiet night with the PC off.
+stale_warn_hours = 12.0
+stale_crit_hours = 48.0
 # KPI status-pill cut points (dashboard header row).
 battery_charge_warn_pct = 90.0  # WARN below this % charge
 battery_charge_crit_pct = 50.0  # ALERT below this % charge

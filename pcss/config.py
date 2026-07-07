@@ -70,6 +70,15 @@ BATTERY_TREND_MIN_DAYS = 60.0
 # DataLog default sample interval (PCSS factory default).
 DATALOG_EXPECTED_INTERVAL_MIN = 20.0
 
+# Log-staleness watchdog: the newest DataLog sample (merged live + archive)
+# is compared against the wall clock once per run. The PC being off overnight
+# produces no samples with nothing actually wrong, so both defaults are
+# generous — half a day before a soft warning, two full days before it reads
+# as a dead serial link, a stopped service, or a wedged agent rather than an
+# ordinary quiet night.
+STALE_WARN_HOURS = 12.0
+STALE_CRIT_HOURS = 48.0
+
 # KPI status-pill cut points for the dashboard header row. Battery charge is
 # WARN below the warn threshold and ALERT below the crit threshold; estimated
 # runtime works the same way in minutes.
@@ -124,6 +133,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global BILLING_CYCLE_START_DAY
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
+    global STALE_WARN_HOURS, STALE_CRIT_HOURS
     global ON_BATTERY_VOLTAGE_V, ON_BATTERY_CAPACITY_DROP_PCT
     global BATTERY_REPLACE_VOLTAGE_V, BATTERY_TREND_MIN_DAYS
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
@@ -169,6 +179,8 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
         th.get("battery_replace_voltage_v", BATTERY_REPLACE_VOLTAGE_V))
     BATTERY_TREND_MIN_DAYS = float(th.get("battery_trend_min_days", BATTERY_TREND_MIN_DAYS))
     DATALOG_EXPECTED_INTERVAL_MIN = float(th.get("datalog_expected_interval_min", DATALOG_EXPECTED_INTERVAL_MIN))
+    STALE_WARN_HOURS = float(th.get("stale_warn_hours", STALE_WARN_HOURS))
+    STALE_CRIT_HOURS = float(th.get("stale_crit_hours", STALE_CRIT_HOURS))
     BATTERY_CHARGE_WARN_PCT = float(th.get("battery_charge_warn_pct", BATTERY_CHARGE_WARN_PCT))
     BATTERY_CHARGE_CRIT_PCT = float(th.get("battery_charge_crit_pct", BATTERY_CHARGE_CRIT_PCT))
     RUNTIME_WARN_MIN = float(th.get("runtime_warn_min", RUNTIME_WARN_MIN))

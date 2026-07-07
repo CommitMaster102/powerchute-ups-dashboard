@@ -35,6 +35,7 @@ Shipped so far (details in the archive at the bottom):
 | 13 | Spanish localization | `_STRINGS_ES`/`_L` in `pcss/dashboard.py` |
 | 14 | Notifications (toast route) | `AlertWatcher` in `tray_status.py` |
 | 15 | Auto-refreshing view | `[dashboard] refresh_minutes` meta refresh |
+| 31 | Log-staleness watchdog | `pcss/stats.py` (`assess_staleness`) |
 
 ## Data and analysis
 
@@ -373,30 +374,6 @@ Challenges:
   still intact on disk — should be weighed first; it may be all a personal
   dashboard ever needs (the ponytail question: does the fancy version need
   to exist at all?).
-
-### 31. Log-staleness watchdog
-
-Nothing notices when PCSS stops writing: a dead serial link, a stopped
-service, or a wedged agent just means every analyzer run re-analyzes aging
-data and the dashboard quietly goes stale. When the newest DataLog sample is
-older than a multiple of `datalog_expected_interval_min`, the console should
-say so, `_build_health` should degrade the health pill (amber, then red
-beyond a second threshold), and the `[alerts]` trigger should fire so the
-tray toasts it. Cheap, and it guards everything downstream of the data.
-
-Challenges:
-
-- False alarms: the PC being off overnight produces no samples with nothing
-  wrong. The default threshold must be generous (half a day or more, under
-  `[thresholds]`), and "stale now" must stay distinct from the historical
-  gaps that `detect_gaps` already reports.
-- Wall-clock enters the pipeline: the analyzer currently reasons only about
-  log timestamps. Comparing the newest sample against "now" has to respect
-  the naive-local timestamp contract (`ts_2010_to_dt`, the epoch-ms
-  convention), or a timezone slip fabricates staleness.
-- The tray could also check cheaply between analyzer runs (DataLog file
-  mtime); if it does, it must read the same threshold from config rather
-  than duplicating the number.
 
 ### 32. Weekly digest
 
@@ -812,3 +789,37 @@ Challenges:
   once-a-day marker in `scheduled_run.ps1` and the snapshot logic would need
   a distinction between "full daily run" and "refresh run" (`--no-snapshot`
   already exists for the latter).
+
+### 31. Log-staleness watchdog
+
+SHIPPED: `assess_staleness` in `pcss/stats.py` compares the merged frame's
+newest DataLog sample against a wall clock the orchestrator (`analyze_ups.py`)
+reads exactly once (`[thresholds] stale_warn_hours` = 12, `stale_crit_hours` =
+48, both generous so an evening with the PC off never trips it). Surfaced as
+a console line, a `_build_health` degrade to amber/red in `pcss/dashboard.py`
+with a reason naming the age (worded distinctly from the `detect_gaps`
+historical-gap text), and a line through the existing `[alerts]` append path
+in `analyze_ups.py`. The tray-side DataLog-mtime check stays out of scope.
+`tests/test_staleness.py`.
+
+Nothing notices when PCSS stops writing: a dead serial link, a stopped
+service, or a wedged agent just means every analyzer run re-analyzes aging
+data and the dashboard quietly goes stale. When the newest DataLog sample is
+older than a multiple of `datalog_expected_interval_min`, the console should
+say so, `_build_health` should degrade the health pill (amber, then red
+beyond a second threshold), and the `[alerts]` trigger should fire so the
+tray toasts it. Cheap, and it guards everything downstream of the data.
+
+Challenges:
+
+- False alarms: the PC being off overnight produces no samples with nothing
+  wrong. The default threshold must be generous (half a day or more, under
+  `[thresholds]`), and "stale now" must stay distinct from the historical
+  gaps that `detect_gaps` already reports.
+- Wall-clock enters the pipeline: the analyzer currently reasons only about
+  log timestamps. Comparing the newest sample against "now" has to respect
+  the naive-local timestamp contract (`ts_2010_to_dt`, the epoch-ms
+  convention), or a timezone slip fabricates staleness.
+- The tray could also check cheaply between analyzer runs (DataLog file
+  mtime); if it does, it must read the same threshold from config rather
+  than duplicating the number.
