@@ -37,6 +37,7 @@ Shipped so far (details in the archive at the bottom):
 | 15 | Auto-refreshing view | `[dashboard] refresh_minutes` meta refresh |
 | 31 | Log-staleness watchdog | `pcss/stats.py` (`assess_staleness`) |
 | 17 | Tariff history with effective dates | `pcss/config.py` (`tariff_rates_for`), `pcss/stats.py` (`compute_energy_summary`) |
+| 27 | End-of-period cost forecast | `pcss/stats.py` (`forecast_period_cost`) |
 
 ## Data and analysis
 
@@ -136,31 +137,6 @@ Challenges:
 - Rendering: a labeled vertical marker is a new small shape in
   `pcss/charts.js` next to the existing point markers, and it must stay
   legible next to the gap and episode strips on a busy axis.
-
-### 27. End-of-period cost forecast
-
-The billing-period grouping (item 8) and the hourly profiles (item 9) make a
-forecast mostly a lookup: project the current period's cumulative kWh to the
-period's end date, price the result both flat and tiered, and name the date
-the tier limit will be crossed. Shown as a subtitle on the Period Comparison
-card, a console line, and the `--json` summary — it answers "what will this
-bill be?" while there is still time to react.
-
-Challenges:
-
-- Early-period noise: two days into a period, a linear extrapolation is
-  wild. The forecast needs a minimum-days floor (the
-  `battery_trend_min_days` honesty pattern) or a blend with the previous
-  period's profile until enough of the current period exists.
-- Method choice: a day-of-week-aware projection from the item-9 profiles
-  against a plain per-day mean; the simple version should ship first and the
-  profile version only if it demonstrably beats it.
-- Wording: the partial-period labeling from item 8 already marks the current
-  period; the forecast must present itself as a projection, never a
-  measurement, in every surface it reaches.
-- Where it lands: a new function in `pcss/stats.py` next to
-  `compute_energy_summary`, feeding the `_panel_cmp` subtitle in
-  `pcss/dashboard.py`.
 
 ### 28. Grid-quality trend
 
@@ -841,3 +817,51 @@ Challenges:
 - Reporting has to say which rates priced which period (the partial-period
   labeling pattern extends naturally), otherwise a rate boundary mid-history
   looks like a consumption change.
+
+### 27. End-of-period cost forecast
+
+SHIPPED: `forecast_period_cost` in `pcss/stats.py`, next to
+`compute_energy_summary`. The current period is the most recent one in the
+per-sample frame (the same choice `_panel_cmp` already makes), so a period
+with no energylog samples yet is simply absent rather than silently
+forecasting an already-closed prior period. Evidence is the count of
+distinct calendar days with at least one energylog sample inside that
+period, not calendar days elapsed; below `[tariff] forecast_min_days`
+(default 5) the result carries no numbers at all — the
+`battery_trend_min_days` honesty pattern. Above the floor, the plain
+per-day mean (recorded kWh over evidence days) projects to the period's end
+date and is priced both flat and Coopesantos-tiered with whichever rates are
+in force for the period's start date (`config.tariff_rates_for`, item 17,
+not duplicated). A projected tier crossing is named by date; kWh already
+recorded past the tier limit is reported as a fact (`already_crossed`)
+instead of a projected date. Surfaced as a subtitle on the Period Comparison
+card (`_forecast_sub` in `pcss/dashboard.py`, localized via `_STRINGS_ES`),
+one console line, and a `forecast` key in the `--json` summary — every
+surface words it as a projection ("projected", "at the current pace"),
+never a measurement. Only the simple per-day-mean method shipped; the
+day-of-week-aware variant from the profile views (item 9) stayed out of
+scope, per the roadmap's own "simple version ships first" call.
+`tests/test_forecast.py`.
+
+The billing-period grouping (item 8) and the hourly profiles (item 9) make a
+forecast mostly a lookup: project the current period's cumulative kWh to the
+period's end date, price the result both flat and tiered, and name the date
+the tier limit will be crossed. Shown as a subtitle on the Period Comparison
+card, a console line, and the `--json` summary — it answers "what will this
+bill be?" while there is still time to react.
+
+Challenges:
+
+- Early-period noise: two days into a period, a linear extrapolation is
+  wild. The forecast needs a minimum-days floor (the
+  `battery_trend_min_days` honesty pattern) or a blend with the previous
+  period's profile until enough of the current period exists.
+- Method choice: a day-of-week-aware projection from the item-9 profiles
+  against a plain per-day mean; the simple version should ship first and the
+  profile version only if it demonstrably beats it.
+- Wording: the partial-period labeling from item 8 already marks the current
+  period; the forecast must present itself as a projection, never a
+  measurement, in every surface it reaches.
+- Where it lands: a new function in `pcss/stats.py` next to
+  `compute_energy_summary`, feeding the `_panel_cmp` subtitle in
+  `pcss/dashboard.py`.

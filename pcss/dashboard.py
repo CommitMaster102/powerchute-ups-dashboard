@@ -29,6 +29,7 @@ from pcss.stats import (
     _billing_period_bounds,
     battery_replace_projection,
     estimate_runtime,
+    forecast_period_cost,
 )
 
 _CHARTS_JS_TEMPLATE = (Path(__file__).resolve().parent / "charts.js").read_text(encoding="utf-8")
@@ -200,6 +201,11 @@ _STRINGS_ES = {
     "partial": "parcial",
     "current rates": "tarifas actuales",
     "rates from": "tarifas desde",
+    "not enough of the period recorded yet": "aún no hay suficientes datos de este período",
+    "at the current pace": "al ritmo actual",
+    "by": "para",
+    "tier limit already exceeded": "límite de franja ya superado",
+    "tier crosses": "cruza el límite de franja",
 }
 
 
@@ -463,6 +469,29 @@ def _panel_cmp(energy_summary, pal) -> dict | None:
         "kind": "line", "unit": "kWh", "dec": 2, "xkind": "linear", "xunit": "d",
         "legend": True, "vb": [560, 250], "series": series,
     }
+
+
+def _forecast_sub(forecast: dict | None) -> str:
+    """Word the end-of-period cost forecast (pcss.stats.forecast_period_cost)
+    for the Period Comparison card subtitle. Always speaks as a projection
+    ("projected", "at the current pace") — the honesty rule from roadmap
+    item 27 — except for the "tier limit already exceeded" fact, which
+    describes kWh already recorded this period rather than a future date."""
+    if not forecast:
+        forecast = {}
+    if forecast.get("status") != "projected":
+        ev = forecast.get("evidence_days", 0)
+        need = forecast.get("min_days", config.FORECAST_MIN_DAYS)
+        return f"{_L('not enough of the period recorded yet')} ({ev}/{need:.0f} {_L('days')})"
+    bits = [f"{_L('projected')} ≈{forecast['projected_kwh']:.1f} kWh {_L('by')} "
+            f"{forecast['period_end']:%Y-%m-%d}"]
+    if forecast.get("already_crossed"):
+        bits.append(_L("tier limit already exceeded"))
+    elif forecast.get("tier_cross_date") is not None:
+        bits.append(f"{_L('tier crosses')} ~{forecast['tier_cross_date']:%Y-%m-%d}")
+    else:
+        bits.append(_L("at the current pace"))
+    return " · ".join(bits)
 
 
 def _panel_wk(energy_df, pal) -> dict | None:
@@ -1068,13 +1097,16 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     crossval: dict, on_battery: pd.DataFrame | None = None,
                     battery: dict | None = None,
                     events_summary: dict | None = None,
-                    staleness: dict | None = None) -> str:
+                    staleness: dict | None = None,
+                    forecast: dict | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
     pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
         on_battery = pd.DataFrame()
     if battery is None:
         battery = battery_replace_projection(datalog_df)
+    if forecast is None:
+        forecast = forecast_period_cost(energy_summary)
 
     bv_panel, bv_slope = _panel_bv(datalog_df, pal)
     rt_panel, latest_w, latest_rt = _panel_rt(energy_df, pal)
@@ -1260,7 +1292,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
   <div class="grid12">
     {_card('kw', 8, _L('Cumulative Energy & Cost'), kw_sub, True)}
     {_card('daily', 4, _L('Daily Energy'), _L('kWh / day'), False)}
-    {_card('cmp', 7, _L('Period Comparison'), _L('cumulative kWh · same day offset'), False)}
+    {_card('cmp', 7, _L('Period Comparison'), f"{_L('cumulative kWh · same day offset')} · {_forecast_sub(forecast)}", False)}
     {_card('wk', 5, _L('Weekday vs Weekend'), _L('mean W by hour'), False)}
   </div>
 {periods_block}

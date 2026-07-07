@@ -38,6 +38,14 @@ PCSS_FLAT_RATE = 126.51
 # classic calendar-month grouping.
 BILLING_CYCLE_START_DAY = 1
 
+# Minimum distinct days of energylog evidence inside the current billing
+# period before the end-of-period cost forecast will project anything at all
+# (the battery_trend_min_days honesty pattern): a linear extrapolation from a
+# couple of days of data is noise, not a forecast. Below this floor,
+# forecast_period_cost() returns the honest "not enough of the period
+# recorded yet" with no numbers.
+FORECAST_MIN_DAYS = 5.0
+
 
 @dataclass(frozen=True)
 class TariffPeriod:
@@ -240,7 +248,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     """
     global PCSS_AGENT, DATALOG, EVENTLOG, ENERGYLOG_DIR, DASHBOARD_HTML
     global COOPESANTOS_TIER_LIMIT_KWH, COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, PCSS_FLAT_RATE
-    global BILLING_CYCLE_START_DAY, TARIFF_HISTORY
+    global BILLING_CYCLE_START_DAY, TARIFF_HISTORY, FORECAST_MIN_DAYS
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
     global STALE_WARN_HOURS, STALE_CRIT_HOURS
@@ -278,6 +286,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     PCSS_FLAT_RATE = float(tariff.get("pcss_flat", PCSS_FLAT_RATE))
     BILLING_CYCLE_START_DAY = max(1, min(31, int(
         tariff.get("billing_cycle_start_day", BILLING_CYCLE_START_DAY))))
+    FORECAST_MIN_DAYS = float(tariff.get("forecast_min_days", FORECAST_MIN_DAYS))
     raw_history = tariff.get("history")
     if raw_history is not None:
         TARIFF_HISTORY = _parse_tariff_history(raw_history)

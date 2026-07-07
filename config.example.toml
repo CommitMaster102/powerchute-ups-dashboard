@@ -17,6 +17,12 @@ pcss_flat        = 126.51 # single rate PCSS itself reports with
 # period's start date) and applies the tier limit per period. Periods the
 # recorded data does not fully cover are marked as partial.
 billing_cycle_start_day = 1
+# Minimum distinct days of energylog evidence inside the current billing
+# period before the end-of-period cost forecast (Period Comparison card
+# subtitle, console line, --json "forecast" key) will project anything. Below
+# this floor the forecast reports "not enough of the period recorded yet"
+# with no numbers, the same honesty pattern as battery_trend_min_days below.
+forecast_min_days = 5
 
 # Coopesantos revises these rates quarterly. The four keys above are always
 # the "current" rates: they price every billing period when no history is

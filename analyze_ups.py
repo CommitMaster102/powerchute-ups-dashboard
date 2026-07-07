@@ -48,6 +48,7 @@ from pcss.stats import (
     detect_on_battery_episodes,
     detect_voltage_anomalies,
     estimate_runtime,
+    forecast_period_cost,
 )
 
 __version__ = "1.0.0"
@@ -244,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     energy_df, energy_metas = load_energylog()
     energy_df = _date_filter(energy_df, since_ts, until_ts)
     energy_summary = compute_energy_summary(energy_df) if not energy_df.empty else {}
+    forecast = forecast_period_cost(energy_summary)
 
     section("ENERGY LOG SUMMARY")
     if energy_df.empty:
@@ -278,6 +280,20 @@ def main(argv: list[str] | None = None) -> int:
                     f"PCSS=CRC {cost_pcss:>10,.2f}   "
                     f"Tiered=CRC {cost_tiered:>10,.2f}   "
                     f"CO2={co2_kg:>7.4f} kg{mark}{tag}")
+        say("")
+        if forecast["status"] == "projected":
+            tier_bit = ""
+            if forecast["already_crossed"]:
+                tier_bit = "  [tier limit already exceeded this period]"
+            elif forecast["tier_cross_date"] is not None:
+                tier_bit = f"  [tier crosses ~{forecast['tier_cross_date']:%Y-%m-%d}]"
+            say(f"  Forecast (projected, at the current pace): "
+                f"{forecast['projected_kwh']:.2f} kWh by {forecast['period_end']:%Y-%m-%d}   "
+                f"PCSS=CRC {forecast['projected_cost_pcss']:,.2f}   "
+                f"Tiered=CRC {forecast['projected_cost_tiered']:,.2f}{tier_bit}")
+        else:
+            say(f"  Forecast: not enough of the period recorded yet "
+                f"({forecast['evidence_days']}/{forecast['min_days']:.0f} days) — no projection.")
 
     section("ANOMALIES & EVENTS")
     voltage_anomalies = detect_voltage_anomalies(datalog_df)
@@ -394,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_json_summary(args.json, sizes, dl_stats, hist_stats, energy_summary,
                             voltage_anomalies, high_load, on_battery, gaps, crossval,
                             archive_df, archive_added, battery,
-                            events_df, ev_status, ev_spans)
+                            events_df, ev_status, ev_spans, forecast)
         say(f"  Wrote JSON summary to {args.json}")
 
     events_summary = None
@@ -410,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     html = build_dashboard(
         datalog_df, energy_df, hist, dl_stats, hist_stats, sizes, energy_summary,
         stats_table, gaps, voltage_anomalies, high_load, crossval, episodes, battery,
-        events_summary, staleness,
+        events_summary, staleness, forecast,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
@@ -442,7 +458,7 @@ def _periods_for_json(monthly: pd.DataFrame) -> list[dict]:
 def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
                         voltage_anomalies, high_load, on_battery, gaps, crossval,
                         archive_df, archive_added, battery,
-                        events_df, ev_status, ev_spans) -> None:
+                        events_df, ev_status, ev_spans, forecast=None) -> None:
     """Structured machine-readable summary for external tooling (--json)."""
     energy_json = {k: energy_summary.get(k) for k in
                    ("total_kwh", "total_cost_pcss", "total_cost_tiered", "total_co2_kg",
@@ -472,6 +488,7 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
         },
         "cross_validation": crossval or {},
         "battery": battery or {},
+        "forecast": forecast or {},
         "events": {
             "status": ev_status,
             "n_events": int(len(events_df)),

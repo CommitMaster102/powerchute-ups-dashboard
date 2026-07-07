@@ -385,6 +385,87 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     }
 
 
+def forecast_period_cost(energy_summary: dict, *, min_days: float | None = None) -> dict:
+    """Project the current billing period's recorded kWh to the period's end
+    date and price it, both flat and tiered, so "what will this bill be?"
+    can be answered before the period closes.
+
+    The current period is the most recent one in energy_summary's per-sample
+    frame — the same choice _panel_cmp already makes for the Period
+    Comparison card, so a period that has not started accumulating
+    energylog samples yet is simply absent rather than silently forecasting
+    an already-closed prior period. Evidence is the count of distinct
+    calendar days with at least one energylog sample inside that period, not
+    the number of calendar days since the period started: a day with no
+    samples contributes nothing to the per-day mean, and this keeps the
+    floor honest even when the analyzed window itself lags behind today.
+    Below min_days (config.FORECAST_MIN_DAYS, default 5) the honest result
+    carries no numbers — the same floor pattern as
+    battery_replace_projection's minimum-history guard.
+
+    The projection itself is the plain per-day mean: the period's recorded
+    kWh divided by its evidence days, multiplied by the number of days in
+    the whole period, then priced with the rates in force for the period's
+    start date (config.tariff_rates_for, item 17) — both the PCSS flat rate
+    and the Coopesantos tiered rate (compute_tiered_cost). If the projected
+    total would cross the tier limit before the period ends, the crossing
+    date is the same linear rate solved backward from the period start; if
+    the kWh already recorded this period has already crossed the limit, that
+    fact is reported directly (already_crossed) instead of a projected
+    crossing date — a measurement, not a projection.
+
+    Returns a dict with: status ("insufficient_evidence" or "projected"),
+    period_start, period_end (date or None), min_days, evidence_days (int),
+    projected_kwh, projected_cost_pcss, projected_cost_tiered (float or
+    None), tier_cross_date (date or None), already_crossed (bool), and
+    rate_tag (str or None — item 17's "which rates priced this" label).
+    """
+    if min_days is None:
+        min_days = config.FORECAST_MIN_DAYS
+    out: dict = {
+        "status": "insufficient_evidence",
+        "period_start": None, "period_end": None,
+        "min_days": min_days, "evidence_days": 0,
+        "projected_kwh": None, "projected_cost_pcss": None,
+        "projected_cost_tiered": None, "tier_cross_date": None,
+        "already_crossed": False, "rate_tag": None,
+    }
+    if not energy_summary or "samples" not in energy_summary:
+        return out
+    s = energy_summary["samples"]
+    if s.empty:
+        return out
+    labels = list(dict.fromkeys(s["month"]))    # in time order, deduplicated
+    label = labels[-1]
+    start_day = int(getattr(config, "BILLING_CYCLE_START_DAY", 1))
+    p_start, p_end = _billing_period_bounds(str(label), start_day)
+    out["period_start"] = p_start.date()
+    out["period_end"] = p_end.date()
+    part = s[s["month"] == label]
+    evidence_days = int(part["ts"].dt.date.nunique())
+    out["evidence_days"] = evidence_days
+    if evidence_days < min_days:
+        return out
+    kwh_so_far = float(part["kwh"].sum())
+    period_days = (p_end - p_start).total_seconds() / 86400.0
+    per_day_kwh = kwh_so_far / evidence_days
+    projected_kwh = per_day_kwh * period_days
+    low, high, tier_limit, flat, rate_tag = config.tariff_rates_for(p_start.date())
+    out["status"] = "projected"
+    out["projected_kwh"] = projected_kwh
+    out["projected_cost_pcss"] = projected_kwh * flat
+    out["projected_cost_tiered"] = compute_tiered_cost(
+        projected_kwh, low=low, high=high, tier_limit=tier_limit)
+    out["rate_tag"] = rate_tag
+    if kwh_so_far >= tier_limit:
+        out["already_crossed"] = True
+    elif per_day_kwh > 0:
+        days_to_cross = tier_limit / per_day_kwh
+        if days_to_cross <= period_days:
+            out["tier_cross_date"] = (p_start + pd.Timedelta(days=days_to_cross)).date()
+    return out
+
+
 def compute_tiered_cost(kwh: float, *, low: float | None = None, high: float | None = None,
                         tier_limit: float | None = None) -> float:
     """Coopesantos T-RE Residencial: first tier_limit kWh at low, rest at
