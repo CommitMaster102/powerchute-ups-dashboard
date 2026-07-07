@@ -246,6 +246,10 @@ def tariff_rates_for(period_start: date) -> tuple[float, float, float, float, st
     (low, high, tier_limit_kwh, flat, label), where label is a short tag
     saying which rates applied: "current rates" for the flat-key fallback,
     or "rates from YYYY-MM-DD" for a history entry.
+
+    If two entries share the same effective_from, this loop keeps overwriting
+    `chosen` for each one in turn, so the entry that sorted LATER wins — see
+    _parse_tariff_history's docstring for the full tie-break explanation.
     """
     chosen: TariffPeriod | None = None
     for entry in TARIFF_HISTORY:
@@ -268,10 +272,22 @@ def _parse_tariff_history(entries: object) -> list[TariffPeriod]:
     string or an unquoted TOML date literal (tomllib hands that back as a
     datetime.date); an unquoted TOML date-time literal (datetime.datetime) is
     also accepted and truncated to its date. A malformed or incomplete entry
-    — an unparseable date, a non-numeric rate, a missing field, or `history`
-    not being a list of tables — is a user config error, and it is reported
-    loudly and naming the entry rather than being silently skipped or left to
-    raise an unlabeled built-in exception.
+    — an unparseable date, a wrong-type or missing effective_from, a
+    non-numeric rate, a missing rate field, or `history` not being a list of
+    tables — is a user config error, and it is reported loudly and naming the
+    entry rather than being silently skipped or left to raise an unlabeled
+    built-in exception.
+
+    Two entries are allowed to share the same effective_from (not itself a
+    config error). The list returned here is sorted with Python's stable
+    sort, which preserves the original relative order of equal keys, and
+    tariff_rates_for() picks the newest entry at or before a period's start
+    by scanning this sorted list and repeatedly overwriting its `chosen`
+    candidate — so among entries tied on effective_from, whichever one
+    appeared LATER in this list (equivalently, later in the config.toml
+    array) wins. This is undocumented behavior worth knowing rather than a
+    deliberately designed tie-break; a config with a genuine duplicate should
+    still be fixed to remove one of the two entries.
     """
     if not isinstance(entries, list):
         raise ValueError(
@@ -284,7 +300,12 @@ def _parse_tariff_history(entries: object) -> list[TariffPeriod]:
             raise ValueError(
                 f"config error: [[tariff.history]] entry {i} must be a table "
                 f"(got {type(entry).__name__})")
-        raw_date = entry.get("effective_from")
+        if "effective_from" not in entry:
+            raise ValueError(
+                f"config error: [[tariff.history]] entry {i} is missing "
+                f"'effective_from' (expected a date literal like 2026-04-01 or "
+                f"the quoted string \"2026-04-01\")")
+        raw_date = entry["effective_from"]
         if isinstance(raw_date, datetime):
             # An unquoted TOML date-time literal parses to datetime.datetime,
             # a subclass of date, so this check must come before the plain
@@ -300,10 +321,14 @@ def _parse_tariff_history(entries: object) -> list[TariffPeriod]:
                     f"config error: [[tariff.history]] entry {i} has an invalid "
                     f"effective_from {raw_date!r} (expected YYYY-MM-DD): {exc}") from exc
         else:
+            # Present, but a type that can never be a date (e.g. a bare TOML
+            # integer such as effective_from = 20260401 with no dashes) —
+            # distinct from the key being absent altogether (handled above).
             raise ValueError(
-                f"config error: [[tariff.history]] entry {i} is missing "
-                f"'effective_from' (expected a date literal like 2026-04-01 or "
-                f"the quoted string \"2026-04-01\")")
+                f"config error: [[tariff.history]] entry {i} has a wrong type "
+                f"for 'effective_from': {raw_date!r} is a {type(raw_date).__name__}, "
+                f"not a date (expected a date literal like 2026-04-01 or the "
+                f"quoted string \"2026-04-01\")")
         missing = [f for f in required if f not in entry]
         if missing:
             raise ValueError(

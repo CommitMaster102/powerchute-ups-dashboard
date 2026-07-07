@@ -20,7 +20,7 @@ import pandas as pd
 
 from pcss import config
 from pcss.common import fmt_age_hours, fmt_bytes
-from pcss.dashboard import build_dashboard
+from pcss.dashboard import _count, build_dashboard
 from pcss.eventlog import (
     append_event_archive,
     load_event_archive,
@@ -368,10 +368,16 @@ def main(argv: list[str] | None = None) -> int:
                 tier_bit = "  [tier limit already exceeded this period]"
             elif forecast["tier_cross_date"] is not None:
                 tier_bit = f"  [tier crosses ~{forecast['tier_cross_date']:%Y-%m-%d}]"
+            # Same bracket-tag convention as the monthly breakdown above: only
+            # named when tariff history is actually in play, so an ordinary
+            # run (no [[tariff.history]] configured) does not clutter every
+            # forecast line with a trivial "[current rates]".
+            forecast_history_active = energy_summary.get("tariff_history_active", False)
+            rate_bit = f"  [{forecast['rate_tag']}]" if forecast_history_active else ""
             say(f"  Forecast (projected, at the current pace): "
                 f"{forecast['projected_kwh']:.2f} kWh by {forecast['period_end']:%Y-%m-%d}   "
                 f"PCSS=CRC {forecast['projected_cost_pcss']:,.2f}   "
-                f"Tiered=CRC {forecast['projected_cost_tiered']:,.2f}{tier_bit}")
+                f"Tiered=CRC {forecast['projected_cost_tiered']:,.2f}{tier_bit}{rate_bit}")
         else:
             say(f"  Forecast: not enough of the period recorded yet "
                 f"({forecast['evidence_days']}/{forecast['min_days']:.0f} days) — no projection.")
@@ -483,8 +489,7 @@ def main(argv: list[str] | None = None) -> int:
             f"({baseline['n_days']}/{baseline['min_days']:.0f} days).")
     else:
         flagged = baseline["flagged"]
-        noun = "day deviates" if len(flagged) == 1 else "days deviate"
-        say(f"  {len(flagged)} {noun} from the recorded baseline "
+        say(f"  {_count(len(flagged), 'day deviates', 'days deviate')} from the recorded baseline "
             f"(threshold {baseline['deviation_pct']:g}%):")
         for d, day_type, pct in flagged[["date", "day_type", "deviation_pct"]].itertuples(index=False, name=None):
             say(f"    {d} ({day_type}): {pct:.0f}% deviation")
@@ -613,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
     # crash.
     try:
         digest_path = _maybe_write_weekly_digest(energy_summary, forecast, voltage_anomalies,
-                                                 episodes, battery, now)
+                                                 episodes, battery, now, staleness=staleness)
     except Exception as e:
         digest_path = None
         print(
@@ -937,20 +942,28 @@ def _write_weekly_digest_marker(marker_path: Path, today) -> None:
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = marker_path.with_name(marker_path.name + ".tmp")
     tmp_path.write_text(_format_digest_marker(today), encoding="utf-8")
-    os.replace(tmp_path, marker_path)
+    try:
+        os.replace(tmp_path, marker_path)
+    finally:
+        # A successful replace already moved tmp_path away, so this is a
+        # no-op on the happy path; a failed replace (disk full, an AV lock)
+        # would otherwise leave the sibling .tmp file behind on disk forever.
+        tmp_path.unlink(missing_ok=True)
 
 
 def _weekly_digest_data(energy_summary: dict, forecast: dict,
                         voltage_anomalies: pd.DataFrame, episodes: pd.DataFrame,
-                        battery: dict, now: pd.Timestamp) -> dict:
+                        battery: dict, now: pd.Timestamp,
+                        staleness: dict | None = None) -> dict:
     """Reduce the pipeline's already-computed summaries to the plain values
     the weekly digest line is worded from (roadmap item 32). No statistic is
     computed here — everything is picked straight out of energy_summary
     (compute_energy_summary), forecast (forecast_period_cost), the anomaly
-    and episode frames already detected earlier in main(), and battery
-    (battery_replace_projection); the two "_7d" counts are filtered to the
-    trailing 7 days ending at `now`, which is the only new work this
-    function does.
+    and episode frames already detected earlier in main(), battery
+    (battery_replace_projection), and staleness (pcss.stats.assess_staleness,
+    item 31's watchdog, already computed once per run); the two "_7d" counts
+    are filtered to the trailing 7 days ending at `now`, which is the only
+    new work this function does.
     """
     data: dict = {
         "period_kwh": None, "period_cost_tiered": None, "period_partial": False,
@@ -958,6 +971,8 @@ def _weekly_digest_data(energy_summary: dict, forecast: dict,
         "voltage_anomalies_7d": 0, "episodes_7d": 0,
         "battery_status": None, "battery_replace_date": None,
         "biggest_day_date": None, "biggest_day_kwh": None,
+        "stale_level": (staleness or {}).get("level", "fresh"),
+        "stale_age_hours": (staleness or {}).get("age_hours", 0.0),
     }
 
     monthly = energy_summary.get("monthly") if energy_summary else None
@@ -1036,12 +1051,21 @@ def _build_weekly_digest_line(data: dict, now: pd.Timestamp) -> str:
             f"({data['biggest_day_kwh']:.2f} kWh)"
         )
 
+    # A staleness caveat (item 31's watchdog), so a clean-week reading is not
+    # mistaken for current data when the collection itself has lagged —
+    # omitted entirely when the feed is fresh, the same "say nothing extra"
+    # rule every other optional clause here follows.
+    stale_level = data.get("stale_level", "fresh")
+    if stale_level != "fresh":
+        clauses.append(f"stale_data={stale_level}({data.get('stale_age_hours', 0.0):.1f}h)")
+
     return f"{now:%Y-%m-%d %H:%M:%S}  weekly_digest  " + "  ".join(clauses) + "\n"
 
 
 def _maybe_write_weekly_digest(energy_summary: dict, forecast: dict,
                                 voltage_anomalies: pd.DataFrame, episodes: pd.DataFrame,
-                                battery: dict, now: pd.Timestamp) -> Path | None:
+                                battery: dict, now: pd.Timestamp,
+                                staleness: dict | None = None) -> Path | None:
     """Opt-in (config [alerts] enabled AND [alerts] weekly_digest): once per
     ISO week, append one compact summary line to alerts.log alongside
     whatever event-driven anomaly line _maybe_write_alerts may also have
@@ -1061,7 +1085,7 @@ def _maybe_write_weekly_digest(energy_summary: dict, forecast: dict,
     if not _should_fire_weekly_digest(marker_text, now):
         return None
     data = _weekly_digest_data(energy_summary, forecast, voltage_anomalies, episodes,
-                               battery, now)
+                               battery, now, staleness=staleness)
     line = _build_weekly_digest_line(data, now)
     with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
         f.write(line)

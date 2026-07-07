@@ -125,6 +125,26 @@ def test_negative_amount_row_is_skipped_and_reported(tmp_path):
     assert "2026-01-01" in warnings[0]
 
 
+def test_blank_line_does_not_shift_reported_line_number(tmp_path):
+    """A blank line inside bills.csv must not shift which physical line
+    number a later malformed row is reported at: csv.DictReader silently
+    skips blank lines internally, so a naive enumerate() counter over the
+    yielded rows would undercount by one for every blank line seen before
+    the bad row (polish item A4b). Physical lines here: 1=header,
+    2=good row, 3=blank, 4=bad row."""
+    p = _write_bills(
+        tmp_path,
+        "period_start,kwh,amount_crc\n"
+        "2026-01-01,412.5,45123.00\n"
+        "\n"
+        "not-a-date,398.0,43850.50\n",
+    )
+    df, warnings = load_bills(p)
+    assert len(df) == 1
+    assert len(warnings) == 1
+    assert "line 4" in warnings[0]
+
+
 def test_missing_required_column_reports_and_ignores_the_file(tmp_path):
     p = _write_bills(tmp_path, "period_start,kwh\n2026-01-01,412.5\n")
     df, warnings = load_bills(p)
@@ -247,6 +267,23 @@ def test_one_good_and_one_bad_entry_reconciles_only_the_good_one():
     assert len(reconciled) == 1
     assert reconciled.iloc[0]["period"] == "2026-05"
     assert len(warnings) == 1
+
+
+def test_duplicate_bill_for_same_period_reconciles_both_with_a_warning():
+    """Two bills for the same billing period both still reconcile — dropping
+    either one would silently discard real billed data the user entered —
+    but a warning names the duplicated period so it doesn't slip by
+    unnoticed (polish item A4a)."""
+    es = compute_energy_summary(_edf([("2026-05-14 12:00", 1200.0)]))
+    bills = _bills([
+        (date(2026, 5, 1), 300.0, 40000.0),
+        (date(2026, 5, 1), 310.0, 41000.0),
+    ])
+    reconciled, warnings = reconcile_bills(bills, es)
+    assert len(reconciled) == 2
+    assert list(reconciled["period"]) == ["2026-05", "2026-05"]
+    assert len(warnings) == 1
+    assert "2026-05" in warnings[0]
 
 
 # ---------------------------------------------------------------- end-to-end (analyze_ups.main)

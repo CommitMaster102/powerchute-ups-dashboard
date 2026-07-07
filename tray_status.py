@@ -481,7 +481,7 @@ def wants_no_snapshot(marker_path: Path, today: str) -> bool:
     `marker_reports_today` rather than duplicating the threshold logic."""
     try:
         text: str | None = marker_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         text = None
     return marker_reports_today(text, today)
 
@@ -527,6 +527,7 @@ def _run_analyzer_worker(icon: Icon, gate: SingleFlightRun) -> None:
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 creationflags=0x08000000,  # NO_WINDOW
+                close_fds=True,
             )
             code = proc.wait()
         if code == 0:
@@ -582,6 +583,14 @@ class AlertWatcher:
         # Negative infinity so the very first alert always notifies, whatever
         # clock the caller passes in.
         self._last_notify = float("-inf")
+        # weekly_digest lines (roadmap item 32) fire once per ISO week, so
+        # dropping one to cooldown is not the same "seen again soon" fatigue
+        # control an ordinary repeated anomaly gets — it is losing the only
+        # delivery that line will ever get this week. A digest line seen
+        # during cooldown is held here instead, and delivered on the next
+        # poll where the cooldown has expired, even if that poll has no new
+        # lines of its own.
+        self._pending_digest: list[str] = []
 
     def poll(self, now: float | None = None) -> list[str]:
         """Return every unseen alert line, in order, when a toast is due, else [].
@@ -589,9 +598,12 @@ class AlertWatcher:
         A run can append more than one line at once (an event-driven anomaly
         alert and, on the first run of a new ISO week, the weekly digest) —
         both must be delivered, not just the last, so the caller notifies
-        once per returned line. New lines that arrive inside the cooldown
-        window are consumed silently (the offset still advances), which is
-        what keeps one noisy anomaly from notifying on every run.
+        once per returned line. New ordinary lines that arrive inside the
+        cooldown window are consumed silently (the offset still advances),
+        which is what keeps one noisy anomaly from notifying on every run.
+        A weekly_digest line arriving inside the cooldown is carried over
+        (self._pending_digest) instead of being dropped the same way — see
+        the comment in __init__ — and delivered once the cooldown allows.
         """
         if now is None:
             now = time.time()
@@ -601,22 +613,28 @@ class AlertWatcher:
             return []
         if size < self._offset:
             self._offset = 0
-        if size == self._offset:
-            return []
-        try:
-            with self.path.open("r", encoding="utf-8") as f:
-                f.seek(self._offset)
-                new_text = f.read()
-        except OSError:
-            return []
-        self._offset = size
-        lines = [ln.strip() for ln in new_text.splitlines() if ln.strip()]
-        if not lines:
-            return []
+        new_lines: list[str] = []
+        if size != self._offset:
+            try:
+                with self.path.open("r", encoding="utf-8") as f:
+                    f.seek(self._offset)
+                    new_text = f.read()
+            except OSError:
+                return []
+            self._offset = size
+            new_lines = [ln.strip() for ln in new_text.splitlines() if ln.strip()]
+
         if now - self._last_notify < self.cooldown_sec:
+            if new_lines:
+                self._pending_digest.extend(ln for ln in new_lines if "weekly_digest" in ln)
+            return []
+
+        deliver = self._pending_digest + new_lines
+        self._pending_digest = []
+        if not deliver:
             return []
         self._last_notify = now
-        return lines
+        return deliver
 
 
 # ----------------------------------------------------------------------

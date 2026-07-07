@@ -198,6 +198,35 @@ def test_events_per_recorded_day_uses_total_event_count():
     assert row["events_per_recorded_day"] == pytest.approx(3.0 / row["recorded_days"])
 
 
+def test_gap_straddling_a_month_boundary_is_invisible_to_both_months():
+    """A gap between the last DataLog sample of one calendar month and the
+    first sample of the next necessarily sits entirely OUTSIDE each month's
+    own "covered span" (first-to-last sample within that month): the gap's
+    two endpoints are, by construction, exactly those two boundary samples,
+    so its overlap with each month's own [first, last] window is always
+    zero. recorded_days for BOTH June and July therefore equals their own
+    tiny, unaffected span, even though a real ~7-day gap genuinely separates
+    them (see the comment at the recorded_days computation in
+    grid_quality_trend, polish item A10)."""
+    june_ts = [pd.Timestamp("2026-06-28 00:00"), pd.Timestamp("2026-06-28 00:20")]
+    july_ts = [pd.Timestamp("2026-07-05 00:00"), pd.Timestamp("2026-07-05 00:20")]
+    ts = june_ts + july_ts
+    df = pd.DataFrame({"ts": ts, "Line Voltage": [120.0] * len(ts)})
+    gaps = detect_gaps(df, expected_interval_min=20)
+    # One gap: the ~7-day stretch between June's last sample and July's first
+    # — the within-month 20-minute deltas stay under the 40-minute (2x
+    # expected interval) threshold and are not flagged.
+    assert len(gaps) == 1
+    assert pd.Timestamp(gaps.iloc[0]["from"]) == june_ts[-1]
+    assert pd.Timestamp(gaps.iloc[0]["to"]) == july_ts[0]
+
+    gq = grid_quality_trend(df, gaps=gaps).set_index("month")
+    june_span_days = (june_ts[-1] - june_ts[0]).total_seconds() / 86400.0
+    july_span_days = (july_ts[-1] - july_ts[0]).total_seconds() / 86400.0
+    assert gq.loc["2026-06", "recorded_days"] == pytest.approx(june_span_days)
+    assert gq.loc["2026-07", "recorded_days"] == pytest.approx(july_span_days)
+
+
 def test_recorded_days_zero_gives_nan_rate_not_a_crash():
     # A single sample has no span at all.
     df = _dl([120.0], freq="20min")

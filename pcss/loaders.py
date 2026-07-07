@@ -143,11 +143,15 @@ def load_bills(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
     reported and ignored in full. A row with an unparseable period_start or
     a non-numeric kwh/amount_crc is reported (naming the line and, where
     possible, the offending value) and skipped; the analyzer never crashes
-    on this file. A kwh of zero or less, or a negative amount_crc, is
-    likewise reported and skipped rather than kept: dividing by a
-    non-positive kwh downstream would otherwise produce NaN share/rate
-    figures ("nan%" in the console, a non-standard NaN token in --json).
-    The file is only ever read here, never written.
+    on this file. The named line number is the row's true physical line in
+    the file (via the reader's own line_num, not a manual counter over the
+    rows csv.DictReader yields), so a blank line earlier in the file does
+    not shift it — DictReader skips blank lines internally without exposing
+    them. A kwh of zero or less, or a negative amount_crc, is likewise
+    reported and skipped rather than kept: dividing by a non-positive kwh
+    downstream would otherwise produce NaN share/rate figures ("nan%" in the
+    console, a non-standard NaN token in --json). The file is only ever read
+    here, never written.
     """
     path = path or config.BILLS_FILE
     if not path.exists():
@@ -164,7 +168,15 @@ def load_bills(path: Path | None = None) -> tuple[pd.DataFrame, list[str]]:
             return pd.DataFrame(columns=_BILLS_COLUMNS), warnings
 
         rows: list[dict] = []
-        for line_no, row in enumerate(reader, start=2):  # header occupies line 1
+        for row in reader:
+            # csv.DictReader skips fully blank lines internally without
+            # yielding them, so a plain enumerate() counter over the rows it
+            # DOES yield would undercount by one for every blank line seen
+            # so far. reader.line_num tracks the underlying csv.reader's
+            # physical line count (it advances even for the blank lines
+            # DictReader swallows), so it stays the true physical line
+            # number of whichever line this row ended on.
+            line_no = reader.line_num
             raw_date = (row.get("period_start") or "").strip()
             try:
                 period_start = date.fromisoformat(raw_date)

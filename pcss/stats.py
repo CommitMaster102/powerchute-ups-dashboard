@@ -327,6 +327,13 @@ def grid_quality_trend(datalog_df: pd.DataFrame, gaps: pd.DataFrame | None = Non
     rows: list[dict] = []
     for period, sub in df.groupby(df["ts"].dt.to_period("M"), sort=True):
         month = str(period)
+        # "Covered span" reads as first-to-last sample WITHIN this calendar
+        # month, not the calendar month itself. One consequence: a gap
+        # straddling a month boundary is, by construction, bracketed exactly
+        # by the previous month's last sample and this month's first one, so
+        # it always falls entirely outside both months' own [first, last]
+        # window below and never reduces either month's recorded_days — see
+        # tests/test_gridquality.py's month-boundary-straddling-gap test.
         first, last = sub["ts"].iloc[0], sub["ts"].iloc[-1]
         span_days = (last - first).total_seconds() / 86400.0
         gap_days = 0.0
@@ -620,6 +627,12 @@ def detect_self_tests(datalog_df: pd.DataFrame, dip_pct: float | None = None,
         if recovered_idx is None:
             i += 1
             continue
+        # A window with no usable Line Voltage sample at all (every value
+        # NaN) leaves window_lv empty after dropna(), so this check never
+        # fires — with no voltage evidence to prove an on-battery episode,
+        # the dip is conservatively still reported as a self-test rather
+        # than silently dropped for lack of evidence. See
+        # tests/test_selftest.py's all-NaN Line Voltage test.
         window_lv = lv.iloc[i - 1:recovered_idx + 1].dropna()
         if not window_lv.empty and ((window_lv < voltage_low) | (window_lv > voltage_high)).any():
             i = recovered_idx + 1
@@ -851,8 +864,6 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
     total_kwh = float(s["kwh"].sum())
     daily = s.groupby("date")["kwh"].sum().reset_index()
     monthly = s.groupby("month")["kwh"].sum().reset_index()
-    monthly["cost_pcss"] = monthly["kwh"] * config.PCSS_FLAT_RATE
-    monthly["cost_tiered"] = monthly["kwh"].apply(compute_tiered_cost)
     monthly["co2_kg"] = monthly["kwh"] * config.CO2_KG_PER_KWH
     # A period is partial when the recorded span starts after it begins or
     # ends before it does (one sampling interval of tolerance).
@@ -873,10 +884,17 @@ def compute_energy_summary(edf: pd.DataFrame, interval_sec: int = 300) -> dict:
             period_cost_tiered.append(compute_tiered_cost(
                 float(kwh_val), low=low, high=high, tier_limit=tier_limit))
     monthly["partial"] = partials
+    # cost_pcss/cost_tiered are computed exactly once, from whichever rate
+    # source applies — the flat [tariff] keys, or the per-period historical
+    # lookup gathered in the loop above — rather than computing the flat
+    # formula unconditionally and then overwriting it when history is active.
     if history_active:
         monthly["cost_pcss"] = period_cost_pcss
         monthly["cost_tiered"] = period_cost_tiered
         monthly["rate_tag"] = rate_tags
+    else:
+        monthly["cost_pcss"] = monthly["kwh"] * config.PCSS_FLAT_RATE
+        monthly["cost_tiered"] = monthly["kwh"].apply(compute_tiered_cost)
 
     return {
         "samples": s,
@@ -952,7 +970,10 @@ def forecast_period_cost(energy_summary: dict, *, min_days: float | None = None)
     out["period_start"] = p_start.date()
     out["period_end"] = p_end.date()
     part = s[s["month"] == label]
-    evidence_days = int(part["ts"].dt.date.nunique())
+    # compute_energy_summary already materializes a "date" column
+    # (s["ts"].dt.date) on this same frame — reuse it instead of recomputing
+    # the .dt.date accessor here.
+    evidence_days = int(part["date"].nunique())
     out["evidence_days"] = evidence_days
     if evidence_days < min_days:
         return out
@@ -1000,7 +1021,11 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
     that aligns but has no matching row in
     `compute_energy_summary`'s "monthly" frame (no UPS energy data recorded
     for that period) is likewise reported and excluded. Neither case raises;
-    the analyzer never crashes on this file.
+    the analyzer never crashes on this file. Two bills that both align to the
+    same period are NOT deduplicated — dropping either one would silently
+    discard real billed data — but the second one triggers a warning naming
+    the duplicated period, since it is far more likely a data-entry mistake
+    than an intentional second bill for the same period.
 
     Returns (reconciled, warnings). reconciled has one row per successfully
     joined bill: period, ups_kwh, billed_kwh, share_pct (the UPS-metered
@@ -1028,6 +1053,7 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
 
     monthly = monthly.set_index("month")
     records: list[dict] = []
+    seen_periods: set[str] = set()
     for row in bills_df.itertuples(index=False):
         period_start = row.period_start
         preceding = _billing_period_start(pd.Timestamp(period_start), start_day).date()
@@ -1048,6 +1074,15 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
                 f"bill for {period_start}: the analyzer has no UPS energy "
                 "data for this period; excluded from reconciliation")
             continue
+        if label in seen_periods:
+            # Both bills are still reconciled (dropping either one would
+            # silently discard real billed data the user entered), but a
+            # duplicate for the same period is worth flagging rather than
+            # slipping by unnoticed.
+            warnings.append(
+                f"bill for {period_start}: another bill already reconciles "
+                f"the {label} period; both are kept in the reconciliation")
+        seen_periods.add(label)
         m = monthly.loc[label]
         billed_kwh = float(row.kwh)
         ups_kwh = float(m["kwh"])
@@ -1178,12 +1213,21 @@ def calibrate_runtime_curve(spans: pd.DataFrame, datalog_df: pd.DataFrame,
         duration_min = (end - start).total_seconds() / 60.0
         if duration_min <= 0:
             continue
+        # Brackets the span with the nearest DataLog sample on each side —
+        # a trade-off worth naming: two outages closer together than the
+        # DataLog's own sampling cadence can fall inside the same gap
+        # between samples, so both end up bracketed by the identical
+        # before/after pair. Each is still kept as its own observation
+        # (nothing here deduplicates them), but they are not independent
+        # readings — the same capacity drop gets attributed to both spans'
+        # own, possibly much shorter, durations. See
+        # tests/test_calibration.py's back-to-back-outages test.
         before = dl[dl["ts"] <= start]
         after = dl[dl["ts"] >= end]
         if before.empty or after.empty:
             continue
         drop = float(before["Battery Capacity"].iloc[-1] - after["Battery Capacity"].iloc[0])
-        if not (drop >= min_capacity_drop_pct):
+        if drop < min_capacity_drop_pct:
             continue
         records.append({"drop": drop, "duration_min": duration_min,
                         "midpoint": start + (end - start) / 2})

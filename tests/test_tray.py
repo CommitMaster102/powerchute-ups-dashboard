@@ -174,6 +174,37 @@ def test_alert_watcher_cooldown_swallows_repeats(tmp_path):
     assert w.poll(now=1000.0 + 1801) == ["third"]
 
 
+def test_alert_watcher_carries_weekly_digest_over_the_cooldown(tmp_path):
+    """A weekly_digest line fires once per ISO week; the old poll() advanced
+    the read offset for every new line before checking the cooldown, so a
+    digest arriving inside a prior toast's cooldown window was consumed and
+    dropped exactly like an ordinary repeat — silently losing the one chance
+    to deliver it that week (final-review Minor 9, polish item A12). It must
+    instead be carried over and delivered once the cooldown expires, while
+    an ordinary line that arrives under cooldown keeps today's drop
+    semantics (fatigue control) and is never retried."""
+    p = tmp_path / "alerts.log"
+    p.write_text("", encoding="utf-8")
+    w = t.AlertWatcher(p, cooldown_sec=1800)
+    with p.open("a", encoding="utf-8") as f:
+        f.write("2026-07-06 08:00:00  voltage_anomalies=1\n")
+    assert w.poll(now=1000.0) == ["2026-07-06 08:00:00  voltage_anomalies=1"]
+
+    # Inside the cooldown: an ordinary line and the weekly digest both
+    # arrive in the same run.
+    with p.open("a", encoding="utf-8") as f:
+        f.write("2026-07-06 08:05:00  voltage_anomalies=1\n")
+        f.write("2026-07-06 08:05:00  weekly_digest  period=1.00 kWh\n")
+    assert w.poll(now=1100.0) == []   # still under cooldown: nothing delivered yet
+
+    # After the cooldown expires, even with no further new lines written,
+    # the carried-over digest line must still be delivered — the ordinary
+    # line dropped above stays dropped (it is not retried).
+    delivered = w.poll(now=1000.0 + 1801)
+    assert len(delivered) == 1
+    assert "weekly_digest" in delivered[0]
+
+
 def test_alert_watcher_handles_truncation(tmp_path):
     p = tmp_path / "alerts.log"
     p.write_text("a long line of history\n" * 5, encoding="utf-8")

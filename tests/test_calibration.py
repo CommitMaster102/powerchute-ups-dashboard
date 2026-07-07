@@ -238,6 +238,42 @@ def test_battery_boundary_filter_excludes_pre_replacement_episodes():
     assert unfiltered["k"] != pytest.approx(k_true, rel=0.2)
 
 
+def test_back_to_back_outages_share_the_same_datalog_bracket():
+    """Two outages closer together than the DataLog's own sampling cadence
+    fall inside the same gap between samples, so both spans bracket to the
+    identical before/after pair: the lookup finds the last sample at-or-
+    before each span's start and the first sample at-or-after its end, with
+    no per-span isolation. This pins the CURRENT trade-off (polish item
+    A7b, see the comment at the bracket lookup in calibrate_runtime_curve)
+    rather than fixing it: both spans are still counted as separate
+    episodes, but neither reading is independent — the whole 20-minute
+    inter-sample capacity drop gets attributed to each span's own, much
+    shorter, duration."""
+    # Only two DataLog samples span the whole window, 20 minutes apart (the
+    # PCSS factory default cadence) -- both outages fall inside that one gap.
+    dl_rows = [
+        {"ts": pd.Timestamp("2026-01-01 00:00"), "Battery Capacity": 100.0},
+        {"ts": pd.Timestamp("2026-01-01 00:20"), "Battery Capacity": 90.0},
+    ]
+    energy_rows = [
+        {"ts": pd.Timestamp("2026-01-01 00:00"), "power_w": 500.0, "interval_sec": 300},
+        {"ts": pd.Timestamp("2026-01-01 00:20"), "power_w": 500.0, "interval_sec": 300},
+    ]
+    spans = _spans([
+        ("2026-01-01 00:02", "2026-01-01 00:06"),
+        ("2026-01-01 00:10", "2026-01-01 00:14"),
+    ])
+    datalog_df, energy_df = _frames(dl_rows, energy_rows)
+
+    result = calibrate_runtime_curve(spans, datalog_df, energy_df, min_episodes=2)
+    assert result["status"] == "calibrated"
+    assert result["n_episodes"] == 2   # both spans kept, not deduplicated
+    # Both readings share the same (power, rate) pair drawn from the shared
+    # bracket: 10 capacity points over 4 minutes at 500 W, for both spans.
+    expected_k = (10.0 / 4.0) / 500.0
+    assert result["k"] == pytest.approx(expected_k, rel=1e-9)
+
+
 def test_future_dated_annotation_leaves_fit_unfiltered():
     dl_rows: list[dict] = []
     energy_rows: list[dict] = []

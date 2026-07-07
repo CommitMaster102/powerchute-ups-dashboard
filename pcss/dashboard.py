@@ -563,9 +563,11 @@ def _panel_daily(energy_summary, flagged: pd.DataFrame | None = None) -> dict | 
     ``_panel_cad`` uses to highlight one bin), and the panel also carries a
     ``markers`` list (bar index, the bar's own kWh as ``y``, ``type: "dot"``,
     and a deviation-percent label) that ``renderBar`` in ``pcss/charts.js``
-    draws as a small glyph above the flagged bar, mirroring the ``lv``/``bc``
-    marker-list shape so the same marker-drawing code path serves every
-    panel.
+    draws as a small glyph above the flagged bar, in the same ``markers``
+    payload shape ``renderLine`` reads for the ``lv``/``bc`` panels. The two
+    renderers each carry their own near-identical marker-drawing block
+    (bar-anchored vs. line-anchored coordinate math) — a mirrored shape, not
+    a single shared code path.
 
     ``flagged`` is the ``flagged`` frame from
     ``pcss.stats.detect_baseline_deviations`` (columns ``date``,

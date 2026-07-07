@@ -136,6 +136,21 @@ def test_fires_when_marker_is_malformed():
     assert _should_fire_weekly_digest("garbage", pd.Timestamp("2026-07-06")) is True
 
 
+def test_fires_across_a_53_iso_week_year_boundary():
+    # 2026 is a long ISO year with 53 weeks (2026-12-28 through 2027-01-03
+    # are still ISO week 53 of 2026); the marker records that last week and
+    # today is the first Monday that falls in 2027's own ISO week 1. The
+    # digest must still fire even though the week NUMBER drops from 53 back
+    # down to 1 — the ISO YEAR advanced, and _iso_year_week's tuple
+    # comparison already orders (2027, 1) > (2026, 53) correctly (polish
+    # item A6c).
+    assert _should_fire_weekly_digest("2026-W53", pd.Timestamp("2027-01-04")) is True
+
+
+def test_fires_from_week_52_to_53_within_the_same_53_week_year():
+    assert _should_fire_weekly_digest("2026-W52", pd.Timestamp("2026-12-28")) is True
+
+
 def test_write_weekly_digest_marker_success_leaves_no_tmp_file(tmp_path):
     marker = tmp_path / "last_digest.txt"
     ts = pd.Timestamp("2026-07-06")
@@ -168,6 +183,22 @@ def test_write_weekly_digest_marker_is_atomic(tmp_path, monkeypatch):
     assert marker.read_text(encoding="utf-8") == "2026-W20"
 
 
+def test_write_weekly_digest_marker_failure_cleans_up_the_tmp_sibling(tmp_path, monkeypatch):
+    """A failed os.replace must not leave last_digest.txt.tmp behind on disk
+    forever (polish item A6b)."""
+    import analyze_ups
+
+    marker = tmp_path / "last_digest.txt"
+
+    def boom(*_a, **_k):
+        raise OSError("simulated failure")
+
+    monkeypatch.setattr(analyze_ups.os, "replace", boom)
+    with pytest.raises(OSError):
+        _write_weekly_digest_marker(marker, pd.Timestamp("2026-07-06"))
+    assert not (tmp_path / "last_digest.txt.tmp").exists()
+
+
 # ---------------------------------------------------------------------------
 # Layer: line assembly (pure functions over a dict of already-computed
 # summaries — nothing here computes a new statistic)
@@ -182,6 +213,7 @@ _EMPTY_DIGEST_DATA = {
     "voltage_anomalies_7d": 0, "episodes_7d": 0,
     "battery_status": None, "battery_replace_date": None,
     "biggest_day_date": None, "biggest_day_kwh": None,
+    "stale_level": "fresh", "stale_age_hours": 0.0,
 }
 
 
@@ -260,6 +292,25 @@ def test_line_includes_battery_replace_date_when_projected():
     line = _build_weekly_digest_line(
         _data(battery_status="projected", battery_replace_date=date(2027, 1, 15)), NOW)
     assert "battery=replace ~2027-01-15" in line
+
+
+def test_line_omits_staleness_caveat_when_fresh():
+    """A clean, up-to-date week carries no staleness caveat at all (polish
+    item A6a)."""
+    line = _build_weekly_digest_line(_data(), NOW)
+    assert "stale" not in line
+
+
+def test_line_includes_staleness_caveat_when_warn():
+    line = _build_weekly_digest_line(
+        _data(stale_level="warn", stale_age_hours=14.2), NOW)
+    assert "stale_data=warn(14.2h)" in line
+
+
+def test_line_includes_staleness_caveat_when_crit():
+    line = _build_weekly_digest_line(
+        _data(stale_level="crit", stale_age_hours=60.75), NOW)
+    assert "stale_data=crit(60.8h)" in line
 
 
 def test_line_omits_biggest_day_clause_when_unavailable():
@@ -357,6 +408,20 @@ def test_weekly_digest_data_carries_battery_status_and_replace_date():
     assert data["battery_replace_date"] == pd.Timestamp("2027-01-15")
 
 
+def test_weekly_digest_data_defaults_staleness_to_fresh_when_not_provided():
+    data = _weekly_digest_data({}, {}, pd.DataFrame(), pd.DataFrame(), {}, NOW)
+    assert data["stale_level"] == "fresh"
+    assert data["stale_age_hours"] == pytest.approx(0.0)
+
+
+def test_weekly_digest_data_carries_staleness_when_provided():
+    staleness = {"level": "warn", "age_hours": 14.2}
+    data = _weekly_digest_data({}, {}, pd.DataFrame(), pd.DataFrame(), {}, NOW,
+                               staleness=staleness)
+    assert data["stale_level"] == "warn"
+    assert data["stale_age_hours"] == pytest.approx(14.2)
+
+
 def test_weekly_digest_data_picks_biggest_day_in_last_7_days():
     es = _energy_summary(daily_rows=[
         {"date": date(2026, 6, 20), "kwh": 99.0},   # older than 7 days -> excluded
@@ -451,10 +516,19 @@ def _hermetic_config(tmp_path):
 def test_main_wires_the_weekly_digest_end_to_end(tmp_path, monkeypatch):
     """analyze_ups.main() itself calls the gate after the analysis
     completes: with both flags on, the first run of the week appends one
-    weekly_digest line and writes the marker; a same-week rerun is a no-op."""
+    weekly_digest line and writes the marker; a same-week rerun is a no-op.
+
+    The clock is injected via STATEOFUPS_NOW (analyze_ups._wall_clock_now's
+    test-only override) rather than the real datetime.now(), so both main()
+    calls below are guaranteed to land in the same ISO week regardless of
+    when the test actually runs — the previous version used the real clock
+    for both calls, leaving a vanishing flake window right at an ISO-week
+    boundary (polish item A6d)."""
     import analyze_ups
     _digest_config(tmp_path, monkeypatch, alerts_enabled=True, weekly_digest_enabled=True)
-    agent = _write_single_row_agent(tmp_path / "agent", datetime.now() - pd.Timedelta(minutes=5))
+    fixed_now = datetime(2026, 7, 6, 9, 15, 0)
+    monkeypatch.setenv("STATEOFUPS_NOW", fixed_now.isoformat())
+    agent = _write_single_row_agent(tmp_path / "agent", fixed_now - pd.Timedelta(minutes=5))
     out = tmp_path / "d.html"
     argv = ["--agent-dir", str(agent), "-o", str(out), "--no-browser", "--quiet",
             "--no-snapshot", "--config", str(_hermetic_config(tmp_path))]

@@ -369,6 +369,68 @@ def test_load_config_rejects_history_entry_not_a_table(tmp_path, restore_config)
         c.load_config(conf)
 
 
+def test_load_config_reports_wrong_type_effective_from(tmp_path, restore_config):
+    """A bare TOML integer (e.g. effective_from = 20260401, no dashes) parses
+    to a plain int, not a date/datetime/str. That's a different mistake from
+    the key being absent altogether, so the error must name it as a wrong
+    type rather than reusing the "missing 'effective_from'" wording (polish
+    item A2b)."""
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        "effective_from = 20260401\n"
+        "coopesantos_low = 82.30\ncoopesantos_high = 133.10\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 133.10\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError,
+                        match=r"\[\[tariff\.history\]\] entry 1.*wrong type.*effective_from"):
+        c.load_config(conf)
+
+
+def test_load_config_missing_effective_from_still_reports_missing(tmp_path, restore_config):
+    """The key genuinely absent (as opposed to present with a wrong type)
+    keeps the original "missing" wording — a regression guard alongside the
+    new wrong-type branch above."""
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        "coopesantos_low = 82.30\ncoopesantos_high = 133.10\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 133.10\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"\[\[tariff\.history\]\] entry 1 is missing"):
+        c.load_config(conf)
+
+
+def test_duplicate_effective_from_last_listed_entry_wins(tmp_path, restore_config):
+    """Two [[tariff.history]] entries sharing the same effective_from are
+    accepted (not a config error); tariff_rates_for's picking loop keeps
+    overwriting `chosen` for every entry whose date is <= the period start,
+    and a stable sort preserves the original relative order among ties, so
+    whichever entry was LATER in config.toml's array wins (polish item A2a).
+    """
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text(
+        "[[tariff.history]]\n"
+        'effective_from = "2026-01-01"\n'
+        "coopesantos_low = 70.0\ncoopesantos_high = 110.0\n"
+        "tier_limit_kwh = 200.0\npcss_flat = 110.0\n"
+        "[[tariff.history]]\n"
+        'effective_from = "2026-01-01"\n'
+        "coopesantos_low = 99.0\ncoopesantos_high = 150.0\n"
+        "tier_limit_kwh = 250.0\npcss_flat = 150.0\n",
+        encoding="utf-8",
+    )
+    c.load_config(conf)
+    assert len(c.TARIFF_HISTORY) == 2
+    low, high, tier_limit, flat, tag = c.tariff_rates_for(date(2026, 1, 1))
+    assert (low, high, tier_limit, flat) == (99.0, 150.0, 250.0, 150.0)
+
+
 # ---------------------------------------------------------------- analyzer integration
 def _write_multiday_agent(agent):
     agent.mkdir(parents=True, exist_ok=True)
@@ -518,3 +580,28 @@ def test_malformed_tariff_history_exits_nonzero_without_traceback(
     err = capsys.readouterr().err
     assert "config error" in err
     assert "Traceback" not in err
+
+
+# ---------------------------------- cross-test config isolation (polish item A1)
+# These two tests deliberately do NOT use the restore_config fixture: they
+# exist to pin the autouse snapshot/restore fixture in tests/conftest.py,
+# which is what protects every other test (including ones that never opt
+# into restore_config) from a load_config() mutation leaking into whichever
+# test collects next. Under a serial (non-xdist) run the two tests execute
+# back to back in the same process, which is exactly the scenario that used
+# to fail: a config.toml that disables the archive here would otherwise leave
+# pcss.config.ARCHIVE_ENABLED (and any sibling global) permanently flipped
+# for unrelated tests later in the file list, such as test_archive.py and
+# test_eventlog.py.
+def test_load_config_disables_archive_without_local_restore(tmp_path):
+    import pcss.config as cfg_module
+    assert cfg_module.ARCHIVE_ENABLED is True
+    conf = tmp_path / "config.toml"
+    conf.write_text("[archive]\nenabled = false\n", encoding="utf-8")
+    cfg_module.load_config(conf)
+    assert cfg_module.ARCHIVE_ENABLED is False
+
+
+def test_archive_enabled_default_is_restored_for_the_next_test():
+    import pcss.config as cfg_module
+    assert cfg_module.ARCHIVE_ENABLED is True

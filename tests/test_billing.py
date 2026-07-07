@@ -127,6 +127,37 @@ def test_history_prices_each_period_with_its_own_rates(monkeypatch):
     assert es["tariff_history_active"] is True
 
 
+def test_tier_and_rate_change_straddle_period_boundary(monkeypatch):
+    """A boundary where BOTH the tier limit and the rates change (e.g. a rate
+    revision that also narrows the low-tier allowance): each period must
+    price with its OWN tier_limit as well as its own rates, not the other
+    period's. Hand-computed against the two rate sets below (polish item
+    A2d)."""
+    monkeypatch.setattr(config, "TARIFF_HISTORY", [
+        TariffPeriod(date(2026, 1, 1), coopesantos_low=70.0, coopesantos_high=110.0,
+                     tier_limit_kwh=0.15, pcss_flat=110.0),
+        TariffPeriod(date(2026, 6, 1), coopesantos_low=90.0, coopesantos_high=140.0,
+                     tier_limit_kwh=0.05, pcss_flat=140.0),
+    ])
+    es = compute_energy_summary(_edf([
+        ("2026-05-15 12:00", 1200.0),   # May: 0.1 kWh, priced under the Jan entry
+        ("2026-06-15 12:00", 2400.0),   # June: 0.2 kWh, priced under the Jun entry
+    ]))
+    monthly = es["monthly"].set_index("month")
+    may_kwh = float(monthly.loc["2026-05", "kwh"])
+    jun_kwh = float(monthly.loc["2026-06", "kwh"])
+    assert may_kwh == pytest.approx(0.1)
+    assert jun_kwh == pytest.approx(0.2)
+    # May: 0.1 kWh is entirely inside its own 0.15 tier limit -> all at 70.
+    assert monthly.loc["2026-05", "cost_tiered"] == pytest.approx(0.1 * 70.0)
+    assert monthly.loc["2026-05", "cost_pcss"] == pytest.approx(0.1 * 110.0)
+    # June: 0.2 kWh is over its own (narrower) 0.05 tier limit -> 0.05 kWh at
+    # the June low rate (90) plus the remaining 0.15 kWh at the June high
+    # rate (140): 0.05*90 + 0.15*140 = 4.5 + 21.0 = 25.5.
+    assert monthly.loc["2026-06", "cost_tiered"] == pytest.approx(0.05 * 90.0 + 0.15 * 140.0)
+    assert monthly.loc["2026-06", "cost_pcss"] == pytest.approx(0.2 * 140.0)
+
+
 def test_period_before_earliest_history_uses_flat_keys(monkeypatch):
     """A period that starts before the earliest [[tariff.history]] entry
     falls back to the flat [tariff] keys, tagged as 'current rates'."""

@@ -1,4 +1,4 @@
-"""Pytest fixtures for the E2E suites.
+"""Shared pytest fixtures for the whole test tree (unit + E2E).
 
 Hermetic: a session fixture synthesizes a small DataLog + energylog in a temp
 dir (including a sampling gap and two voltage anomalies so the gap-shading,
@@ -13,6 +13,8 @@ Fixtures:
   auto_dashboard_path — an "auto"-theme build for the theme suite, which follows
                         prefers-color-scheme and toggles live (session)
   dash                — the shared page, reset in place before every test
+  (autouse)           — snapshots and restores pcss.config module state around
+                        every test in the tree (see below)
 """
 from __future__ import annotations
 
@@ -27,7 +29,33 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))          # harness
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 
+import pcss.config as _pcss_config  # noqa: E402
 from pcss.common import EPOCH_2010  # noqa: E402  (single source of truth)
+
+
+@pytest.fixture(autouse=True)
+def _restore_pcss_config_state():
+    """Snapshot every pcss.config module-level attribute before each test and
+    restore it afterward.
+
+    pcss.config is module-level state by design (see CLAUDE.md): load_config()
+    mutates constants such as ARCHIVE_ENABLED in place rather than returning a
+    Config object, so any test that calls load_config() (directly, or
+    indirectly through analyze_ups.main()) with a config.toml that overrides a
+    key leaves that override sitting in the module after the test returns.
+    Several test files build their own small "hermetic" config.toml (to keep a
+    pipeline run from touching a real archive) without restoring it locally.
+    Under pytest-xdist those leaks are invisible because each worker process
+    only ever sees a slice of the files; running serially (no -n) exposes them
+    as failures in whichever unrelated test file happens to run next and
+    expects the untouched default. Restoring the whole module dict here — not
+    just ARCHIVE_ENABLED — also covers sibling globals (TARIFF_HISTORY and
+    friends) without requiring every test file to opt in individually.
+    """
+    snapshot = vars(_pcss_config).copy()
+    yield
+    vars(_pcss_config).clear()
+    vars(_pcss_config).update(snapshot)
 
 # Playwright + the browser harness are only needed for the E2E suites. Import
 # them inside a guard so the unit suite collects and runs without Playwright

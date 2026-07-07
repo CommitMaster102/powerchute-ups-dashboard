@@ -86,6 +86,16 @@ def test_wants_no_snapshot_false_when_marker_file_is_missing(tmp_path):
     assert t.wants_no_snapshot(marker, "2026-07-06") is False
 
 
+def test_wants_no_snapshot_false_when_marker_file_is_not_utf8(tmp_path):
+    """A marker file with invalid UTF-8 bytes raises UnicodeDecodeError from
+    read_text, not OSError — wants_no_snapshot's docstring promises a
+    decision, not a crash, so this must fall back to "run a full snapshot"
+    like a missing file rather than propagating (polish item A5a)."""
+    marker = tmp_path / "last_scheduled_run.txt"
+    marker.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    assert t.wants_no_snapshot(marker, "2026-07-06") is False
+
+
 # ---------------------------------------------------------------- command construction
 def test_analyzer_command_uses_venv_python_when_present(tmp_path):
     venv_py = tmp_path / ".venv" / "Scripts" / "python.exe"

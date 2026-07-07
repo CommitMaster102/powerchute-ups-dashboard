@@ -194,6 +194,22 @@ def test_empty_frame():
     assert detect_self_tests(pd.DataFrame()).empty
 
 
+def test_all_nan_line_voltage_inside_dip_window_is_conservatively_accepted():
+    """Line Voltage is present as a column but entirely NaN across the dip
+    window: with no voltage sample at all to prove an out-of-envelope
+    reading, the envelope check (window_lv.empty after dropna()) never
+    fires, so the dip is conservatively still reported as a self-test
+    rather than silently dropped for lack of evidence. This pins the
+    CURRENT behavior — see the comment at the envelope check in
+    detect_self_tests — not a stricter policy (polish item A8a)."""
+    cap = [100, 100, 95, 96, 98, 100]
+    lv = [np.nan] * 6
+    df = _df(cap, lv)
+    result = detect_self_tests(df)
+    assert len(result) == 1
+    assert result.iloc[0]["source"] == "shape"
+
+
 # ====================================================================== detector: event-id precedence
 def test_event_id_precedence_over_shape(monkeypatch):
     """Once SELF_TEST_EVENT_IDS names a real id, the event route replaces
@@ -316,6 +332,26 @@ def test_panel_bc_markers_from_self_tests():
     assert panel["markers"][0]["type"] == "dot"
     assert panel["markers"][0]["x"] == _ms_list(df["ts"].iloc[[3]])[0]
     assert panel["markers"][0]["y"] == pytest.approx(100.0)
+
+
+def test_panel_bc_markers_snap_y_but_keep_event_x_for_a_non_exact_timestamp():
+    """An event-route self-test timestamp rarely lands exactly on a DataLog
+    sample (DataLog samples every 20 minutes; an EventLog event fires
+    whenever the UPS actually ran the test). merge_asof(direction="nearest")
+    is keyed on the LEFT frame (the tests' own ts), so the resulting marker
+    keeps the event's own x — not snapped to any DataLog sample — while its
+    y is the NEAREST DataLog sample's Battery Capacity, never interpolated
+    (polish item A8b)."""
+    df = _datalog(10)                       # 20-min cadence, flat 100% capacity
+    df.loc[3, "Battery Capacity"] = 90.0    # the nearest-sample value the marker should snap to
+    event_ts = df["ts"].iloc[3] + pd.Timedelta(minutes=7)   # closer to sample 3 than sample 4
+    tests = pd.DataFrame({"ts": [event_ts]})
+    panel = _panel_bc(df, tests)
+    assert len(panel["markers"]) == 1
+    marker = panel["markers"][0]
+    assert marker["x"] == _ms_list(pd.Series([event_ts]))[0]
+    assert marker["x"] != _ms_list(df["ts"].iloc[[3]])[0]
+    assert marker["y"] == pytest.approx(90.0)
 
 
 def test_panel_bc_no_self_tests_is_no_markers():
