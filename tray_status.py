@@ -9,6 +9,7 @@ Right-click menu:
   - Current % (info, disabled)
   - Open PCSS web UI
   - Open local dashboard (analyze_ups.py output)
+  - Update dashboard (runs analyze_ups.py in the background, then toasts)
   - Refresh now
   - Exit
 
@@ -22,6 +23,8 @@ import contextlib
 import ctypes
 import re
 import ssl
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -52,6 +55,13 @@ TRAY_LOG = OUTPUT / "tray_status.log"
 PCSS_CERT = OUTPUT / "pcss_cert.pem"
 # OS keyring (Windows Credential Manager) service name for the PCSS password.
 KEYRING_SERVICE = "stateOfUPS-PCSS"
+# Scratch log for a tray-triggered analyzer run (item 24) -- overwritten on
+# every run, not history like tray_status.log or the scheduled-run log.
+TRAY_RUN_LOG = OUTPUT / "tray_run.log"
+# The once-a-day marker scheduled_run.ps1 writes on a successful run; read
+# here (never written) to decide whether a tray-triggered run needs the
+# snapshot or can pass --no-snapshot.
+SCHEDULED_RUN_MARKER = OUTPUT / "last_scheduled_run.txt"
 
 CREDENTIALS_TEMPLATE = """\
 # PowerChute Serial Shutdown credentials.
@@ -389,6 +399,158 @@ def _is_already_connected(html: str) -> bool:
 
 
 # ----------------------------------------------------------------------
+# Run the analyzer from the tray (item 24)
+# ----------------------------------------------------------------------
+class SingleFlightRun:
+    """Tracks whether a tray-triggered analyzer run is already active.
+
+    At most one tray-triggered run is ever wanted, so a second click while
+    one is in flight is rejected outright rather than queued. `try_start`
+    and `finish` are the only state transitions, and both take the same
+    lock so concurrent clicks from the pystray callback thread cannot race.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def try_start(self) -> bool:
+        """Claim the slot. Returns True if this call claimed it, False if a
+        run is already active."""
+        with self._lock:
+            if self._active:
+                return False
+            self._active = True
+            return True
+
+    def finish(self) -> None:
+        """Release the slot. Safe to call even when no run was active."""
+        with self._lock:
+            self._active = False
+
+
+def analyzer_command(script_dir: Path, no_snapshot: bool) -> list[str]:
+    """Build the argv for a tray-triggered analyzer run.
+
+    Prefers the project's own virtualenv interpreter
+    (`script_dir/.venv/Scripts/python.exe`), the same interpreter
+    `scheduled_run.ps1` uses, and falls back to `sys.executable` when that
+    venv does not exist. The analyzer path is left relative (`analyze_ups.py`)
+    because the caller runs the process with `cwd=script_dir`, matching
+    `scheduled_run.ps1`'s own invocation.
+    """
+    venv_python = script_dir / ".venv" / "Scripts" / "python.exe"
+    python = str(venv_python) if venv_python.exists() else sys.executable
+    cmd = [python, "analyze_ups.py", "--no-browser", "--quiet"]
+    if no_snapshot:
+        cmd.append("--no-snapshot")
+    return cmd
+
+
+def marker_reports_today(marker_text: str | None, today: str) -> bool:
+    """True when the once-a-day marker already records `today`.
+
+    Matches the format `scheduled_run.ps1` writes: `Set-Content -Value
+    $today`, where `$today` is `(Get-Date).ToString('yyyy-MM-dd')` — a
+    single line, with whatever line ending `Set-Content` adds. `marker_text`
+    is the raw file content (or None when the file does not exist yet), and
+    `today` is injected rather than read from the wall clock so the decision
+    stays testable.
+    """
+    if not marker_text or not marker_text.strip():
+        return False
+    first_line = marker_text.splitlines()[0].strip()
+    return first_line == today
+
+
+def wants_no_snapshot(marker_path: Path, today: str) -> bool:
+    """Read the scheduled-run marker and decide whether this tray-triggered
+    run should pass --no-snapshot (the marker already records `today`) or
+    run a full snapshot run, substituting for a missed scheduled run. Reuses
+    `marker_reports_today` rather than duplicating the threshold logic."""
+    try:
+        text: str | None = marker_path.read_text(encoding="utf-8")
+    except OSError:
+        text = None
+    return marker_reports_today(text, today)
+
+
+def tail_of_text(text: str, max_lines: int = 6, max_chars: int = 300) -> str:
+    """Return the last few non-blank lines of `text`, trimmed to `max_chars`
+    (keeping the end, since that is where the error usually is) so the
+    result fits a Windows toast body."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    tail = lines[-max_lines:] if max_lines > 0 else lines
+    result = "\n".join(tail)
+    if max_chars > 0 and len(result) > max_chars:
+        result = result[-max_chars:]
+    return result
+
+
+def tail_of_log(log_path: Path, max_lines: int = 6, max_chars: int = 300) -> str:
+    """Read `log_path` and return its tail via `tail_of_text`. A missing or
+    unreadable log yields a placeholder instead of raising, since this feeds
+    a failure toast and must never itself crash the caller."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "(no se pudo leer el log de la ejecución)"
+    return tail_of_text(text, max_lines=max_lines, max_chars=max_chars)
+
+
+def _run_analyzer_worker(icon: Icon, gate: SingleFlightRun) -> None:
+    """Runs on a background thread: spawns the analyzer, waits for it, and
+    reports completion via a toast. This is the thin pystray-facing wiring
+    around the pure helpers above -- it is not unit-tested (it spawns a real
+    process and touches a real Icon), so it stays as small as possible.
+    """
+    try:
+        today = time.strftime("%Y-%m-%d")
+        no_snapshot = wants_no_snapshot(SCHEDULED_RUN_MARKER, today)
+        cmd = analyzer_command(SCRIPT_DIR, no_snapshot)
+        log(f"Actualizar dashboard: ejecutando {cmd!r} (no_snapshot={no_snapshot}).")
+        with TRAY_RUN_LOG.open("w", encoding="utf-8") as f:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(SCRIPT_DIR),
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                creationflags=0x08000000,  # NO_WINDOW
+            )
+            code = proc.wait()
+        if code == 0:
+            icon.notify("Dashboard actualizado.", "PCSS tray")
+            log("Actualizar dashboard: terminó OK.")
+        else:
+            tail = tail_of_log(TRAY_RUN_LOG)
+            icon.notify(f"Error ({code}) actualizando el dashboard:\n{tail}", "PCSS tray")
+            log(f"Actualizar dashboard: código de salida {code}.\n{tail}")
+    except Exception as e:
+        log(f"Actualizar dashboard: excepción {e}\n{traceback.format_exc()}")
+        with contextlib.suppress(Exception):
+            icon.notify(f"Error actualizando el dashboard: {e}", "PCSS tray")
+    finally:
+        gate.finish()
+
+
+def run_analyzer_now(icon: Icon, gate: SingleFlightRun) -> None:
+    """Menu handler for "Actualizar dashboard". A second click while a run
+    is active is rejected with a toast (single-flight) rather than
+    disabling the menu item, since every other item here stays static. The
+    subprocess wait always happens on a background thread so the pystray
+    loop never blocks.
+    """
+    if not gate.try_start():
+        icon.notify("Ya se está actualizando el dashboard.", "PCSS tray")
+        return
+    threading.Thread(target=_run_analyzer_worker, args=(icon, gate), daemon=True).start()
+
+
+# ----------------------------------------------------------------------
 # Alert watching
 # ----------------------------------------------------------------------
 class AlertWatcher:
@@ -699,6 +861,7 @@ def main():
     client = PCSSClient(cfg["url"], cfg["username"], cfg["password"])
     state = State()
     watcher = AlertWatcher(OUTPUT / "alerts.log")
+    analyzer_gate = SingleFlightRun()
     icon: Icon
 
     # Serializes all use of the shared requests.Session. The poll loop and the
@@ -798,6 +961,9 @@ def main():
     def force_refresh(_=None):
         threading.Thread(target=refresh, daemon=True).start()
 
+    def update_dashboard(_=None):
+        run_analyzer_now(icon, analyzer_gate)
+
     def quit_app(_=None):
         icon.stop()
 
@@ -822,6 +988,7 @@ def main():
             Menu.SEPARATOR,
             MenuItem("Abrir PCSS web UI", open_pcss, default=True),
             MenuItem("Abrir dashboard local", open_dashboard),
+            MenuItem("Actualizar dashboard", update_dashboard),
             MenuItem("Refrescar ahora", force_refresh),
             Menu.SEPARATOR,
             MenuItem("Salir", quit_app),

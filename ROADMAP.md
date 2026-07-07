@@ -49,6 +49,7 @@ Shipped so far (details in the archive at the bottom):
 | 21 | Keyboard sample step-through | `pcss/charts.js` (`toggleInspect`, `stepInspect`) |
 | 22 | Selectable comparison periods | `pcss/dashboard.py` (`_panel_cmp`), `pcss/charts.js` (`setCmpSelection`, `cmpResolveBaseline`) |
 | 30 | Auto theme | `pcss/dashboard.py` (`PALETTES`, `_shell_css`), `pcss/charts.js` (`resolveColor`, `applyTheme`, `cycleTheme`) |
+| 24 | Run the analyzer from the tray | `tray_status.py` (`run_analyzer_now`, `SingleFlightRun`, `analyzer_command`, `wants_no_snapshot`) |
 
 ## Alerting and automation
 
@@ -70,25 +71,6 @@ Challenges:
   repo; the config only says which channel is enabled.
 - Delivery failure must never disturb polling — fire-and-forget with a
   short timeout and a logged error, exactly like the toast path.
-
-### 24. Run the analyzer from the tray
-
-A "Actualizar dashboard" menu item that runs `analyze_ups.py --no-browser
---quiet` and notifies when the new page is ready, so refreshing the
-dashboard does not require a terminal or waiting for the scheduled task.
-
-Challenges:
-
-- Process hygiene: spawn the venv's `python.exe` (the tray already knows
-  `SCRIPT_DIR`) detached, one at a time (reuse the single-flight idea from
-  `scheduled_run.ps1`'s skip-if-running guard, but in-process), and report
-  completion through `icon.notify`.
-- The analyzer writes the archive and the size history; a tray-triggered
-  run should behave like the scheduled one (full run, snapshot included)
-  unless it happened recently — the once-a-day snapshot marker logic can be
-  consulted rather than duplicated.
-- Failure surfacing: a nonzero exit should toast the last lines of the log,
-  not fail silently.
 
 ### 32. Weekly digest
 
@@ -1251,3 +1233,48 @@ Challenges:
   it per-machine instead — one of the two, chosen deliberately.
 - `tests/e2e_theme.py` and the `light_dashboard_path` fixture simplify to a
   single build toggled live, but must be reworked in the same change.
+
+### 24. Run the analyzer from the tray
+
+SHIPPED: an "Actualizar dashboard" menu item in `tray_status.py`, placed
+next to "Abrir dashboard local". The decision logic is a set of small, pure
+helpers so the behavior is unit-tested without spawning pystray or a real
+process: `analyzer_command(script_dir, no_snapshot)` builds the argv,
+preferring `script_dir/.venv/Scripts/python.exe` (the same interpreter
+`scheduled_run.ps1` uses) and falling back to `sys.executable` when that
+venv is absent; `marker_reports_today(marker_text, today)` and its
+file-reading wrapper `wants_no_snapshot(marker_path, today)` read
+`output/last_scheduled_run.txt` in exactly the format `scheduled_run.ps1`
+writes (a bare `yyyy-MM-dd` on the first line) and decide whether the
+tray-triggered run passes `--no-snapshot`, reusing the once-a-day threshold
+instead of duplicating it; `SingleFlightRun` is a small lock-guarded class
+(`try_start`/`finish`/`active`) that rejects a second click while a run is
+active, notifying "already running" rather than disabling the menu item (the
+other menu items here stay static); and `tail_of_text`/`tail_of_log` trim the
+scratch log (`output/tray_run.log`, overwritten per run) to its last few
+non-blank lines within a character budget, for the failure toast. The thin
+pystray-facing wiring (`run_analyzer_now`, `_run_analyzer_worker`) always
+hands the actual subprocess wait to a background thread, so the pystray loop
+never blocks; it spawns the command with Windows no-console creation flags,
+captures stdout/stderr into `output/tray_run.log`, and calls `icon.notify`
+with a success message on exit code 0 or the tailed log on a nonzero exit —
+never a silent failure. `tests/test_tray_run.py` covers the four pure
+helpers; the wiring itself is not unit-tested, per the same pattern the rest
+of `tray_status.py` already follows for its pystray glue.
+
+A "Actualizar dashboard" menu item that runs `analyze_ups.py --no-browser
+--quiet` and notifies when the new page is ready, so refreshing the
+dashboard does not require a terminal or waiting for the scheduled task.
+
+Challenges:
+
+- Process hygiene: spawn the venv's `python.exe` (the tray already knows
+  `SCRIPT_DIR`) detached, one at a time (reuse the single-flight idea from
+  `scheduled_run.ps1`'s skip-if-running guard, but in-process), and report
+  completion through `icon.notify`.
+- The analyzer writes the archive and the size history; a tray-triggered
+  run should behave like the scheduled one (full run, snapshot included)
+  unless it happened recently — the once-a-day snapshot marker logic can be
+  consulted rather than duplicated.
+- Failure surfacing: a nonzero exit should toast the last lines of the log,
+  not fail silently.
