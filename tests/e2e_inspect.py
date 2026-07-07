@@ -205,6 +205,38 @@ def test_inspect_survives_hover_of_the_same_panel_lightbox(dash):
     assert _inspect(dash)["key"] == "lv"
 
 
+def test_inspect_cue_shows_on_lightbox_of_inspected_panel(dash):
+    # Item B2(a): opening the lightbox for the panel already being inspected
+    # must carry the inspect cue (outline + badge) onto the expanded view too.
+    hover_panel(dash, "lv")
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is not None
+    dash.evaluate("__chartsDebug.openLightbox('lv')")
+    dash.wait_for_timeout(60)
+    assert dash.locator("#lightbox-chart").evaluate(
+        "el => el.classList.contains('is-inspecting')"), "lightbox view missing inspect outline"
+    assert not dash.locator("#lightbox-inspect-badge").evaluate("el => el.hidden"), \
+        "lightbox inspect badge stayed hidden"
+    # Closing the lightbox clears its mirrored cue but leaves grid inspect on.
+    dash.keyboard.press("Escape")
+    dash.wait_for_timeout(60)
+
+
+def test_opening_a_different_panels_lightbox_exits_inspect(dash):
+    # Item B2(b): expanding a DIFFERENT panel via its tool (no hover/focus
+    # crossing) must drop inspect mode rather than leave it orphaned on "lv".
+    hover_panel(dash, "lv")
+    dash.keyboard.press("Enter")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash)["key"] == "lv"
+    dash.evaluate("__chartsDebug.openLightbox('bv')")
+    dash.wait_for_timeout(60)
+    assert _inspect(dash) is None, "inspect mode survived opening another panel's lightbox"
+    assert not dash.locator("#panel-lv").evaluate("el => el.classList.contains('is-inspecting')")
+    assert dash.locator('.inspect-badge[data-panel="lv"]').evaluate("el => el.hidden")
+
+
 def test_zoom_key_during_inspect_resyncs_tooltip(dash):
     # Finding 2: +/-/0 during inspect re-render the SVG (a fresh, empty
     # overlay) without re-invoking the inspect tooltip/crosshair — fixed by

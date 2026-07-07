@@ -218,6 +218,12 @@ _STRINGS_ES = {
     "light": "claro",
     "Cycle theme: auto, dark, light": "Cambiar tema: automático, oscuro, claro",
     "chart": "gráfico",
+    "Jump to next anomaly": "Ir a la siguiente anomalía",
+    "Reset zoom": "Restablecer zoom",
+    "Export PNG": "Exportar PNG",
+    "Export CSV": "Exportar CSV",
+    "Expand": "Expandir",
+    "Close": "Cerrar",
     "Data feed stale": "Fuente de datos desactualizada",
     "no new samples in": "sin muestras nuevas en",
     "Billing Periods": "Períodos de facturación",
@@ -673,11 +679,13 @@ def _cmp_pills_html(n_periods: int) -> str:
     else:
         quarter_title = _L("Compare against the same period one quarter ago")
         quarter_attrs = f' title="{_esc(quarter_title)}"'
+    # The two baseline pills are a toggle group, so each carries aria-pressed
+    # (item B3); charts.js keeps it in sync with the active selection.
     return (
-        '<span class="cmp-pills">'
-        f'<button class="cmp-pill" data-mode="previous" type="button" '
+        '<span class="cmp-pills" role="group">'
+        f'<button class="cmp-pill" data-mode="previous" type="button" aria-pressed="false" '
         f'title="{_esc(_L("Compare against the previous period"))}">{_esc(_L("previous"))}</button>'
-        f'<button class="cmp-pill" data-mode="quarter" type="button"{quarter_attrs}>'
+        f'<button class="cmp-pill" data-mode="quarter" type="button" aria-pressed="false"{quarter_attrs}>'
         f'{_esc(_L("quarter"))}</button>'
         '</span>'
     )
@@ -1038,14 +1046,20 @@ def _sr_text(spec) -> str:
 
 
 def _tools_html(key: str, zoomable: bool, anomaly_nav: int = 0, extra: str = "") -> str:
+    # The tool tooltips are localized like every other UI string (item B5): the
+    # button glyphs stay language-neutral, but their title text routes through
+    # _L so a Spanish build reads "Exportar PNG" rather than "Export PNG".
     anom = (f'<button class="tool-btn tool-anom" data-panel="{key}" '
-            f'title="Jump to next anomaly">⚑ {anomaly_nav}</button>') if anomaly_nav else ""
+            f'title="{_esc(_L("Jump to next anomaly"))}">⚑ {anomaly_nav}</button>') if anomaly_nav else ""
     reset = (f'<button class="tool-btn tool-reset" data-panel="{key}" hidden '
-             f'title="Reset zoom">reset</button>') if zoomable else ""
+             f'title="{_esc(_L("Reset zoom"))}">reset</button>') if zoomable else ""
     return (f'<div class="card-tools">{anom}{reset}'
-            f'<button class="tool-btn tool-png" data-panel="{key}" title="Export PNG">png</button>'
-            f'<button class="tool-btn tool-csv" data-panel="{key}" title="Export CSV">csv</button>'
-            f'<button class="tool-btn tool-expand" data-panel="{key}" title="Expand">⤢</button>'
+            f'<button class="tool-btn tool-png" data-panel="{key}" '
+            f'title="{_esc(_L("Export PNG"))}">png</button>'
+            f'<button class="tool-btn tool-csv" data-panel="{key}" '
+            f'title="{_esc(_L("Export CSV"))}">csv</button>'
+            f'<button class="tool-btn tool-expand" data-panel="{key}" '
+            f'title="{_esc(_L("Expand"))}">⤢</button>'
             f'{extra}'
             f'</div>')
 
@@ -1075,11 +1089,13 @@ def _chart_card(key: str, span: int, title: str, sub: str, zoomable: bool,
 def _section_head(title: str, note: str, presets: bool = False) -> str:
     pills = ""
     if presets:
-        pills = ('<span class="presets">'
-                 f'<button class="preset-pill" data-days="all">{_esc(_L("All"))}</button>'
-                 '<button class="preset-pill" data-days="30">30 d</button>'
-                 '<button class="preset-pill" data-days="7">7 d</button>'
-                 '<button class="preset-pill" data-days="1">24 h</button>'
+        # The preset pills are a toggle group, so each carries aria-pressed
+        # (item B3); charts.js keeps it in sync with the active window.
+        pills = ('<span class="presets" role="group">'
+                 f'<button class="preset-pill" data-days="all" aria-pressed="false">{_esc(_L("All"))}</button>'
+                 '<button class="preset-pill" data-days="30" aria-pressed="false">30 d</button>'
+                 '<button class="preset-pill" data-days="7" aria-pressed="false">7 d</button>'
+                 '<button class="preset-pill" data-days="1" aria-pressed="false">24 h</button>'
                  '</span>')
     return (f'<div class="sec-head"><h2>{_esc(title)}</h2><div class="sec-rule"></div>'
             f'{pills}<span class="sec-note">{_esc(note)}</span></div>')
@@ -1916,7 +1932,10 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
   <div class="lightbox-card">
     <div class="card-head">
       <div class="card-title" id="lightbox-title"></div>
-      <button class="lightbox-close" type="button" title="Close">✕</button>
+      <div class="card-side">
+        <span class="inspect-badge" id="lightbox-inspect-badge" hidden>{_esc(_L("inspecting"))}</span>
+        <button class="lightbox-close" type="button" title="{_esc(_L("Close"))}">✕</button>
+      </div>
     </div>
     <div class="chart-box" id="lightbox-chart"></div>
   </div>

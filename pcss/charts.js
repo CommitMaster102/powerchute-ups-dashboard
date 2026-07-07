@@ -341,7 +341,16 @@
         svgEl("line", { x1: x, x2: x, y1: p.t, y2: p.t + ih, stroke: C.violet,
                         "stroke-width": 1.5, "stroke-dasharray": "3 3",
                         "vector-effect": "non-scaling-stroke", class: "annotation-marker" }, plot);
-        const t = svgEl("text", { x: x + 4, y: p.t + 11, "font-size": 11, fill: C.violet,
+        // Keep the label inside the plot near the right edge: flip to an
+        // end-anchor so it grows leftward (the same pattern the threshold-line
+        // labels use) instead of overflowing past the right padding. The width
+        // is estimated from the character count because the text is not yet in
+        // the live DOM to measure at build time.
+        const approxLabelW = (a.label || "").length * 6.2;
+        const flipLabel = x + 4 + approxLabelW > W - p.r;
+        const t = svgEl("text", { x: flipLabel ? x - 4 : x + 4, y: p.t + 11,
+                                  "text-anchor": flipLabel ? "end" : "start",
+                                  "font-size": 11, fill: C.violet,
                                   "font-family": "ui-monospace,monospace",
                                   class: "annotation-label" }, svg);
         t.textContent = a.label;
@@ -395,7 +404,11 @@
         svgEl("circle", { cx: x, cy: y, r: 3.5, fill: mc || C.amber, stroke: C.panel, "stroke-width": 1.5 }, plot);
       }
       if (m.label) {
-        const t = svgEl("text", { x, y: y - 13, "text-anchor": "middle", "font-size": 12, fill: mc || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
+        // Clamp the label to stay at or below the plot's top padding (item
+        // B4): a marker on the tallest point sits near p.t, and an unclamped
+        // y - 13 would push its label into (or above) the top padding.
+        const labelY = Math.max(p.t + 12, y - 13);
+        const t = svgEl("text", { x, y: labelY, "text-anchor": "middle", "font-size": 12, fill: mc || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
         t.textContent = m.label;
       }
     });
@@ -512,7 +525,11 @@
         svgEl("circle", { cx: x, cy: y, r: 3.5, fill: mc || C.amber, stroke: C.panel, "stroke-width": 1.5 }, svg);
       }
       if (m.label) {
-        const t = svgEl("text", { x, y: y - 13, "text-anchor": "middle", "font-size": 12, fill: mc || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
+        // Clamp the label to stay at or below the plot's top padding (item
+        // B4): the tallest bar's marker sits near p.t, and an unclamped
+        // y - 13 would push its label into (or above) the top padding.
+        const labelY = Math.max(p.t + 12, y - 13);
+        const t = svgEl("text", { x, y: labelY, "text-anchor": "middle", "font-size": 12, fill: mc || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
         t.textContent = m.label;
       }
     });
@@ -811,7 +828,10 @@
   }
   function updateCmpControls() {
     document.querySelectorAll(".cmp-pill").forEach(b => {
-      b.classList.toggle("is-active", b.dataset.mode === CMP_SEL);
+      const active = b.dataset.mode === CMP_SEL;
+      b.classList.toggle("is-active", active);
+      // Keep the toggle-group aria state current (item B3).
+      b.setAttribute("aria-pressed", active ? "true" : "false");
     });
     const sel = document.querySelector(".cmp-period-select");
     if (sel) {
@@ -935,7 +955,10 @@
     const anyZoom = timePanels().some(k => STATE[k].zoom);
     document.querySelectorAll(".preset-pill").forEach(b => {
       const d = b.dataset.days;
-      b.classList.toggle("is-active", d === "all" ? !anyZoom : LAST_PRESET === d);
+      const active = d === "all" ? !anyZoom : LAST_PRESET === d;
+      b.classList.toggle("is-active", active);
+      // Keep the toggle-group aria state current (item B3).
+      b.setAttribute("aria-pressed", active ? "true" : "false");
     });
   }
 
@@ -1529,6 +1552,11 @@
     closeLightbox();
     const st = STATE[key];
     if (!st) return;
+    // Opening a DIFFERENT panel's lightbox with no hover/focus crossing would
+    // otherwise leave inspect mode stuck on the previous panel (item B2) —
+    // drop it, the same rule pointermove/focus already apply when the active
+    // panel changes.
+    if (INSPECT && INSPECT.key !== key) exitInspect();
     const lb = document.getElementById("lightbox");
     const box = document.getElementById("lightbox-chart");
     const title = document.getElementById("lightbox-title");
@@ -1543,6 +1571,12 @@
     renderView(view);
     attachInteractions(view);
     LIGHTBOX_KEY = key;
+    // If this lightbox shows the very panel being inspected, carry the inspect
+    // cue and the current sample onto the expanded view too (item B2).
+    if (INSPECT && INSPECT.key === key) {
+      updateInspectCue(key, true);
+      showInspectSample(key);
+    }
   }
   function closeLightbox() {
     const lb = document.getElementById("lightbox");
@@ -1550,6 +1584,12 @@
     lb.hidden = true;
     const key = LIGHTBOX_KEY;
     LIGHTBOX_KEY = null;
+    // Clear any inspect cue mirrored onto the lightbox view (item B2); the
+    // grid card keeps its own cue if inspect mode is still active there.
+    const lbBox = document.getElementById("lightbox-chart");
+    if (lbBox) lbBox.classList.remove("is-inspecting");
+    const lbBadge = document.getElementById("lightbox-inspect-badge");
+    if (lbBadge) lbBadge.hidden = true;
     if (key && STATE[key]) STATE[key].views = STATE[key].views.filter(v => v.id !== "lb");
     const box = document.getElementById("lightbox-chart");
     if (box) box.replaceChildren();
@@ -1590,6 +1630,14 @@
     if (box) box.classList.toggle("is-inspecting", active);
     document.querySelectorAll('.inspect-badge[data-panel="' + key + '"]')
       .forEach(b => { b.hidden = !active; });
+    // Mirror the cue onto the lightbox view when it is showing the very panel
+    // being inspected (item B2), so an expanded chart under keyboard inspect
+    // carries the same amber outline and badge as its grid card.
+    const onLightbox = active && LIGHTBOX_KEY === key;
+    const lbBox = document.getElementById("lightbox-chart");
+    if (lbBox) lbBox.classList.toggle("is-inspecting", onLightbox);
+    const lbBadge = document.getElementById("lightbox-inspect-badge");
+    if (lbBadge) lbBadge.hidden = !onLightbox;
   }
   function showInspectSample(key) {
     const st = STATE[key], spec = st.spec;
