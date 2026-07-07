@@ -562,8 +562,25 @@ def main(argv: list[str] | None = None) -> int:
     # event-driven alerts above, gated to once per ISO week. Runs after every
     # number it summarizes has been computed, using the same injected wall
     # clock (item 31) the staleness watchdog already read.
-    digest_path = _maybe_write_weekly_digest(energy_summary, forecast, voltage_anomalies,
-                                             episodes, battery, now)
+    #
+    # Guarded: the alerts.log append or the marker write can fail (disk full,
+    # an AV lock on the file), and that must never crash a run whose analysis
+    # already completed successfully. If only the append failed, the marker
+    # is untouched and the digest is retried next run; if the append
+    # succeeded but the marker write then failed, the digest fires again next
+    # run too -- a rare, acceptable duplicate line in alerts.log, not a
+    # crash.
+    try:
+        digest_path = _maybe_write_weekly_digest(energy_summary, forecast, voltage_anomalies,
+                                                 episodes, battery, now)
+    except Exception as e:
+        digest_path = None
+        print(
+            f"[warn] weekly digest failed and was skipped this run: {type(e).__name__}: {e}\n"
+            "       The analyzer run continues normally; see the comment above "
+            "_maybe_write_weekly_digest's call site for the retry/duplicate behavior.",
+            file=sys.stderr,
+        )
     if digest_path:
         say(f"  [alert] weekly digest appended to {digest_path}")
 

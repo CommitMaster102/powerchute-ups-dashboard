@@ -130,11 +130,31 @@ def test_alert_watcher_starts_at_end_of_file(tmp_path):
     p = tmp_path / "alerts.log"
     p.write_text("old alert line\n", encoding="utf-8")
     w = t.AlertWatcher(p, cooldown_sec=0)
-    assert w.poll(now=1000.0) is None                    # history never re-notifies
+    assert w.poll(now=1000.0) == []                       # history never re-notifies
     with p.open("a", encoding="utf-8") as f:
         f.write("2026-07-06 10:00:00  voltage_anomalies=2\n")
-    assert "voltage_anomalies=2" in w.poll(now=1001.0)
-    assert w.poll(now=1002.0) is None                    # nothing new
+    lines = w.poll(now=1001.0)
+    assert len(lines) == 1
+    assert "voltage_anomalies=2" in lines[0]
+    assert w.poll(now=1002.0) == []                       # nothing new
+
+
+def test_alert_watcher_delivers_every_new_line_in_one_poll(tmp_path):
+    # A single analyzer run can append two lines in the same run (an
+    # event-driven anomaly alert, then the weekly digest) -- both must be
+    # delivered, in order, not just the last one (the bug this test guards
+    # against: poll() used to return only lines[-1], silently dropping the
+    # anomaly line whenever the digest also fired the same run).
+    p = tmp_path / "alerts.log"
+    p.write_text("", encoding="utf-8")
+    w = t.AlertWatcher(p, cooldown_sec=0)
+    with p.open("a", encoding="utf-8") as f:
+        f.write("2026-07-06 10:00:00  voltage_anomalies=2\n")
+        f.write("2026-07-06 10:00:00  weekly_digest  period=1.00 kWh\n")
+    lines = w.poll(now=1000.0)
+    assert len(lines) == 2
+    assert "voltage_anomalies=2" in lines[0]
+    assert "weekly_digest" in lines[1]
 
 
 def test_alert_watcher_cooldown_swallows_repeats(tmp_path):
@@ -143,15 +163,15 @@ def test_alert_watcher_cooldown_swallows_repeats(tmp_path):
     w = t.AlertWatcher(p, cooldown_sec=1800)
     with p.open("a", encoding="utf-8") as f:
         f.write("first\n")
-    assert w.poll(now=1000.0) == "first"
+    assert w.poll(now=1000.0) == ["first"]
     with p.open("a", encoding="utf-8") as f:
         f.write("second\n")
     # Inside the cooldown the new line is consumed without notifying.
-    assert w.poll(now=1100.0) is None
+    assert w.poll(now=1100.0) == []
     with p.open("a", encoding="utf-8") as f:
         f.write("third\n")
     # After the cooldown expires the next new line notifies again.
-    assert w.poll(now=1000.0 + 1801) == "third"
+    assert w.poll(now=1000.0 + 1801) == ["third"]
 
 
 def test_alert_watcher_handles_truncation(tmp_path):
@@ -159,15 +179,15 @@ def test_alert_watcher_handles_truncation(tmp_path):
     p.write_text("a long line of history\n" * 5, encoding="utf-8")
     w = t.AlertWatcher(p, cooldown_sec=0)
     p.write_text("fresh\n", encoding="utf-8")            # rotated / truncated
-    assert w.poll(now=1000.0) == "fresh"
+    assert w.poll(now=1000.0) == ["fresh"]
 
 
 def test_alert_watcher_missing_file(tmp_path):
     p = tmp_path / "alerts.log"
     w = t.AlertWatcher(p, cooldown_sec=0)
-    assert w.poll(now=1000.0) is None
+    assert w.poll(now=1000.0) == []
     p.write_text("born later\n", encoding="utf-8")
-    assert w.poll(now=1001.0) == "born later"
+    assert w.poll(now=1001.0) == ["born later"]
 
 
 # ---------------------------------------------------------------- TLS hardening

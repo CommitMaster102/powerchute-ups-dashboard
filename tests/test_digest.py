@@ -478,3 +478,38 @@ def test_main_does_not_write_a_digest_when_weekly_digest_is_off(tmp_path, monkey
             "--no-snapshot", "--config", str(_hermetic_config(tmp_path))]
     analyze_ups.main(argv)
     assert not cfg.LAST_DIGEST_MARKER.exists()
+    # Mirrors the "on" test's alerts_text assertion: with the digest off,
+    # alerts.log must carry no weekly_digest line either (it may not exist
+    # at all for this minimal hermetic dataset, since no event-driven alert
+    # condition is met).
+    if cfg.ALERTS_LOG.exists():
+        assert "weekly_digest" not in cfg.ALERTS_LOG.read_text(encoding="utf-8")
+
+
+def test_main_survives_a_marker_write_failure_and_logs_a_warning(tmp_path, monkeypatch, capsys):
+    """A failure in the marker write (disk full, an AV lock, ...) must not
+    crash the run: main() completes normally (dashboard written, exit 0)
+    with a clear warning logged -- even though the digest line already
+    landed in alerts.log, a known, acceptable duplicate on the next run
+    (the marker never advanced), not a crash."""
+    import analyze_ups
+    _digest_config(tmp_path, monkeypatch, alerts_enabled=True, weekly_digest_enabled=True)
+    agent = _write_single_row_agent(tmp_path / "agent", datetime.now() - pd.Timedelta(minutes=5))
+    out = tmp_path / "d.html"
+    argv = ["--agent-dir", str(agent), "-o", str(out), "--no-browser", "--quiet",
+            "--no-snapshot", "--config", str(_hermetic_config(tmp_path))]
+
+    def boom(*_a, **_k):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(analyze_ups, "_write_weekly_digest_marker", boom)
+
+    rc = analyze_ups.main(argv)
+
+    assert rc == 0
+    assert out.exists()
+    assert "weekly_digest" in cfg.ALERTS_LOG.read_text(encoding="utf-8")
+    assert not cfg.LAST_DIGEST_MARKER.exists()
+    captured = capsys.readouterr()
+    assert "[warn]" in captured.err
+    assert "weekly digest" in captured.err.lower()

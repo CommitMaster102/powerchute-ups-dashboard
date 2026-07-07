@@ -583,37 +583,40 @@ class AlertWatcher:
         # clock the caller passes in.
         self._last_notify = float("-inf")
 
-    def poll(self, now: float | None = None) -> str | None:
-        """Return the newest unseen alert line when a toast is due, else None.
+    def poll(self, now: float | None = None) -> list[str]:
+        """Return every unseen alert line, in order, when a toast is due, else [].
 
-        New lines that arrive inside the cooldown window are consumed
-        silently (the offset still advances), which is what keeps one noisy
-        anomaly from notifying on every run.
+        A run can append more than one line at once (an event-driven anomaly
+        alert and, on the first run of a new ISO week, the weekly digest) —
+        both must be delivered, not just the last, so the caller notifies
+        once per returned line. New lines that arrive inside the cooldown
+        window are consumed silently (the offset still advances), which is
+        what keeps one noisy anomaly from notifying on every run.
         """
         if now is None:
             now = time.time()
         try:
             size = self.path.stat().st_size
         except OSError:
-            return None
+            return []
         if size < self._offset:
             self._offset = 0
         if size == self._offset:
-            return None
+            return []
         try:
             with self.path.open("r", encoding="utf-8") as f:
                 f.seek(self._offset)
                 new_text = f.read()
         except OSError:
-            return None
+            return []
         self._offset = size
         lines = [ln.strip() for ln in new_text.splitlines() if ln.strip()]
         if not lines:
-            return None
+            return []
         if now - self._last_notify < self.cooldown_sec:
-            return None
+            return []
         self._last_notify = now
-        return lines[-1]
+        return lines
 
 
 # ----------------------------------------------------------------------
@@ -1043,11 +1046,12 @@ def main():
         except Exception:
             pass
         # New analyzer alerts become a toast, and (when configured) a webhook
-        # POST. Fire-and-forget: notification failure must never disturb the
-        # polling loop.
+        # POST. A run can append more than one line (an anomaly alert and,
+        # separately, the weekly digest), so every line polled is delivered,
+        # not just the last. Fire-and-forget: notification failure must never
+        # disturb the polling loop.
         try:
-            alert = watcher.poll()
-            if alert:
+            for alert in watcher.poll():
                 notify_alert(icon, alert, pcss_config.WEBHOOK_ENABLED, get_webhook_url())
         except Exception as e:
             log(f"Alert toast failed: {e}")

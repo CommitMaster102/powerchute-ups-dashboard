@@ -288,6 +288,36 @@ def test_notify_alert_skips_webhook_thread_when_enabled_but_url_missing(monkeypa
     assert "no url" in logged or "no-op" in logged or "skip" in logged
 
 
+# ---------------------------------------------------------------- multi-line delivery (finding 1)
+def test_two_lines_appended_between_polls_are_both_notified_in_order(tmp_path, monkeypatch):
+    # A single analyzer run can append two lines to alerts.log: an
+    # event-driven anomaly alert (_maybe_write_alerts) and, separately, the
+    # weekly digest (_maybe_write_weekly_digest). AlertWatcher.poll() used to
+    # return only the last new line, so whenever both fired in the same run
+    # the anomaly toast was silently swallowed. The caller must notify once
+    # per line polled, in order.
+    monkeypatch.setattr(t.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        t.requests, "post",
+        lambda url, **kw: types.SimpleNamespace(ok=True, status_code=200),
+    )
+
+    p = tmp_path / "alerts.log"
+    p.write_text("", encoding="utf-8")
+    watcher = t.AlertWatcher(p, cooldown_sec=0)
+    with p.open("a", encoding="utf-8") as f:
+        f.write("2026-07-06 10:00:00  voltage_anomalies=2\n")
+        f.write("2026-07-06 10:00:00  weekly_digest  period=1.00 kWh\n")
+
+    icon = _FakeIcon()
+    for alert in watcher.poll(now=1000.0):
+        t.notify_alert(icon, alert, False, None)
+
+    assert len(icon.notifications) == 2
+    assert "voltage_anomalies=2" in icon.notifications[0][0]
+    assert "weekly_digest" in icon.notifications[1][0]
+
+
 # ---------------------------------------------------------------- CLI flags
 def test_parse_cli_args_set_webhook_url():
     args = t.parse_cli_args(["--set-webhook-url"])
