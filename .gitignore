@@ -27,3 +27,6 @@ Thumbs.db
 
 # Local planning scratch artifacts (agent-native visual plans)
 .agent-native/
+
+# Subagent-driven-development scratch (task briefs, reports, progress ledger)
+.superpowers/
