@@ -25,10 +25,8 @@ import pytest
 
 import pcss.config as cfg
 import pcss.eventlog as ev
-from pcss.dashboard import PALETTES, _ms_list, _panel_bc, build_dashboard
+from pcss.dashboard import _ms_list, _panel_bc, build_dashboard
 from pcss.stats import battery_replace_projection, detect_self_tests, self_test_sag_trend
-
-PAL = PALETTES["dark"]
 
 
 # ====================================================================== helpers
@@ -313,7 +311,7 @@ def test_battery_replace_projection_without_self_tests_is_unaffected():
 def test_panel_bc_markers_from_self_tests():
     df = _datalog(10)
     tests = pd.DataFrame({"ts": [df["ts"].iloc[3]]})
-    panel = _panel_bc(df, PAL, tests)
+    panel = _panel_bc(df, tests)
     assert len(panel["markers"]) == 1
     assert panel["markers"][0]["type"] == "dot"
     assert panel["markers"][0]["x"] == _ms_list(df["ts"].iloc[[3]])[0]
@@ -322,12 +320,12 @@ def test_panel_bc_markers_from_self_tests():
 
 def test_panel_bc_no_self_tests_is_no_markers():
     df = _datalog(10)
-    assert _panel_bc(df, PAL, None)["markers"] == []
-    assert _panel_bc(df, PAL, pd.DataFrame(columns=["ts"]))["markers"] == []
+    assert _panel_bc(df, None)["markers"] == []
+    assert _panel_bc(df, pd.DataFrame(columns=["ts"]))["markers"] == []
 
 
 def test_panel_bc_none_on_empty_datalog():
-    assert _panel_bc(pd.DataFrame(), PAL, None) is None
+    assert _panel_bc(pd.DataFrame(), None) is None
 
 
 # ====================================================================== payload markers + subtitle (build_dashboard)

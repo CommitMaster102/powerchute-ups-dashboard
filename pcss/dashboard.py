@@ -40,7 +40,12 @@ from pcss.stats import (
 _CHARTS_JS_TEMPLATE = (Path(__file__).resolve().parent / "charts.js").read_text(encoding="utf-8")
 
 # The dark palette mirrors the C dict in the design mockup; the light palette
-# derives the same hues for a white card scheme.
+# derives the same hues for a white card scheme. Both ship in every build's
+# payload (roadmap item 30): panel builders emit palette-neutral color role
+# names (the keys below, for example "blue" or "amber"), and pcss/charts.js
+# resolves each role to a concrete hex from whichever palette is active at draw
+# time. The "heat" entry is the four-stop rgb ramp the heatmap interpolates
+# (low to high), so the hourly power map follows the active theme too.
 PALETTES = {
     "dark": {
         "bg": "#101216", "bg2": "#161a22", "panel": "#181b21",
@@ -50,6 +55,7 @@ PALETTES = {
         "rowline": "rgba(255,255,255,.05)", "foot": "#454b56",
         "blue": "#5aa9f0", "teal": "#3fd0c9", "green": "#4cd08a",
         "amber": "#f3c14b", "red": "#ef6a6a", "violet": "#a78bfa",
+        "heat": [[14, 30, 40], [31, 122, 140], [79, 209, 197], [243, 193, 75]],
     },
     "light": {
         "bg": "#f4f6f9", "bg2": "#e9edf3", "panel": "#ffffff",
@@ -59,6 +65,7 @@ PALETTES = {
         "rowline": "rgba(16,20,28,.06)", "foot": "#a2aab6",
         "blue": "#2b7cd3", "teal": "#0f9e97", "green": "#1f9d5b",
         "amber": "#b8830f", "red": "#d64545", "violet": "#7c5cd6",
+        "heat": [[233, 237, 243], [120, 185, 215], [15, 158, 151], [184, 131, 15]],
     },
 }
 
@@ -206,6 +213,10 @@ _STRINGS_ES = {
     "Mean power from": "Potencia media de",
     "Generated": "Generado",
     "theme": "tema",
+    "auto": "automático",
+    "dark": "oscuro",
+    "light": "claro",
+    "Cycle theme: auto, dark, light": "Cambiar tema: automático, oscuro, claro",
     "chart": "gráfico",
     "Data feed stale": "Fuente de datos desactualizada",
     "no new samples in": "sin muestras nuevas en",
@@ -341,7 +352,7 @@ def _annotation_markers(annotations: pd.DataFrame | None) -> list[dict]:
 # ======================================================================
 # Panel builders (one per chart card; None -> empty-state note)
 # ======================================================================
-def _panel_lv(datalog_df, voltage_anomalies, pal) -> dict | None:
+def _panel_lv(datalog_df, voltage_anomalies) -> dict | None:
     xy = _xy(datalog_df, "Line Voltage")
     if xy is None:
         return None
@@ -353,27 +364,29 @@ def _panel_lv(datalog_df, voltage_anomalies, pal) -> dict | None:
         markers = [{"x": x, "y": y, "type": "x"} for x, y in zip(ax, ay, strict=True)]
     return {
         "kind": "line", "unit": "V", "dec": 1, "sync": True, "gaps": True, "vb": [820, 250],
-        "series": [_line_series(_L("Line Voltage"), pal["blue"], *xy, width=1.8, fill=True)],
+        "series": [_line_series(_L("Line Voltage"), "blue", *xy, width=1.8, fill=True)],
         "band": [config.VOLTAGE_NORMAL_LOW, config.VOLTAGE_NORMAL_HIGH],
+        # The nominal reference is a theme-neutral grey that reads on either
+        # palette, so it stays a literal rather than a palette role.
         "hlines": [{"y": nominal, "color": "rgba(128,128,128,.45)", "dash": "2 4"}],
         "markers": markers,
     }
 
 
-def _panel_ul(datalog_df, pal) -> dict | None:
+def _panel_ul(datalog_df) -> dict | None:
     xy = _xy(datalog_df, "UPS Load")
     if xy is None:
         return None
     return {
         "kind": "line", "unit": "%", "dec": 0, "sync": True, "gaps": True, "vb": [460, 250],
-        "series": [_line_series(_L("UPS Load"), pal["amber"], *xy, width=1.6, fill=True)],
+        "series": [_line_series(_L("UPS Load"), "amber", *xy, width=1.6, fill=True)],
         "yDomain": [0, 100], "yFixed": True,
-        "hlines": [{"y": config.HIGH_LOAD_PCT, "color": pal["red"], "dash": "5 4",
+        "hlines": [{"y": config.HIGH_LOAD_PCT, "color": "red", "dash": "5 4",
                     "label": f"{config.HIGH_LOAD_PCT:g}%"}],
     }
 
 
-def _panel_pw(energy_df, pal) -> dict | None:
+def _panel_pw(energy_df) -> dict | None:
     if energy_df.empty or "power_w" not in energy_df.columns:
         return None
     s = energy_df.dropna(subset=["power_w"])
@@ -381,7 +394,7 @@ def _panel_pw(energy_df, pal) -> dict | None:
         return None
     return {
         "kind": "line", "unit": "W", "dec": 0, "sync": True, "vb": [460, 250],
-        "series": [_line_series("Power", pal["blue"], _ms_list(s["ts"]), _vals(s["power_w"]),
+        "series": [_line_series("Power", "blue", _ms_list(s["ts"]), _vals(s["power_w"]),
                                 width=1.4, fill=True)],
     }
 
@@ -413,21 +426,21 @@ def _panel_hm(pivot) -> dict | None:
             "vb": [460, 250]}
 
 
-def _panel_bv(datalog_df, pal) -> tuple[dict | None, float | None]:
+def _panel_bv(datalog_df) -> tuple[dict | None, float | None]:
     """Battery voltage panel (raw + rolling mean + linear trend). Returns
     (panel, slope_v_per_day) — the slope also feeds the card subtitle and
     the health pill."""
     xy = _xy(datalog_df, "Battery Voltage")
     if xy is None:
         return None, None
-    series = [_line_series(_L("reading"), pal["teal"], *xy, width=1.2, opacity=0.5)]
+    series = [_line_series(_L("reading"), "teal", *xy, width=1.2, opacity=0.5)]
     slope_day = None
     bv = datalog_df.dropna(subset=["Battery Voltage"])
     if len(bv) >= 5:
         # Rolling mean (~8h window at the 20-min default cadence) damps noise.
         roll = bv["Battery Voltage"].rolling(window=24, min_periods=3).mean()
         rmask = roll.notna()
-        series.append(_line_series(_L("8h mean"), pal["blue"],
+        series.append(_line_series(_L("8h mean"), "blue",
                                    _ms_list(bv.loc[rmask, "ts"]), _vals(roll[rmask]), width=2))
         # Linear fit of voltage against days elapsed: the slope is the
         # degradation rate — a slow downward slope is an aging battery.
@@ -437,7 +450,7 @@ def _panel_bv(datalog_df, pal) -> tuple[dict | None, float | None]:
         slope, intercept = np.polyfit(days, volts, 1)
         slope_day = float(slope)
         x0, x1 = _ms_list(ts.iloc[[0, -1]])
-        series.append(_line_series(_L("trend"), pal["amber"], [x0, x1],
+        series.append(_line_series(_L("trend"), "amber", [x0, x1],
                                    _vals([intercept, intercept + slope * days[-1]]),
                                    width=2, dash="6 4"))
     panel = {
@@ -447,7 +460,7 @@ def _panel_bv(datalog_df, pal) -> tuple[dict | None, float | None]:
     return panel, slope_day
 
 
-def _panel_bc(datalog_df, pal, self_tests: pd.DataFrame | None = None) -> dict | None:
+def _panel_bc(datalog_df, self_tests: pd.DataFrame | None = None) -> dict | None:
     xy = _xy(datalog_df, "Battery Capacity")
     if xy is None:
         return None
@@ -465,7 +478,7 @@ def _panel_bc(datalog_df, pal, self_tests: pd.DataFrame | None = None) -> dict |
                        zip(_ms_list(merged["ts"]), _vals(merged["Battery Capacity"]), strict=True)]
     return {
         "kind": "line", "unit": "%", "dec": 0, "sync": True, "gaps": True, "vb": [460, 250],
-        "series": [_line_series("Battery %", pal["green"], *xy, width=1.8, fill=True)],
+        "series": [_line_series("Battery %", "green", *xy, width=1.8, fill=True)],
         "yDomain": [max(0.0, lo - 4), 103],
         "markers": markers,
     }
@@ -484,7 +497,7 @@ def _self_test_sub(n_tests: int, median_sag_v: float | None) -> str:
     return " · ".join(bits)
 
 
-def _panel_rt(energy_df, pal, calibration: dict | None = None) -> tuple[dict | None, float | None, float | None]:
+def _panel_rt(energy_df, calibration: dict | None = None) -> tuple[dict | None, float | None, float | None]:
     """Runtime curve + the latest operating point. Returns (panel, latest_w,
     latest_runtime_min); the latter two also feed the KPI row.
 
@@ -505,11 +518,11 @@ def _panel_rt(energy_df, pal, calibration: dict | None = None) -> tuple[dict | N
         latest_w = float(energy_df["power_w"].dropna().iloc[-1])
         latest_rt = float(estimate_runtime(latest_w))
         markers = [{"x": round(latest_w, 1), "y": round(latest_rt, 1), "type": "star",
-                    "color": pal["red"], "label": f"Now {latest_rt:.0f}m"}]
-    series = [_line_series(_L("runtime"), pal["violet"], _vals(w_axis, 1), _vals(rt_axis, 1),
+                    "color": "red", "label": f"Now {latest_rt:.0f}m"}]
+    series = [_line_series(_L("runtime"), "violet", _vals(w_axis, 1), _vals(rt_axis, 1),
                            width=2, fill=True)]
     if calibration and calibration.get("status") == "calibrated" and calibration.get("watts"):
-        series.append(_line_series(_L("measured"), pal["teal"],
+        series.append(_line_series(_L("measured"), "teal",
                                    _vals(calibration["watts"], 1),
                                    _vals(calibration["minutes"], 1), width=2, dash="5 4"))
     panel = {
@@ -521,7 +534,7 @@ def _panel_rt(energy_df, pal, calibration: dict | None = None) -> tuple[dict | N
     return panel, latest_w, latest_rt
 
 
-def _panel_kw(energy_summary, pal) -> dict | None:
+def _panel_kw(energy_summary) -> dict | None:
     if not energy_summary or "samples" not in energy_summary:
         return None
     s = energy_summary["samples"].copy().sort_values("ts")
@@ -533,14 +546,14 @@ def _panel_kw(energy_summary, pal) -> dict | None:
         "kind": "line", "unit": "kWh", "y2unit": "CRC", "dec": 2, "sync": True,
         "legend": True, "vb": [820, 250], "y2fmt": "crc-k",
         "series": [
-            _line_series("kWh", pal["teal"], x, _vals(cum_kwh, 4), width=2, fill=True),
-            _line_series("cost ₡", pal["violet"], x,
+            _line_series("kWh", "teal", x, _vals(cum_kwh, 4), width=2, fill=True),
+            _line_series("cost ₡", "violet", x,
                          _vals(cum_kwh * config.PCSS_FLAT_RATE, 2), width=2, right=True),
         ],
     }
 
 
-def _panel_daily(energy_summary, pal, flagged: pd.DataFrame | None = None) -> dict | None:
+def _panel_daily(energy_summary, flagged: pd.DataFrame | None = None) -> dict | None:
     """Daily Energy bars, with the baseline-deviation flags (roadmap item
     19) riding the same panel rather than a new one: a flagged day's bar
     takes the amber accent color (the ``d.color`` per-bar override
@@ -570,19 +583,19 @@ def _panel_daily(energy_summary, pal, flagged: pd.DataFrame | None = None) -> di
         item = {"label": f"{dt.month}/{dt.day}", "y": kwh}
         pct = deviation_by_date.get(dt)
         if pct is not None:
-            item["color"] = pal["amber"]
-            markers.append({"x": i, "y": kwh, "type": "dot", "color": pal["amber"],
+            item["color"] = "amber"
+            markers.append({"x": i, "y": kwh, "type": "dot", "color": "amber",
                              "label": f"+{pct:.0f}%"})
         data.append(item)
     return {
         "kind": "bar", "unit": "kWh", "dec": 2, "vb": [460, 250], "barName": _L("energy"),
-        "color": pal["blue"],
+        "color": "blue",
         "data": data,
         "markers": markers,
     }
 
 
-def _panel_cmp(energy_summary, pal) -> dict | None:
+def _panel_cmp(energy_summary) -> dict | None:
     """Cumulative kWh against day-offset-in-period, the current billing
     period overlaid on one selected baseline — answers "is this period
     normal?". Needs at least two periods of energylog history.
@@ -632,8 +645,8 @@ def _panel_cmp(energy_summary, pal) -> dict | None:
     prev_x, prev_y = xy_by_index[-2]
     cur_x, cur_y = xy_by_index[-1]
     series = [
-        _line_series(str(labels[-2]), pal["faint"], prev_x, prev_y, width=1.6, dash="5 4"),
-        _line_series(str(labels[-1]), pal["teal"], cur_x, cur_y, width=2.2),
+        _line_series(str(labels[-2]), "faint", prev_x, prev_y, width=1.6, dash="5 4"),
+        _line_series(str(labels[-1]), "teal", cur_x, cur_y, width=2.2),
     ]
     return {
         "kind": "line", "unit": "kWh", "dec": 2, "xkind": "linear", "xunit": "d",
@@ -703,7 +716,7 @@ def _forecast_sub(forecast: dict | None) -> str:
     return " · ".join(bits)
 
 
-def _panel_wk(energy_df, pal) -> dict | None:
+def _panel_wk(energy_df) -> dict | None:
     """Mean power by hour of day, weekday against weekend.
 
     The profile math itself lives in ``pcss.stats.weekday_weekend_profiles``,
@@ -712,7 +725,7 @@ def _panel_wk(energy_df, pal) -> dict | None:
     """
     profiles = weekday_weekend_profiles(energy_df)
     series = []
-    for name, color in [("weekday", pal["blue"]), ("weekend", pal["green"])]:
+    for name, color in [("weekday", "blue"), ("weekend", "green")]:
         prof = profiles.get(name)
         if prof is None:
             continue
@@ -726,16 +739,16 @@ def _panel_wk(energy_df, pal) -> dict | None:
     }
 
 
-def _panel_growth(hist, pal) -> dict | None:
+def _panel_growth(hist) -> dict | None:
     if hist is None or hist.empty:
         return None
     x = _ms_list(hist["timestamp"])
     series = []
     for col, label, color, width in [
-        ("total_bytes", "total", pal["green"], 2),
-        ("datalog_bytes", _L("data"), pal["blue"], 1.8),
-        ("energylog_bytes", _L("energy"), pal["amber"], 1.5),
-        ("eventlog_bytes", _L("event"), pal["teal"], 1.5),
+        ("total_bytes", "total", "green", 2),
+        ("datalog_bytes", _L("data"), "blue", 1.8),
+        ("energylog_bytes", _L("energy"), "amber", 1.5),
+        ("eventlog_bytes", _L("event"), "teal", 1.5),
     ]:
         if col in hist.columns:
             series.append(_line_series(label, color, x, _vals(hist[col] / 1024, 1), width=width))
@@ -747,7 +760,7 @@ def _panel_growth(hist, pal) -> dict | None:
     }
 
 
-def _panel_proj(dl_stats, pal) -> tuple[dict | None, float | None]:
+def _panel_proj(dl_stats) -> tuple[dict | None, float | None]:
     if not dl_stats or not dl_stats.get("daily_bytes") or not np.isfinite(dl_stats["daily_bytes"]):
         return None, None
     daily_kb = dl_stats["daily_bytes"] / 1024
@@ -756,16 +769,16 @@ def _panel_proj(dl_stats, pal) -> tuple[dict | None, float | None]:
     panel = {
         "kind": "line", "unit": "KB", "dec": 0, "xkind": "linear", "xunit": "d",
         "vb": [460, 250], "xDomain": [0, 365],
-        "series": [_line_series(_L("projected"), pal["blue"], days,
+        "series": [_line_series(_L("projected"), "blue", days,
                                 _vals([daily_kb * d for d in days], 1), width=2, fill=True)],
-        "markers": [{"x": d, "y": round(daily_kb * d, 1), "type": "dot", "color": pal["amber"],
+        "markers": [{"x": d, "y": round(daily_kb * d, 1), "type": "dot", "color": "amber",
                      "label": lbl}
                     for d, lbl in [(30, "1mo"), (90, "3mo"), (180, "6mo"), (365, "1yr")]],
     }
     return panel, proj_1yr_kb
 
 
-def _panel_cad(datalog_df, pal) -> dict | None:
+def _panel_cad(datalog_df) -> dict | None:
     if datalog_df.empty or len(datalog_df) < 3:
         return None
     deltas = datalog_df["ts"].diff().dt.total_seconds().dropna() / 60.0
@@ -780,7 +793,7 @@ def _panel_cad(datalog_df, pal) -> dict | None:
         "kind": "bar", "unit": _L("samples"), "dec": 0, "vb": [460, 250],
         "barName": _L("intervals"),
         "data": [{"label": lbl, "y": int(counts.get(lbl, 0)),
-                  "color": pal["teal"] if i == 1 else pal["faint"]}
+                  "color": "teal" if i == 1 else "faint"}
                  for i, lbl in enumerate(labels)],
     }
 
@@ -797,7 +810,7 @@ _EVENT_CATEGORY_LABEL = {
 }
 
 
-def _panel_ev(events_df, pal) -> dict | None:
+def _panel_ev(events_df) -> dict | None:
     """Event timeline: one categorical row per event category, one dot per
     occurrence, time on the x axis (roadmap item 20).
 
@@ -815,8 +828,8 @@ def _panel_ev(events_df, pal) -> dict | None:
     if events_df is None or events_df.empty:
         return None
     cat_color = {
-        "power": pal["red"], "battery": pal["amber"], "shutdown": pal["violet"],
-        "communication": pal["blue"], "monitoring": pal["teal"], "other": pal["faint"],
+        "power": "red", "battery": "amber", "shutdown": "violet",
+        "communication": "blue", "monitoring": "teal", "other": "faint",
     }
     xs = _ms_list(events_df["ts"])
     cats = [categorize_event(str(oid)) for oid in events_df["oid"]]
@@ -852,9 +865,13 @@ def _spark(df: pd.DataFrame, col: str, color: str, transform=None) -> dict | Non
     return {"color": color, "x": _ms_list(s["ts"]), "y": _vals(y, 2)}
 
 
-def _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal):
+def _build_kpis(datalog_df, energy_df, latest_w, latest_rt):
     """The five header cards. Returns (cards, sparks, severities) where
-    severities feed the health pill (info does not count against health)."""
+    severities feed the health pill (info does not count against health).
+
+    Card colors are palette-neutral role names (roadmap item 30): the KPI
+    markup renders each as ``var(--<role>)`` so the accent, pill, and
+    sparkline follow the active theme without a rebuild."""
     cards: list[dict] = []
     sparks: list[dict | None] = []
     sevs: list[str] = []
@@ -862,7 +879,7 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal):
     def add(label, value, unit, sub, sev, spark):
         cards.append({
             "label": label, "value": value, "unit": unit, "sub": sub,
-            "status": _L(_SEV_LABEL[sev]), "color": pal[_SEV_COLOR[sev]],
+            "status": _L(_SEV_LABEL[sev]), "color": _SEV_COLOR[sev],
         })
         sparks.append(spark)
         if sev != "info":
@@ -875,7 +892,7 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal):
         sev = "ok" if config.VOLTAGE_NORMAL_LOW <= v <= config.VOLTAGE_NORMAL_HIGH else "crit"
         add(_L("Line Voltage"), f"{v:.1f}", "V",
             f"{_L('envelope')} {config.VOLTAGE_NORMAL_LOW:g}–{config.VOLTAGE_NORMAL_HIGH:g} V",
-            sev, _spark(datalog_df, "Line Voltage", pal["blue"]))
+            sev, _spark(datalog_df, "Line Voltage", "blue"))
     else:
         add(_L("Line Voltage"), "—", "", _L("no data"), "info", None)
 
@@ -883,7 +900,7 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal):
     if u is not None and pd.notna(u):
         sev = "ok" if u < 0.875 * config.HIGH_LOAD_PCT else ("warn" if u < config.HIGH_LOAD_PCT else "crit")
         add(_L("UPS Load"), f"{u:.0f}", "%", f"{_L('high-load')} > {config.HIGH_LOAD_PCT:g}%",
-            sev, _spark(datalog_df, "UPS Load", pal["amber"]))
+            sev, _spark(datalog_df, "UPS Load", "amber"))
     else:
         add(_L("UPS Load"), "—", "", _L("no data"), "info", None)
 
@@ -894,14 +911,14 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal):
         bv = latest.get("Battery Voltage") if latest is not None else None
         sub = f"{bv:.1f} V bus" if bv is not None and pd.notna(bv) else _L("% capacity")
         add(_L("Battery Charge"), f"{c:.0f}", "%", sub, sev,
-            _spark(datalog_df, "Battery Capacity", pal["green"]))
+            _spark(datalog_df, "Battery Capacity", "green"))
     else:
         add(_L("Battery Charge"), "—", "", _L("no data"), "info", None)
 
     if latest_rt is not None:
         sev = ("ok" if latest_rt >= config.RUNTIME_WARN_MIN
                else ("warn" if latest_rt >= config.RUNTIME_CRIT_MIN else "crit"))
-        rt_spark = _spark(energy_df, "power_w", pal["teal"],
+        rt_spark = _spark(energy_df, "power_w", "teal",
                           transform=lambda w: np.interp(w, config.RUNTIME_CURVE_W,
                                                         config.RUNTIME_CURVE_MIN))
         add(_L("Est. Runtime"), f"{latest_rt:.0f}", "min",
@@ -911,14 +928,14 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal):
 
     if latest_w is not None:
         add(_L("Power Draw"), f"{latest_w:.0f}", "W", _L("5-min sample"), "info",
-            _spark(energy_df, "power_w", pal["blue"]))
+            _spark(energy_df, "power_w", "blue"))
     else:
         add(_L("Power Draw"), "—", "", _L("no data"), "info", None)
 
     return cards, sparks, sevs
 
 
-def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, pal,
+def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps,
                   on_battery=None, battery=None, staleness=None) -> dict:
     n_crit = sevs.count("crit")
     n_warn = sevs.count("warn")
@@ -941,7 +958,7 @@ def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, p
             label = _L("Data feed stale")
         else:
             label = _L("Multiple alerts") if n_crit > 1 else _L("Attention needed")
-        color = pal["red"]
+        color = "red"
         if n_crit > 0:
             metric_bit = f"{n_crit + n_warn} {_L('metric(s) outside normal range')} · "
         elif n_warn > 0:
@@ -951,11 +968,11 @@ def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, p
         sub = f"{stale_bit}{metric_bit}{counts}"
     elif n_warn or stale_level == "warn":
         label = _L("Data feed stale") if stale_level == "warn" and not n_warn else _L("Advisory")
-        color = pal["amber"]
+        color = "amber"
         metric_bit = f"{n_warn} {_L('metric(s) near limits')} · " if n_warn else ""
         sub = f"{stale_bit}{metric_bit}{counts}"
     else:
-        label, color = _L("All systems nominal"), pal["green"]
+        label, color = _L("All systems nominal"), "green"
         if battery and battery.get("status") == "projected":
             sub = f"{_L('battery replace')} ≈ {battery['replace_date']:%Y-%m} · {counts}"
         elif bv_slope is not None:
@@ -1065,13 +1082,17 @@ def _section_head(title: str, note: str, presets: bool = False) -> str:
 
 
 def _kpi_row_html(cards: list[dict]) -> str:
+    # Each card's color is a palette-neutral role name (roadmap item 30);
+    # rendering it as var(--<role>) lets the accent and pill follow the active
+    # theme without a rebuild.
     out = ['<div class="kpis">']
     for i, k in enumerate(cards):
+        c = f"var(--{k['color']})"
         out.append(f"""
 <div class="card kpi-card">
-  <div class="kpi-accent" style="background:{k['color']}"></div>
+  <div class="kpi-accent" style="background:{c}"></div>
   <div class="kpi-top"><span class="kpi-label">{_esc(k['label'])}</span>
-    <span class="kpi-pill" style="color:{k['color']};background:color-mix(in srgb, {k['color']} 14%, transparent)">{_esc(k['status'])}</span></div>
+    <span class="kpi-pill" style="color:{c};background:color-mix(in srgb, {c} 14%, transparent)">{_esc(k['status'])}</span></div>
   <div class="kpi-value-row"><span class="kpi-value">{_esc(k['value'])}</span><span class="kpi-unit">{_esc(k['unit'])}</span></div>
   <div class="kpi-spark" data-idx="{i}"></div>
   <div class="kpi-sub">{_esc(k['sub'])}</div>
@@ -1218,21 +1239,23 @@ def _stats_table_html(stats_table: pd.DataFrame) -> str:
 
 
 def _summary_list_html(rows: list[tuple[str, str, str | None]]) -> str:
-    """rows: (key, value, color-or-None). A key of '#' renders a mini section
-    label instead of a data row."""
+    """rows: (key, value, role-or-None). A key of '#' renders a mini section
+    label instead of a data row. The color, when present, is a palette-neutral
+    role name (roadmap item 30) rendered as ``var(--<role>)`` so the accent
+    follows the active theme."""
     out = []
-    for k, v, color in rows:
+    for k, v, role in rows:
         if k == "#":
             out.append(f'<div class="mini-head">{_esc(v)}</div>')
         else:
-            style = f' style="color:{color}"' if color else ""
+            style = f' style="color:var(--{role})"' if role else ""
             out.append(f'<div class="sum-row"><span class="sum-k">{_esc(k)}</span>'
                        f'<span class="sum-v"{style}>{_esc(v)}</span></div>')
     return "".join(out)
 
 
 def _summary_rows(datalog_df, energy_summary, crossval, sizes, hist_stats,
-                  voltage_anomalies, high_load_episodes, gaps, pal, on_battery=None,
+                  voltage_anomalies, high_load_episodes, gaps, on_battery=None,
                   events_summary=None):
     """The two Reference lists — every field the classic tables reported."""
     latest_rows: list[tuple[str, str, str | None]] = []
@@ -1255,7 +1278,7 @@ def _summary_rows(datalog_df, energy_summary, crossval, sizes, hist_stats,
         run_rows.append((f"{_L('Cost')} (PCSS ₡{config.PCSS_FLAT_RATE:g})",
                          fmt_crc(energy_summary["total_cost_pcss"]), None))
         run_rows.append((_L("Cost (Coopesantos tiered)"),
-                         fmt_crc(energy_summary["total_cost_tiered"]), pal["violet"]))
+                         fmt_crc(energy_summary["total_cost_tiered"]), "violet"))
         run_rows.append((_L("CO₂ emitted"), f"{energy_summary['total_co2_kg']:.4f} kg", None))
         run_rows.append((_L("Span"), f"{energy_summary['first']} → {energy_summary['last']}", None))
         run_rows.append((_L("Samples (5-min)"), f"{energy_summary['n_samples']}", None))
@@ -1276,32 +1299,59 @@ def _summary_rows(datalog_df, energy_summary, crossval, sizes, hist_stats,
     run_rows.append(("#", _L("Anomalies"), None))
     run_rows.append((_L("Voltage out-of-range"),
                      f"{len(voltage_anomalies)} {_L('samples')}",
-                     pal["red"] if len(voltage_anomalies) else None))
+                     "red" if len(voltage_anomalies) else None))
     n_ob = 0 if on_battery is None else len(on_battery)
     run_rows.append((_L("On-battery episodes (at cadence)"), f"{n_ob}",
-                     pal["red"] if n_ob else None))
+                     "red" if n_ob else None))
     run_rows.append((_L("Sustained high-load episodes"), f"{len(high_load_episodes)}",
-                     pal["amber"] if len(high_load_episodes) else None))
+                     "amber" if len(high_load_episodes) else None))
     run_rows.append((f"{_L('DataLog gaps')} (>{config.DATALOG_EXPECTED_INTERVAL_MIN * 2:.0f} min)",
-                     f"{len(gaps)}", pal["amber"] if len(gaps) else None))
+                     f"{len(gaps)}", "amber" if len(gaps) else None))
     if events_summary:
         run_rows.append(("#", _L("Events"), None))
         run_rows.append((_L("Parsed events"), str(events_summary["n"]), None))
         run_rows.append((_L("On-battery (EventLog)"), str(events_summary["on_battery"]),
-                         pal["red"] if events_summary["on_battery"] else None))
+                         "red" if events_summary["on_battery"] else None))
         run_rows.append((_L("Last event"),
                          f"{events_summary['last_name']} · {events_summary['last_ts']:%Y-%m-%d %H:%M}",
                          None))
     return latest_rows, run_rows
 
 
-def _shell_css(pal: dict) -> str:
+def _palette_vars(pal: dict) -> str:
+    """The page-chrome CSS custom properties for one palette (roadmap item
+    30). Only the chrome (background, cards, text, tables) rides these
+    variables; chart ink is resolved from palette role names by charts.js at
+    draw time, never through CSS variables inside the SVG."""
+    return (
+        f"  --bg: {pal['bg']}; --bg2: {pal['bg2']}; --panel: {pal['panel']}; --border: {pal['border']};\n"
+        f"  --border-hover: {pal['borderHover']}; --text: {pal['text']}; --title: {pal['title']};\n"
+        f"  --mut: {pal['mut']}; --faint: {pal['faint']}; --rule: {pal['rule']}; --rowline: {pal['rowline']};\n"
+        f"  --foot: {pal['foot']}; --blue: {pal['blue']}; --green: {pal['green']}; --amber: {pal['amber']};\n"
+        f"  --red: {pal['red']}; --violet: {pal['violet']}; --teal: {pal['teal']};"
+    )
+
+
+def _shell_css() -> str:
+    # Both palettes ship as CSS custom properties (roadmap item 30). The dark
+    # palette is the base; an explicit data-theme="light" pins light; a
+    # data-theme="auto" build follows the viewer's prefers-color-scheme. The
+    # header toggle (charts.js) rewrites data-theme at view time and redraws
+    # the charts, so no rebuild is needed to switch.
+    dark_vars = _palette_vars(PALETTES["dark"])
+    light_vars = _palette_vars(PALETTES["light"])
     return f"""
-:root {{ --bg: {pal['bg']}; --bg2: {pal['bg2']}; --panel: {pal['panel']}; --border: {pal['border']};
-  --border-hover: {pal['borderHover']}; --text: {pal['text']}; --title: {pal['title']};
-  --mut: {pal['mut']}; --faint: {pal['faint']}; --rule: {pal['rule']}; --rowline: {pal['rowline']};
-  --foot: {pal['foot']}; --blue: {pal['blue']}; --green: {pal['green']}; --amber: {pal['amber']};
-  --red: {pal['red']}; --violet: {pal['violet']}; --teal: {pal['teal']}; }}
+:root {{
+{dark_vars}
+}}
+:root[data-theme="light"] {{
+{light_vars}
+}}
+@media (prefers-color-scheme: light) {{
+  :root[data-theme="auto"] {{
+{light_vars}
+  }}
+}}
 * {{ box-sizing: border-box; }}
 html, body {{ margin: 0; background: var(--bg); }}
 body {{ min-height: 100vh; background: radial-gradient(1200px 600px at 75% -10%, var(--bg2) 0%, var(--bg) 60%);
@@ -1462,7 +1512,7 @@ footer .dim {{ color: var(--foot); }}
   .wrap {{ max-width: none; }}
   .card {{ break-inside: avoid; }}
   .sec-head {{ break-after: avoid-page; }}
-  .card-tools, .presets, .cmp-pills, #print-btn, #lightbox, .chart-tooltip, .inspect-badge {{ display: none !important; }}
+  .card-tools, .presets, .cmp-pills, #print-btn, #theme-btn, #lightbox, .chart-tooltip, .inspect-badge {{ display: none !important; }}
   .chart-box.is-inspecting {{ outline: none !important; }}
   * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
 }}
@@ -1491,7 +1541,6 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     dashboard_window_days: float | None = None,
                     events: pd.DataFrame | None = None) -> str:
     """Assemble the dashboard page and return the finished HTML string."""
-    pal = PALETTES.get(config.DASHBOARD_THEME, PALETTES["dark"])
     if on_battery is None:
         on_battery = pd.DataFrame()
     if self_tests is None:
@@ -1510,29 +1559,29 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         # precedence without re-implementing it.
         grid_quality = grid_quality_trend(datalog_df, gaps=gaps, episodes=on_battery)
 
-    bv_panel, bv_slope = _panel_bv(datalog_df, pal)
-    rt_panel, latest_w, latest_rt = _panel_rt(energy_df, pal, calibration)
-    proj_panel, proj_1yr_kb = _panel_proj(dl_stats, pal)
+    bv_panel, bv_slope = _panel_bv(datalog_df)
+    rt_panel, latest_w, latest_rt = _panel_rt(energy_df, calibration)
+    proj_panel, proj_1yr_kb = _panel_proj(dl_stats)
     panels = {
-        "lv": _panel_lv(datalog_df, voltage_anomalies, pal),
-        "ul": _panel_ul(datalog_df, pal),
-        "pw": _panel_pw(energy_df, pal),
+        "lv": _panel_lv(datalog_df, voltage_anomalies),
+        "ul": _panel_ul(datalog_df),
+        "pw": _panel_pw(energy_df),
         "hm": _panel_hm(_heatmap_pivot(energy_df)),
         "bv": bv_panel,
-        "bc": _panel_bc(datalog_df, pal, self_tests),
+        "bc": _panel_bc(datalog_df, self_tests),
         "rt": rt_panel,
-        "kw": _panel_kw(energy_summary, pal),
-        "daily": _panel_daily(energy_summary, pal, baseline.get("flagged")),
-        "cmp": _panel_cmp(energy_summary, pal),
-        "wk": _panel_wk(energy_df, pal),
-        "growth": _panel_growth(hist, pal),
+        "kw": _panel_kw(energy_summary),
+        "daily": _panel_daily(energy_summary, baseline.get("flagged")),
+        "cmp": _panel_cmp(energy_summary),
+        "wk": _panel_wk(energy_df),
+        "growth": _panel_growth(hist),
         "proj": proj_panel,
-        "cad": _panel_cad(datalog_df, pal),
-        "ev": _panel_ev(events, pal),
+        "cad": _panel_cad(datalog_df),
+        "ev": _panel_ev(events),
     }
 
-    kpis, sparks, sevs = _build_kpis(datalog_df, energy_df, latest_w, latest_rt, pal)
-    health = _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps, pal,
+    kpis, sparks, sevs = _build_kpis(datalog_df, energy_df, latest_w, latest_rt)
+    health = _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps,
                            on_battery, battery, staleness)
 
     last_sample_ms = None
@@ -1549,8 +1598,13 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             default_preset_days = 30
 
     payload = {
+        # The config theme ("auto" | "dark" | "light"); "auto" lets charts.js
+        # follow prefers-color-scheme, and the header toggle overrides it. Both
+        # palettes ride the payload so a switch needs no rebuild (roadmap item
+        # 30); charts.js resolves the role names the panels emit against the
+        # active palette at draw time.
         "theme": config.DASHBOARD_THEME,
-        "palette": pal,
+        "palettes": {"dark": PALETTES["dark"], "light": PALETTES["light"]},
         "gaps": _gap_spans(gaps),
         "episodes": _episode_spans(on_battery),
         "annotations": _annotation_markers(annotations),
@@ -1563,6 +1617,11 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             "meanPower": _L("mean power"),
             "noData": _L("no data"),
             "staleness": _L("last sample {t} ago"),
+            "themeLabel": _L("theme"),
+            "themeAuto": _L("auto"),
+            "themeDark": _L("dark"),
+            "themeLight": _L("light"),
+            "themeTitle": _L("Cycle theme: auto, dark, light"),
         },
         "meta": {
             "last_sample_ms": last_sample_ms,
@@ -1657,7 +1716,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 
     latest_rows, run_rows = _summary_rows(datalog_df, energy_summary, crossval, sizes,
                                           hist_stats, voltage_anomalies, high_load_episodes,
-                                          gaps, pal, on_battery, events_summary)
+                                          gaps, on_battery, events_summary)
 
     generated = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
     foot = (f"{_L('Generated')} {generated} · {_L('read-only analytics snapshot')} · "
@@ -1753,13 +1812,17 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                            inspectable=inspectable, header_extra=header_extra,
                            extra_tool=extra_tool)
 
+    # The initial data-theme attribute pins the chrome for a static page and
+    # before charts.js runs (roadmap item 30): "dark"/"light" render exactly as
+    # before, "auto" defers to prefers-color-scheme via the CSS blocks above.
+    theme_btn_label = _esc(f"{_L('theme')}: {_L(config.DASHBOARD_THEME)}")
     page = f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{config.DASHBOARD_THEME}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">{refresh_tag}
 <title>PowerChute UPS Dashboard</title>
-<style>{_shell_css(pal)}</style>
+<style>{_shell_css()}</style>
 </head>
 <body>
 <div id="inspect-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -1771,10 +1834,12 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
       <h1>{_esc(config.DASHBOARD_MODEL)}</h1>
       <div class="header-sub">{_esc(header_sub)} · <span id="staleness"></span></div>
     </div>
-    <div class="health-wrap" style="--health:{health['color']}">
+    <div class="health-wrap" style="--health:var(--{health['color']})">
       <div class="health-pill"><span class="health-dot"></span>
         <span class="health-label">{_esc(health['label'])}</span></div>
       <div class="health-sub">{_esc(health['sub'])}</div>
+      <button id="theme-btn" class="tool-btn" type="button"
+        title="{_esc(_L('Cycle theme: auto, dark, light'))}">{theme_btn_label}</button>
       <button id="print-btn" class="tool-btn" type="button"
         title="Save the whole page as PDF via the browser print dialog">⎙ pdf</button>
     </div>
@@ -1792,9 +1857,9 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 
   {_section_head(_L('Battery Health'), _L('voltage · charge · runtime'))}
   <div class="grid12">
-    {_card('bv', 12, _L('Battery Voltage'), bv_sub, True, sub_color=pal['amber'] if bv_slope is not None and bv_slope < 0 else None)}
+    {_card('bv', 12, _L('Battery Voltage'), bv_sub, True, sub_color="var(--amber)" if bv_slope is not None and bv_slope < 0 else None)}
     {_card('bc', 6, _L('Battery Charge'), bc_sub, True)}
-    {_card('rt', 6, _L('Estimated Runtime'), rt_sub, False, sub_color=pal['violet'])}
+    {_card('rt', 6, _L('Estimated Runtime'), rt_sub, False, sub_color="var(--violet)")}
   </div>
 
   {_section_head(_L('Energy & Cost'), energy_note)}
@@ -1830,7 +1895,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
           <div class="mini-head">{_esc(_L('Latest sample'))}</div>
           {_summary_list_html(latest_rows)}
         </div>
-        <div class="sum-col" style="--blue:{pal['green']}">
+        <div class="sum-col" style="--blue:var(--green)">
           {_summary_list_html(run_rows)}
         </div>
       </div>

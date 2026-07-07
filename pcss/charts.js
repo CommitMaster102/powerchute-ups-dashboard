@@ -9,9 +9,37 @@
   // is fully offline. The __DASH_DATA__ token below is replaced by
   // pcss/dashboard.py with the real JSON payload.
   const DATA = __DASH_DATA__;
-  const C = DATA.palette;
   const S = DATA.strings || {};   // localized UI strings (English fallbacks)
   const SVGNS = "http://www.w3.org/2000/svg";
+
+  // Theme (roadmap item 30). Both palettes ride the payload; charts.js resolves
+  // the palette-neutral role names the panels emit (e.g. "blue", "amber") to
+  // concrete hex from whichever palette is active at DRAW time. Because chart
+  // ink is always a concrete SVG attribute value — never a CSS variable inside
+  // the SVG — the PNG export keeps working by construction. The manual override
+  // rides the permalink hash (item 1's encoder) rather than localStorage, so a
+  // shared link carries its theme rather than keeping it per-machine.
+  const PALETTES = DATA.palettes || {};
+  const CONFIG_THEME = DATA.theme || "dark";   // "auto" | "dark" | "light"
+  let THEME_MODE = CONFIG_THEME;               // current mode (config, hash, or toggle)
+  function prefersLight() {
+    return !!(window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches);
+  }
+  function resolveTheme(mode) {
+    // "auto" follows the viewer's OS preference; anything unavailable falls
+    // back to the design's dark palette.
+    if (mode === "light") return "light";
+    if (mode === "dark") return "dark";
+    return prefersLight() ? "light" : "dark";
+  }
+  // The active concrete palette; a theme switch swaps it and redraws.
+  let C = PALETTES[resolveTheme(THEME_MODE)] || PALETTES.dark || {};
+  function resolveColor(role) {
+    // Map a palette role name to the active palette's hex; a literal color
+    // (an rgba(), or a value that is not a role key) passes straight through.
+    if (role == null) return role;
+    return Object.prototype.hasOwnProperty.call(C, role) ? C[role] : role;
+  }
 
   // Per-panel interaction state. Every time-axis line panel zooms and pans
   // LOCALLY — gestures never spill over to other charts. What IS shared
@@ -122,7 +150,9 @@
   }
   function heatColor(t) {
     t = Math.max(0, Math.min(1, t));
-    const stops = [[14, 30, 40], [31, 122, 140], [79, 209, 197], [243, 193, 75]];
+    // The ramp rides the active palette (roadmap item 30), so the hourly power
+    // map follows the theme like every other chart.
+    const stops = (C && C.heat) || [[14, 30, 40], [31, 122, 140], [79, 209, 197], [243, 193, 75]];
     const seg = t * (stops.length - 1);
     const i = Math.min(stops.length - 2, Math.floor(seg));
     const f = seg - i, a = stops[i], b = stops[i + 1];
@@ -267,10 +297,12 @@
 
     const plot = svgEl("g", { "clip-path": "url(#" + clipId + ")" }, svg);
 
-    // Normal-envelope band.
+    // Normal-envelope band. The tint is the green role at low opacity, so it
+    // resolves to the active palette rather than a baked-in rgba().
     if (spec.band) {
       const y1 = syL(spec.band[1]), y0 = syL(spec.band[0]);
-      svgEl("rect", { x: p.l, y: Math.min(y0, y1), width: iw, height: Math.abs(y0 - y1), fill: "rgba(76,208,138,.09)" }, plot);
+      svgEl("rect", { x: p.l, y: Math.min(y0, y1), width: iw, height: Math.abs(y0 - y1),
+                      fill: C.green, "fill-opacity": 0.09 }, plot);
     }
     // DataLog gaps: a slim strip along the x-axis (full-height shading read
     // as "the panel has no data" when half the timeline is nightly gaps).
@@ -280,7 +312,7 @@
         const x0 = sx(Math.max(g[0], xd[0])), x1 = sx(Math.min(g[1], xd[1]));
         if (x1 - x0 < 0.5) return;
         svgEl("rect", { x: x0, y: p.t + ih - 4, width: x1 - x0, height: 4, rx: 1,
-                        fill: "rgba(239,106,106,.4)", class: "gap-strip" }, plot);
+                        fill: C.red, "fill-opacity": 0.4, class: "gap-strip" }, plot);
       });
     }
     // Inferred on-battery episodes: an amber strip just above the gap strip.
@@ -291,7 +323,7 @@
         if (g[1] < xd[0] || g[0] > xd[1]) return;
         const x0 = sx(Math.max(g[0], xd[0])), x1 = sx(Math.min(g[1], xd[1]));
         svgEl("rect", { x: x0, y: p.t + ih - 9, width: Math.max(2, x1 - x0), height: 4, rx: 1,
-                        fill: "rgba(243,193,75,.55)", class: "ep-strip" }, plot);
+                        fill: C.amber, "fill-opacity": 0.55, class: "ep-strip" }, plot);
       });
     }
     // Battery lifecycle annotations (roadmap item 26): a dashed vertical
@@ -315,20 +347,23 @@
         t.textContent = a.label;
       });
     }
-    // Threshold lines.
+    // Threshold lines. l.color is a palette role or a theme-neutral literal.
     (spec.hlines || []).forEach(l => {
       const y = syL(l.y);
       if (y < p.t || y > p.t + ih) return;
-      svgEl("line", { x1: p.l, x2: W - p.r, y1: y, y2: y, stroke: l.color || C.red, "stroke-width": 1.5, "stroke-dasharray": l.dash || "5 4", "vector-effect": "non-scaling-stroke" }, plot);
+      const col = resolveColor(l.color) || C.red;
+      svgEl("line", { x1: p.l, x2: W - p.r, y1: y, y2: y, stroke: col, "stroke-width": 1.5, "stroke-dasharray": l.dash || "5 4", "vector-effect": "non-scaling-stroke" }, plot);
       if (l.label) {
-        const t = svgEl("text", { x: W - p.r - 4, y: y - 5, "text-anchor": "end", "font-size": 11.5, fill: l.color || C.red, "font-family": "ui-monospace,monospace" }, svg);
+        const t = svgEl("text", { x: W - p.r - 4, y: y - 5, "text-anchor": "end", "font-size": 11.5, fill: col, "font-family": "ui-monospace,monospace" }, svg);
         t.textContent = l.label;
       }
     });
 
-    // Series paths.
+    // Series paths. s.color is a palette role; resolve once for the stroke and
+    // for the low-opacity area fill (hex + "14" alpha suffix).
     visible.forEach(v => {
       const s = v.s, sy = s.right ? syR : syL;
+      const col = resolveColor(s.color);
       let d = "";
       v.idx.forEach((i, k) => { d += (k ? "L" : "M") + sx(s.x[i]).toFixed(1) + "," + sy(s.y[i]).toFixed(1); });
       if (!d) return;
@@ -336,10 +371,10 @@
         const base = syL(yd[0]);
         const fd = d + "L" + sx(s.x[v.idx[v.idx.length - 1]]).toFixed(1) + "," + base.toFixed(1) +
           "L" + sx(s.x[v.idx[0]]).toFixed(1) + "," + base.toFixed(1) + "Z";
-        svgEl("path", { d: fd, fill: s.fillColor || (s.color + "14") }, plot);
+        svgEl("path", { d: fd, fill: resolveColor(s.fillColor) || (col + "14") }, plot);
       }
       svgEl("path", {
-        d, fill: "none", stroke: s.color, "stroke-width": s.width || 2,
+        d, fill: "none", stroke: col, "stroke-width": s.width || 2,
         "stroke-dasharray": s.dash || "none", "stroke-linejoin": "round", "stroke-linecap": "round",
         "vector-effect": "non-scaling-stroke", opacity: s.opacity == null ? 1 : s.opacity,
       }, plot);
@@ -349,17 +384,18 @@
     (spec.markers || []).forEach(m => {
       if (spec.xkind !== "linear" && (m.x < xd[0] || m.x > xd[1])) return;
       const x = sx(m.x), y = syL(m.y);
+      const mc = resolveColor(m.color);
       if (m.type === "x") {
         const r = 4.5;
-        svgEl("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, stroke: m.color || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, plot);
-        svgEl("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, stroke: m.color || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, plot);
+        svgEl("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, plot);
+        svgEl("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, plot);
       } else if (m.type === "star") {
-        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: m.color || C.red, stroke: "#fff", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, plot);
+        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: mc || C.red, stroke: "#fff", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, plot);
       } else {
-        svgEl("circle", { cx: x, cy: y, r: 3.5, fill: m.color || C.amber, stroke: C.panel, "stroke-width": 1.5 }, plot);
+        svgEl("circle", { cx: x, cy: y, r: 3.5, fill: mc || C.amber, stroke: C.panel, "stroke-width": 1.5 }, plot);
       }
       if (m.label) {
-        const t = svgEl("text", { x, y: y - 13, "text-anchor": "middle", "font-size": 12, fill: m.color || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
+        const t = svgEl("text", { x, y: y - 13, "text-anchor": "middle", "font-size": 12, fill: mc || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
         t.textContent = m.label;
       }
     });
@@ -371,7 +407,7 @@
         const g = svgEl("g", { class: "legend-chip", "data-si": si }, svg);
         g.style.cursor = "pointer";
         if (st.hidden.has(si)) g.setAttribute("opacity", "0.35");
-        svgEl("line", { x1: lx, x2: lx + 16, y1: p.t - 8, y2: p.t - 8, stroke: s.color, "stroke-width": 2.6, "stroke-dasharray": s.dash || "none", "vector-effect": "non-scaling-stroke" }, g);
+        svgEl("line", { x1: lx, x2: lx + 16, y1: p.t - 8, y2: p.t - 8, stroke: resolveColor(s.color), "stroke-width": 2.6, "stroke-dasharray": s.dash || "none", "vector-effect": "non-scaling-stroke" }, g);
         const t = svgEl("text", { x: lx + 20, y: p.t - 4, "font-size": 11.5, fill: C.mut, "font-family": "ui-monospace,monospace" }, g);
         t.textContent = s.name;
         // Wider invisible hit target.
@@ -450,7 +486,7 @@
     const labelEvery = spec.labelEvery || (n > 10 ? Math.ceil(n / 8) : 1);
     data.forEach((d, i) => {
       const x = p.l + i * bw + bw * 0.16, w = bw * 0.68, y = sy(d.y);
-      svgEl("rect", { x, y, width: w, height: Math.max(0, base - y), rx: 2, fill: d.color || spec.color || C.blue, "data-bar": i }, svg);
+      svgEl("rect", { x, y, width: w, height: Math.max(0, base - y), rx: 2, fill: resolveColor(d.color) || resolveColor(spec.color) || C.blue, "data-bar": i }, svg);
       if (i % labelEvery === 0) {
         const t = svgEl("text", { x: p.l + i * bw + bw / 2, y: H - 8, "text-anchor": "middle", "font-size": 11, fill: C.faint, "font-family": "ui-monospace,monospace" }, svg);
         t.textContent = d.label;
@@ -465,17 +501,18 @@
       const x = p.l + m.x * bw + bw / 2;
       const barY = sy(m.y != null ? m.y : (data[m.x] ? data[m.x].y : yd[0]));
       const y = barY - 10;
+      const mc = resolveColor(m.color);
       if (m.type === "x") {
         const r = 4.5;
-        svgEl("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, stroke: m.color || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
-        svgEl("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, stroke: m.color || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
+        svgEl("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
+        svgEl("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, stroke: mc || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
       } else if (m.type === "star") {
-        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: m.color || C.red, stroke: "#fff", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, svg);
+        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: mc || C.red, stroke: "#fff", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, svg);
       } else {
-        svgEl("circle", { cx: x, cy: y, r: 3.5, fill: m.color || C.amber, stroke: C.panel, "stroke-width": 1.5 }, svg);
+        svgEl("circle", { cx: x, cy: y, r: 3.5, fill: mc || C.amber, stroke: C.panel, "stroke-width": 1.5 }, svg);
       }
       if (m.label) {
-        const t = svgEl("text", { x, y: y - 13, "text-anchor": "middle", "font-size": 12, fill: m.color || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
+        const t = svgEl("text", { x, y: y - 13, "text-anchor": "middle", "font-size": 12, fill: mc || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
         t.textContent = m.label;
       }
     });
@@ -503,7 +540,7 @@
         const v = spec.z[r][c];
         svgEl("rect", {
           x: p.l + c * cw, y: p.t + r * ch, width: cw + 0.6, height: ch + 0.6,
-          fill: v == null ? "rgba(255,255,255,.03)" : heatColor((v - zmin) / ((zmax - zmin) || 1)),
+          fill: v == null ? C.grid : heatColor((v - zmin) / ((zmax - zmin) || 1)),
         }, svg);
       }
     }
@@ -556,7 +593,7 @@
       const g = svgEl("g", { class: "ev-legend", "data-cat": r.cat, "data-row": i }, svg);
       g.style.cursor = "pointer";
       if (hidden) g.setAttribute("opacity", "0.4");
-      svgEl("circle", { cx: p.l - 16, cy: yMid, r: 4, fill: r.color }, g);
+      svgEl("circle", { cx: p.l - 16, cy: yMid, r: 4, fill: resolveColor(r.color) }, g);
       const t = svgEl("text", { x: p.l - 26, y: yMid + 4, "text-anchor": "end", "font-size": 11.5,
                                 fill: C.mut, "font-family": "ui-monospace,monospace" }, g);
       t.textContent = r.label;
@@ -590,6 +627,7 @@
       const y0 = p.t + i * rowH, yMid = y0 + rowH / 2;
       const evs = (spec.events || []).filter(e => e.cat === r.cat && e.x >= xd[0] && e.x <= xd[1])
         .sort((a, b) => a.x - b.x);
+      const rowColor = resolveColor(r.color);
       const lanes = [];
       evs.forEach(e => {
         const cx = sx(e.x);
@@ -598,9 +636,9 @@
         lanes[lane] = cx;
         const off = (lane % 2 === 0 ? 1 : -1) * Math.ceil(lane / 2) * laneGap;
         const cy = Math.max(y0 + dotR + 1, Math.min(y0 + rowH - dotR - 1, yMid + off));
-        svgEl("circle", { cx, cy, r: dotR, fill: r.color, stroke: C.panel, "stroke-width": 1,
+        svgEl("circle", { cx, cy, r: dotR, fill: rowColor, stroke: C.panel, "stroke-width": 1,
                           class: "ev-dot" }, plot);
-        dots.push({ cx, cy, e, color: r.color, label: r.label });
+        dots.push({ cx, cy, e, color: rowColor, label: r.label });
       });
     });
 
@@ -630,11 +668,21 @@
     const sy = y => H - pd - (y - y0) / ((y1 - y0) || 1) * (H - 2 * pd);
     const svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H });
     svg.style.width = "100%"; svg.style.height = "34px"; svg.style.display = "block";
+    const col = resolveColor(spark.color);
     let d = "";
     xs.forEach((x, i) => { d += (i ? "L" : "M") + sx(x).toFixed(1) + "," + sy(ys[i]).toFixed(1); });
-    svgEl("path", { d: d + "L" + sx(x1).toFixed(1) + "," + (H - pd) + "L" + sx(x0).toFixed(1) + "," + (H - pd) + "Z", fill: spark.color + "22" }, svg);
-    svgEl("path", { d, fill: "none", stroke: spark.color, "stroke-width": 1.8, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    svgEl("path", { d: d + "L" + sx(x1).toFixed(1) + "," + (H - pd) + "L" + sx(x0).toFixed(1) + "," + (H - pd) + "Z", fill: col + "22" }, svg);
+    svgEl("path", { d, fill: "none", stroke: col, "stroke-width": 1.8, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
     container.appendChild(svg);
+  }
+
+  // Re-render every KPI sparkline (used on a theme switch and by resetAll, so
+  // the sparklines follow the active palette like the panels do).
+  function renderSparks() {
+    (DATA.sparks || []).forEach((spark, i) => {
+      const cont = document.querySelector('.kpi-spark[data-idx="' + i + '"]');
+      if (cont && spark) { cont.replaceChildren(); renderSparkline(cont, spark); }
+    });
   }
 
   // ------------------------------------------------------------------
@@ -746,9 +794,11 @@
     const cur = cmpCurrentPeriod();
     const base = cmpResolveBaseline(CMP_SEL);
     if (!cur || !base) return;
+    // Store palette-neutral role names (not resolved hex) so a live theme
+    // switch re-resolves these on the next redraw, like every other series.
     spec.series = [
-      { name: base.label, color: C.faint, x: base.x, y: base.y, width: 1.6, dash: "5 4" },
-      { name: cur.label, color: C.teal, x: cur.x, y: cur.y, width: 2.2 },
+      { name: base.label, color: "faint", x: base.x, y: base.y, width: 1.6, dash: "5 4" },
+      { name: cur.label, color: "teal", x: cur.x, y: cur.y, width: 2.2 },
     ];
   }
   function updateCmpControls() {
@@ -773,6 +823,37 @@
   }
 
   // ------------------------------------------------------------------
+  // Theme control (roadmap item 30). applyTheme swaps the active palette and
+  // redraws every chart plus the sparklines; the header toggle cycles
+  // auto -> dark -> light; the override rides the permalink hash (encoded only
+  // when it differs from the config default) and resetAll clears it back to
+  // that default. __chartsDebug exposes the resolved active theme for tests.
+  // ------------------------------------------------------------------
+  function applyTheme() {
+    C = PALETTES[resolveTheme(THEME_MODE)] || PALETTES.dark || {};
+    document.documentElement.setAttribute("data-theme", THEME_MODE);
+    Object.keys(STATE).forEach(rerenderPanel);
+    renderSparks();
+  }
+  function updateThemeToggle() {
+    const b = document.getElementById("theme-btn");
+    if (!b) return;
+    const names = { auto: S.themeAuto || "auto", dark: S.themeDark || "dark",
+                    light: S.themeLight || "light" };
+    b.textContent = (S.themeLabel || "theme") + ": " + (names[THEME_MODE] || THEME_MODE);
+  }
+  function setTheme(mode) {
+    if (mode !== "auto" && mode !== "dark" && mode !== "light") return;
+    THEME_MODE = mode;
+    applyTheme();
+    updateThemeToggle();
+    updateHash();
+  }
+  function cycleTheme() {
+    setTheme(THEME_MODE === "auto" ? "dark" : (THEME_MODE === "dark" ? "light" : "auto"));
+  }
+
+  // ------------------------------------------------------------------
   // Permalink view state: the active preset, or each panel's non-default
   // zoom window, lives in the URL hash so a view can be bookmarked and
   // survives a meta-refresh reload. replaceState keeps drags out of the
@@ -791,6 +872,10 @@
       if (zparts.length) parts.push("z=" + zparts.join(","));
     }
     if (CMP_SEL !== "previous") parts.push("c=" + encodeURIComponent(CMP_SEL));
+    // The manual theme override rides the hash (roadmap item 30), encoded only
+    // when it differs from the config default so a default page stays cleanly
+    // hashless.
+    if (THEME_MODE !== CONFIG_THEME) parts.push("t=" + THEME_MODE);
     const hash = parts.join("&");
     try {
       history.replaceState(null, "", location.pathname + location.search + (hash ? "#" + hash : ""));
@@ -822,6 +907,8 @@
       }
       const c = params.get("c");
       if (c) setCmpSelection(c);
+      const t = params.get("t");
+      if (t) setTheme(t);   // ignores anything that is not auto/dark/light
     } catch (e) { /* a malformed hash falls back to the default view */ }
   }
 
@@ -926,7 +1013,7 @@
       if (i < 0) return;
       if (snappedTs == null || Math.abs(s.x[i] - ts) < Math.abs(snappedTs - ts)) snappedTs = s.x[i];
       rows.push({
-        name: s.name, color: s.color, si, i,
+        name: s.name, color: resolveColor(s.color), si, i,
         val: fmtVal(s.y[i], spec.dec) + " " + (s.right ? (spec.y2unit || "") : (spec.unit || "")),
         x: s.x[i], y: s.y[i], right: !!s.right,
       });
@@ -1065,7 +1152,7 @@
         if (i < 0 || i >= data.length || pt.x < g.p.l) { hideHover(key); return; }
         LAST_HOVER[key] = { label: data[i].label, y: data[i].y };
         ttLive.innerHTML = '<div class="tt-ts">' + data[i].label + "</div>" +
-          '<div class="tt-row"><span class="tt-dot" style="background:' + (data[i].color || spec.color || C.blue) + '"></span>' +
+          '<div class="tt-row"><span class="tt-dot" style="background:' + (resolveColor(data[i].color) || resolveColor(spec.color) || C.blue) + '"></span>' +
           '<span class="tt-name">' + (spec.barName || "value") + '</span><span class="tt-val">' +
           fmtVal(data[i].y, spec.dec) + " " + (spec.unit || "") + "</span></div>";
         placeTooltip(ttLive, ev.clientX, ev.clientY);
@@ -1329,29 +1416,44 @@
     });
     const pb = document.getElementById("print-btn");
     if (pb) pb.addEventListener("click", () => window.print());
+    const tb = document.getElementById("theme-btn");
+    if (tb) tb.addEventListener("click", () => cycleTheme());
+  }
+
+  function pngCanvas(key) {
+    // Rasterize one panel's SVG to a 2x canvas. The SVG carries only concrete
+    // color attributes (chart ink is resolved from the active palette at draw
+    // time, never a CSS variable), so the serialized image reflects the active
+    // theme — the card background is baked in from the active palette's panel
+    // color. Returns a Promise so both the download and the test hook can use
+    // the pixels once the image has decoded.
+    return new Promise((resolve, reject) => {
+      const st = STATE[key];
+      const view = st && st.views[0];
+      if (!view || !view.svg || !view.geom) { reject(new Error("no view")); return; }
+      const g = view.geom;
+      const clone = view.svg.cloneNode(true);
+      const bg = svgEl("rect", { x: 0, y: 0, width: g.W, height: g.H, fill: C.panel });
+      clone.insertBefore(bg, clone.firstChild);
+      clone.setAttribute("width", g.W * 2);
+      clone.setAttribute("height", g.H * 2);
+      const xml = new XMLSerializer().serializeToString(clone);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = g.W * 2; canvas.height = g.H * 2;
+        canvas.getContext("2d").drawImage(img, 0, 0);
+        resolve(canvas);
+      };
+      img.onerror = reject;
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
+    });
   }
 
   function exportPng(key) {
-    const st = STATE[key];
-    const view = st && st.views[0];
-    if (!view || !view.svg) return;
-    const g = view.geom;
-    const clone = view.svg.cloneNode(true);
-    // The grid view relies on the card's background; bake it in for export.
-    const bg = svgEl("rect", { x: 0, y: 0, width: g.W, height: g.H, fill: C.panel });
-    clone.insertBefore(bg, clone.firstChild);
-    clone.setAttribute("width", g.W * 2);
-    clone.setAttribute("height", g.H * 2);
-    const xml = new XMLSerializer().serializeToString(clone);
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = g.W * 2; canvas.height = g.H * 2;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
+    pngCanvas(key).then(canvas => {
       canvas.toBlob(blob => { if (blob) download("ups-" + key + ".png", blob); }, "image/png");
-    };
-    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
+    }).catch(() => { /* nothing rendered to export */ });
   }
 
   function exportCsv(key) {
@@ -1641,6 +1743,12 @@
     TIME.hoverTs = null;
     LAST_PRESET = null;
     CMP_SEL = "previous";
+    // The theme override clears back to the config default (roadmap item 30),
+    // so a reset restores the palette the build shipped with.
+    THEME_MODE = CONFIG_THEME;
+    C = PALETTES[resolveTheme(THEME_MODE)] || PALETTES.dark || {};
+    document.documentElement.setAttribute("data-theme", THEME_MODE);
+    updateThemeToggle();
     rebuildCmpSeries();
     updateCmpControls();
     Object.keys(STATE).forEach(k => {
@@ -1652,6 +1760,7 @@
       delete LAST_HOVER[k];
     });
     Object.keys(STATE).forEach(rerenderPanel);
+    renderSparks();
     updatePresetPills();
     updateHash();
     READY = true;   // reveals are long gone by the time tests reset
@@ -1679,6 +1788,13 @@
     anomalyClusters: k => anomalyClusters(k).map(c => c.slice()),
     jumpAnomaly,
     inspect: () => (INSPECT ? { key: INSPECT.key, idx: INSPECT.idx } : null),
+    // Theme (roadmap item 30): the current mode ("auto"|"dark"|"light") and the
+    // resolved active palette theme ("dark"|"light"), plus programmatic control.
+    themeMode: () => THEME_MODE,
+    theme: () => resolveTheme(THEME_MODE),
+    setTheme: mode => setTheme(mode),
+    cycleTheme,
+    pngDataUrl: key => pngCanvas(key).then(canvas => canvas.toDataURL("image/png")),
     resetAll,
   };
 
@@ -1720,16 +1836,23 @@
     });
 
     // KPI sparklines.
-    (DATA.sparks || []).forEach((spark, i) => {
-      const cont = document.querySelector('.kpi-spark[data-idx="' + i + '"]');
-      if (cont && spark) renderSparkline(cont, spark);
-    });
+    renderSparks();
 
     bindTools();
     bindKeyboard();
     fillStaleness();
     updatePresetPills();
     updateCmpControls();
+    updateThemeToggle();
+    // In "auto" mode, follow a live OS light/dark switch: the CSS chrome
+    // reacts on its own through prefers-color-scheme, and this redraws the
+    // chart ink to match (roadmap item 30).
+    if (window.matchMedia) {
+      const mq = matchMedia("(prefers-color-scheme: light)");
+      const onSchemeChange = () => { if (THEME_MODE === "auto") applyTheme(); };
+      if (mq.addEventListener) mq.addEventListener("change", onSchemeChange);
+      else if (mq.addListener) mq.addListener(onSchemeChange);
+    }
     restoreFromHash();
     // Long archives open on the 30-day preset so the initial view stays
     // readable; a permalink hash (restored above) takes precedence.

@@ -26,10 +26,8 @@ import pandas as pd
 import pytest
 
 from pcss import config
-from pcss.dashboard import PALETTES, _panel_daily, build_dashboard
+from pcss.dashboard import _panel_daily, build_dashboard
 from pcss.stats import compute_energy_summary, detect_baseline_deviations, weekday_weekend_profiles
-
-PAL = PALETTES["dark"]
 
 
 def _edf_for_dates(dates, hourly_watts) -> pd.DataFrame:
@@ -318,16 +316,16 @@ def test_panel_daily_flags_deviating_day_with_marker_and_color():
     edf = _edf_for_dates(dates, watts)
     es = compute_energy_summary(edf)
     baseline = detect_baseline_deviations(edf)
-    panel = _panel_daily(es, PAL, baseline["flagged"])
+    panel = _panel_daily(es, baseline["flagged"])
 
     stuck_label = f"{dates[stuck_idx].month}/{dates[stuck_idx].day}"
     idx = next(i for i, item in enumerate(panel["data"]) if item["label"] == stuck_label)
-    assert panel["data"][idx]["color"] == PAL["amber"]
+    assert panel["data"][idx]["color"] == "amber"
     pct = baseline["flagged"].iloc[0]["deviation_pct"]
     # The marker carries the y/type/color fields renderBar needs to draw the
     # glyph above the flagged bar, mirroring the lv/bc marker-list shape.
     assert panel["markers"] == [{"x": idx, "y": panel["data"][idx]["y"], "type": "dot",
-                                 "color": PAL["amber"], "label": f"+{pct:.0f}%"}]
+                                 "color": "amber", "label": f"+{pct:.0f}%"}]
     # Every other bar stays uncolored (the default panel color applies).
     assert all("color" not in item for i, item in enumerate(panel["data"]) if i != idx)
 
@@ -335,16 +333,16 @@ def test_panel_daily_flags_deviating_day_with_marker_and_color():
 def test_panel_daily_no_flagged_days_is_no_markers():
     edf = _edf("2026-01-05", 5, lambda d, h: 200.0)
     es = compute_energy_summary(edf)
-    panel = _panel_daily(es, PAL, None)
+    panel = _panel_daily(es, None)
     assert panel["markers"] == []
     assert all("color" not in item for item in panel["data"])
     empty_flagged = pd.DataFrame(columns=["date", "day_type", "deviation_pct"])
-    panel2 = _panel_daily(es, PAL, empty_flagged)
+    panel2 = _panel_daily(es, empty_flagged)
     assert panel2["markers"] == []
 
 
 def test_panel_daily_none_on_empty_energy_summary():
-    assert _panel_daily({}, PAL, None) is None
+    assert _panel_daily({}, None) is None
 
 
 # ---------------------------------------------------------------- payload markers (build_dashboard)

@@ -19,7 +19,6 @@ import pytest
 
 import pcss.config as cfg
 from pcss.dashboard import (
-    PALETTES,
     _annotation_markers,
     _build_kpis,
     _gap_spans,
@@ -38,7 +37,6 @@ from pcss.dashboard import (
 )
 from pcss.stats import estimate_runtime
 
-PAL = PALETTES["dark"]
 EMPTY = pd.DataFrame()
 
 
@@ -146,12 +144,12 @@ def test_annotation_markers_empty_or_none():
 
 # ---------------------------------------------------------------- event timeline panel (item 20)
 def test_panel_ev_none_on_empty():
-    assert _panel_ev(None, PAL) is None
-    assert _panel_ev(pd.DataFrame(columns=["ts", "ts_ms", "oid", "active", "name"]), PAL) is None
+    assert _panel_ev(None) is None
+    assert _panel_ev(pd.DataFrame(columns=["ts", "ts_ms", "oid", "active", "name"])) is None
 
 
 def test_panel_ev_shape_rows_and_events():
-    panel = _panel_ev(_events(), PAL)
+    panel = _panel_ev(_events())
     assert panel["kind"] == "events"
     # One dot per event occurrence, carrying the fields the CSV export needs
     # (timestamp, category, event id, event name).
@@ -171,7 +169,7 @@ def test_panel_ev_shape_rows_and_events():
 def test_panel_ev_event_timestamps_are_epoch_ms():
     """Event timestamps cross the boundary as epoch-ms ints encoding the naive
     local wall-clock as if UTC, the same contract every other panel uses."""
-    panel = _panel_ev(_events(), PAL)
+    panel = _panel_ev(_events())
     expected = int(datetime(2026, 6, 25, 14, 20, tzinfo=UTC).timestamp() * 1000)
     assert panel["events"][0]["x"] == expected
     assert all(isinstance(e["x"], int) for e in panel["events"])
@@ -180,7 +178,7 @@ def test_panel_ev_event_timestamps_are_epoch_ms():
 def test_panel_ev_default_filter_flags():
     """Power and battery rows ship visible; the communication churn ships
     hidden (the roadmap noise point). The legend toggles the rest."""
-    panel = _panel_ev(_events(), PAL)
+    panel = _panel_ev(_events())
     visible = {r["cat"]: r["visible"] for r in panel["rows"]}
     assert visible["power"] is True
     assert visible["battery"] is True
@@ -190,10 +188,10 @@ def test_panel_ev_default_filter_flags():
 def test_panel_ev_rows_are_localizable(monkeypatch):
     """Category display names ride the payload (rows[].label) and translate
     when the dashboard language is Spanish, like every other chart label."""
-    en = {r["cat"]: r["label"] for r in _panel_ev(_events(), PAL)["rows"]}
+    en = {r["cat"]: r["label"] for r in _panel_ev(_events())["rows"]}
     assert en["power"] == "Power"
     monkeypatch.setattr(cfg, "DASHBOARD_LANGUAGE", "es")
-    es = {r["cat"]: r["label"] for r in _panel_ev(_events(), PAL)["rows"]}
+    es = {r["cat"]: r["label"] for r in _panel_ev(_events())["rows"]}
     assert es["power"] != "Power"  # translated, whatever the chosen wording
 
 
@@ -224,18 +222,18 @@ def test_build_dashboard_events_panel_none_without_events():
 
 # ---------------------------------------------------------------- panel builders
 def test_panels_none_on_empty_frames():
-    assert _panel_lv(EMPTY, EMPTY, PAL) is None
+    assert _panel_lv(EMPTY, EMPTY) is None
     assert _panel_hm(_heatmap_pivot(EMPTY)) is None
-    assert _panel_kw({}, PAL) is None
-    panel, slope = _panel_bv(EMPTY, PAL)
+    assert _panel_kw({}) is None
+    panel, slope = _panel_bv(EMPTY)
     assert panel is None and slope is None
-    assert _panel_cad(EMPTY, PAL) is None
+    assert _panel_cad(EMPTY) is None
 
 
 def test_panel_lv_markers_and_band():
     df = _datalog(20)
     anomalies = df.iloc[[3, 7]][["ts", "Line Voltage"]].copy()
-    panel = _panel_lv(df, anomalies, PAL)
+    panel = _panel_lv(df, anomalies)
     assert panel["sync"] is True and panel["gaps"] is True
     assert panel["band"] == [cfg.VOLTAGE_NORMAL_LOW, cfg.VOLTAGE_NORMAL_HIGH]
     assert len(panel["markers"]) == 2
@@ -247,19 +245,19 @@ def test_panel_bv_trend_slope_sign():
     df = _datalog(120)
     # A clearly declining battery: 27.4 V dropping 0.05 V per sample block.
     df["Battery Voltage"] = 27.4 - np.linspace(0, 0.5, len(df))
-    panel, slope = _panel_bv(df, PAL)
+    panel, slope = _panel_bv(df)
     assert slope is not None and slope < 0
     assert [s["name"] for s in panel["series"]] == ["reading", "8h mean", "trend"]
 
 
 def test_panel_rt_star_marker():
-    panel, w, rt = _panel_rt(_energy(power=500.0), PAL)
+    panel, w, rt = _panel_rt(_energy(power=500.0))
     assert w == pytest.approx(500.0)
     assert rt == pytest.approx(estimate_runtime(500.0))
     assert panel["markers"][0]["type"] == "star"
     assert panel["xkind"] == "linear"
     # No energy data -> curve still renders, but no operating point.
-    panel2, w2, rt2 = _panel_rt(EMPTY, PAL)
+    panel2, w2, rt2 = _panel_rt(EMPTY)
     assert panel2["markers"] == [] and w2 is None and rt2 is None
 
 
@@ -267,13 +265,13 @@ def test_panel_cad_bins_expected_and_gap():
     df = _datalog(30)
     # Insert one 60-min gap (3x the 20-min cadence).
     df.loc[15:, "ts"] = df.loc[15:, "ts"] + pd.Timedelta(minutes=40)
-    panel = _panel_cad(df, PAL)
+    panel = _panel_cad(df)
     data = {d["label"]: d["y"] for d in panel["data"]}
     assert data["19-21m"] == 28          # the regular cadence bucket
     assert data[">40m"] == 1             # the gap bucket
     # The expected-cadence bucket is highlighted teal.
     colors = {d["label"]: d["color"] for d in panel["data"]}
-    assert colors["19-21m"] == PAL["teal"]
+    assert colors["19-21m"] == "teal"
 
 
 def test_heatmap_daykeys_parallel_to_days():
@@ -299,7 +297,7 @@ def test_panel_cmp_compares_last_two_periods():
     edf = pd.concat([_energy(n=288, start="2026-04-29 00:00"),
                      _energy(n=288, start="2026-05-01 00:00")], ignore_index=True)
     edf["interval_sec"] = 300
-    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    panel = _panel_cmp(compute_energy_summary(edf))
     assert panel["xkind"] == "linear"
     assert [s["name"] for s in panel["series"]] == ["2026-04", "2026-05"]
     cur = panel["series"][1]
@@ -312,8 +310,8 @@ def test_panel_cmp_compares_last_two_periods():
 
 def test_panel_cmp_needs_two_periods():
     from pcss.stats import compute_energy_summary
-    assert _panel_cmp(compute_energy_summary(_energy(60)), PAL) is None
-    assert _panel_cmp({}, PAL) is None
+    assert _panel_cmp(compute_energy_summary(_energy(60))) is None
+    assert _panel_cmp({}) is None
 
 
 def test_panel_cmp_periods_carries_every_period_with_label_and_partial():
@@ -328,7 +326,7 @@ def test_panel_cmp_periods_carries_every_period_with_label_and_partial():
         _energy(n=200, start="2026-06-01 00:00"),  # the current period, still open
     ], ignore_index=True)
     edf["interval_sec"] = 300
-    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    panel = _panel_cmp(compute_energy_summary(edf))
     periods = panel["periods"]
     assert [p["label"] for p in periods] == ["2026-03", "2026-04", "2026-05", "2026-06"]
     for p in periods:
@@ -347,7 +345,7 @@ def test_panel_cmp_default_baseline_is_previous_period():
     edf = pd.concat([_energy(n=288, start="2026-04-29 00:00"),
                      _energy(n=288, start="2026-05-01 00:00")], ignore_index=True)
     edf["interval_sec"] = 300
-    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    panel = _panel_cmp(compute_energy_summary(edf))
     assert [s["name"] for s in panel["series"]] == ["2026-04", "2026-05"]
     # The default baseline series matches the last entry before "current" in
     # the periods list (periods[-2]) exactly, x and y included.
@@ -367,7 +365,7 @@ def test_panel_cmp_no_server_side_decimation():
         ignore_index=True,
     )
     edf["interval_sec"] = 300
-    panel = _panel_cmp(compute_energy_summary(edf), PAL)
+    panel = _panel_cmp(compute_energy_summary(edf))
     # Full month at 1h resolution: on the order of ~720-750 points, well
     # above any small decimation budget, and every period keeps its own
     # count (no cross-period trimming).
@@ -435,7 +433,7 @@ def test_panel_wk_weekday_weekend_profiles():
     edf = pd.concat([_energy(n=288, start="2026-05-01 00:00", power=200.0),
                      _energy(n=288, start="2026-05-02 00:00", power=400.0)],
                     ignore_index=True)
-    panel = _panel_wk(edf, PAL)
+    panel = _panel_wk(edf)
     assert [s["name"] for s in panel["series"]] == ["weekday", "weekend"]
     assert panel["series"][0]["y"][0] == pytest.approx(200.0)
     assert panel["series"][1]["y"][0] == pytest.approx(400.0)
@@ -443,13 +441,13 @@ def test_panel_wk_weekday_weekend_profiles():
 
 
 def test_panel_wk_empty():
-    assert _panel_wk(EMPTY, PAL) is None
+    assert _panel_wk(EMPTY) is None
 
 
 # ---------------------------------------------------------------- KPI severities
 def test_kpi_severities_all_nominal():
     cards, sparks, sevs = _build_kpis(_datalog(), _energy(), 250.0,
-                                      estimate_runtime(250.0), PAL)
+                                      estimate_runtime(250.0))
     assert [c["label"] for c in cards] == [
         "Line Voltage", "UPS Load", "Battery Charge", "Est. Runtime", "Power Draw"]
     by = {c["label"]: c["status"] for c in cards}
@@ -465,7 +463,7 @@ def test_kpi_severities_degraded():
     df = _datalog(lv=130.0, ul=85.0, bc=60.0)
     latest_w = 600.0
     latest_rt = estimate_runtime(latest_w)   # 3.5 min -> below the 7-min crit line
-    cards, _, sevs = _build_kpis(df, _energy(power=latest_w), latest_w, latest_rt, PAL)
+    cards, _, sevs = _build_kpis(df, _energy(power=latest_w), latest_w, latest_rt)
     by = {c["label"]: c["status"] for c in cards}
     assert by["Line Voltage"] == "ALERT"      # 130 V outside the envelope
     assert by["UPS Load"] == "ALERT"          # 85% over the 80% threshold
@@ -475,7 +473,7 @@ def test_kpi_severities_degraded():
 
 
 def test_kpi_no_data_is_info():
-    cards, sparks, sevs = _build_kpis(EMPTY, EMPTY, None, None, PAL)
+    cards, sparks, sevs = _build_kpis(EMPTY, EMPTY, None, None)
     assert all(c["value"] == "—" for c in cards)
     assert sevs == []                        # info never counts against health
     assert sparks == [None] * 5
@@ -614,7 +612,7 @@ def test_build_dashboard_html_smoke():
     assert sorted(payload["panels"]) == sorted(
         ["lv", "ul", "pw", "hm", "bv", "bc", "rt", "kw", "daily", "cmp", "wk",
          "growth", "proj", "cad", "ev"])
-    assert payload["theme"] in ("dark", "light")
+    assert payload["theme"] in ("auto", "dark", "light")
     assert payload["meta"]["last_sample_ms"] is not None
 
 

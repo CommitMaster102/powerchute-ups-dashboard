@@ -119,8 +119,12 @@ baseline_min_days      = 14
 baseline_deviation_pct = 35.0
 
 [dashboard]
-# Dashboard color theme: "dark" (the designed default) or "light".
-theme = "dark"
+# Dashboard color theme: "auto" (the default), "dark", or "light". "auto" ships
+# both palettes in one build and follows the viewer's OS light/dark preference
+# (prefers-color-scheme), with a header toggle to override at view time; the
+# override rides the permalink hash, so a shared link carries its theme.
+# "dark" and "light" pin the theme exactly as before.
+theme = "auto"
 # UPS model name shown in the dashboard header.
 model = "APC BX2000M-LM"
 # Page language: "en" or "es". Number formatting stays en-US in both (the CSV

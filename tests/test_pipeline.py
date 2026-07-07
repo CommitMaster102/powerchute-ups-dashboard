@@ -169,6 +169,31 @@ def test_load_config_rejects_unknown_language(tmp_path, restore_config):
     assert c.DASHBOARD_LANGUAGE == "en"
 
 
+def test_default_theme_is_auto():
+    """Roadmap item 30: the module default theme is "auto" — a single build
+    that follows the viewer's prefers-color-scheme, replacing the old "dark"
+    default. Explicit "dark"/"light" configs still pin the initial theme."""
+    assert cfg.DASHBOARD_THEME == "auto"
+
+
+def test_load_config_accepts_theme_values(tmp_path, restore_config):
+    c = restore_config
+    for theme in ("auto", "dark", "light"):
+        conf = tmp_path / f"{theme}.toml"
+        conf.write_text(f'[dashboard]\ntheme = "{theme}"\n', encoding="utf-8")
+        c.load_config(conf)
+        assert theme == c.DASHBOARD_THEME
+
+
+def test_load_config_rejects_unknown_theme(tmp_path, restore_config):
+    c = restore_config
+    c.DASHBOARD_THEME = "dark"
+    conf = tmp_path / "config.toml"
+    conf.write_text('[dashboard]\ntheme = "solarized"\n', encoding="utf-8")
+    c.load_config(conf)
+    assert c.DASHBOARD_THEME == "dark"   # unknown value ignored, prior kept
+
+
 def test_load_config_agent_dir_arg_wins(tmp_path, restore_config):
     c = restore_config
     agent = tmp_path / "viacli"

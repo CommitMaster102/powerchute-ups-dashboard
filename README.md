@@ -63,7 +63,7 @@ python -m venv .venv
 
 ## Configuration
 
-Optional `config.toml` (auto-loaded from the repo root, or `--config PATH`) overrides the built-in defaults — copy `config.example.toml` to start. It holds the PCSS agent path, the Coopesantos/PCSS tariff rates and billing-cycle start day (`[tariff] billing_cycle_start_day`; update the rates when the quarterly rate changes), the CO₂ factor, voltage/load thresholds, the on-battery detection thresholds, the battery replace-by threshold and confidence floor, the KPI status-pill cut points, the runtime curve, the dashboard theme / model name / language / auto-refresh (`[dashboard] theme = "dark" | "light"`, `model`, `language = "en" | "es"`, `refresh_minutes`), the opt-in `[alerts]` switch, and the `[archive]` switch (on by default).
+Optional `config.toml` (auto-loaded from the repo root, or `--config PATH`) overrides the built-in defaults — copy `config.example.toml` to start. It holds the PCSS agent path, the Coopesantos/PCSS tariff rates and billing-cycle start day (`[tariff] billing_cycle_start_day`; update the rates when the quarterly rate changes), the CO₂ factor, voltage/load thresholds, the on-battery detection thresholds, the battery replace-by threshold and confidence floor, the KPI status-pill cut points, the runtime curve, the dashboard theme / model name / language / auto-refresh (`[dashboard] theme = "auto" | "dark" | "light"` — `auto` (the default) follows the viewer's prefers-color-scheme with a header toggle to override, `model`, `language = "en" | "es"`, `refresh_minutes`), the opt-in `[alerts]` switch, and the `[archive]` switch (on by default).
 
 ## Scheduled daily run (Windows)
 

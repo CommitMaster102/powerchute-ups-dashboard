@@ -48,32 +48,7 @@ Shipped so far (details in the archive at the bottom):
 | 20 | Event timeline panel | `pcss/charts.js` (`renderEvents`), `pcss/eventlog.py` (`categorize_event`), `pcss/dashboard.py` (`_panel_ev`) |
 | 21 | Keyboard sample step-through | `pcss/charts.js` (`toggleInspect`, `stepInspect`) |
 | 22 | Selectable comparison periods | `pcss/dashboard.py` (`_panel_cmp`), `pcss/charts.js` (`setCmpSelection`, `cmpResolveBaseline`) |
-
-## Dashboard and interaction
-
-### 30. Auto theme
-
-`[dashboard] theme` picks one palette at build time — `build_dashboard`
-bakes `PALETTES[theme]` into the page, which is why the E2E theme suite
-builds a second, light dashboard. Moving the palette to CSS custom
-properties and shipping both would let a single build follow
-`prefers-color-scheme`, with a header toggle for manual override.
-
-Challenges:
-
-- The palette is not only CSS: the panel builders in `pcss/dashboard.py`
-  embed concrete colors in the JSON payload (series and marker colors), so
-  either the payload carries palette-neutral color roles resolved by
-  `pcss/charts.js` at draw time, or both palettes ride the payload. That
-  payload refactor is the real work.
-- PNG export serializes the SVG to a canvas, and CSS variables inside
-  serialized SVG do not resolve; the export path must inline the computed
-  colors of the active theme or the exported image comes out wrong.
-- The manual override belongs in the permalink hash (item 1's encoder is
-  extensible) so a shared link carries its theme; `localStorage` would keep
-  it per-machine instead — one of the two, chosen deliberately.
-- `tests/e2e_theme.py` and the `light_dashboard_path` fixture simplify to a
-  single build toggled live, but must be reworked in the same change.
+| 30 | Auto theme | `pcss/dashboard.py` (`PALETTES`, `_shell_css`), `pcss/charts.js` (`resolveColor`, `applyTheme`, `cycleTheme`) |
 
 ## Alerting and automation
 
@@ -1223,3 +1198,56 @@ Challenges:
   encoder is extensible — one more key alongside `z` and `p`).
 - The control must fit the minimal card-header design; the preset-pill
   pattern (`_section_head`) is the established look for this kind of toggle.
+
+### 30. Auto theme
+
+SHIPPED: both palettes ride the payload (`palettes`) and the panel builders
+in `pcss/dashboard.py` emit palette-neutral color role names (the palette
+keys, for example `"blue"` or `"amber"`) instead of resolved hex;
+`pcss/charts.js` gained `resolveColor` (role name to the active palette's
+concrete hex, literals passing through) and applies it at every draw site, so
+chart ink is always a concrete SVG attribute — never a CSS variable inside the
+SVG — which is why PNG export keeps working (`pngCanvas`, verified by
+`tests/e2e_export.py::test_png_reflects_active_theme_after_switch` reading a
+corner pixel of a post-switch export). The heatmap ramp, gap/episode strips,
+band, KPI sparklines, health pill, and annotation markers all resolve at draw
+time; page chrome moved to CSS custom properties with a dark base block, a
+`:root[data-theme="light"]` block, and a `@media (prefers-color-scheme: light)`
+block for `data-theme="auto"`, and the server-rendered semantic accents (KPI
+cards, health pill, summary rows) use `var(--role)`. `[dashboard] theme` gained
+an `"auto"` value, now the module default in `pcss/config.py`; `"dark"`/`"light"`
+still pin the initial theme (backward compatible), documented in
+`config.example.toml`. A header toggle (`#theme-btn`) cycles auto -> dark ->
+light, shows and localizes its current state, and its override rides the
+permalink hash (item 1's encoder gained a `t=` key, encoded only when it differs
+from the config default — chosen over `localStorage` so a shared link carries
+its theme); `restoreFromHash` replays it, a live `prefers-color-scheme` change
+redraws when in auto mode, `resetAll` clears it back to the config default, and
+`window.__chartsDebug` exposes `theme()` / `themeMode()` / `setTheme` /
+`cycleTheme` for tests. `tests/e2e_theme.py` was reworked to a single `auto`
+build (`auto_dashboard_path`) driven with `emulate_media(color_scheme=...)` and
+the live toggle; the `light_dashboard_path` fixture was removed in the same
+change. `tests/test_theme.py` pins the Python side (roles not hex, both
+palettes, the `auto` default, both chrome blocks, the localized toggle).
+
+`[dashboard] theme` picks one palette at build time — `build_dashboard`
+bakes `PALETTES[theme]` into the page, which is why the E2E theme suite
+builds a second, light dashboard. Moving the palette to CSS custom
+properties and shipping both would let a single build follow
+`prefers-color-scheme`, with a header toggle for manual override.
+
+Challenges:
+
+- The palette is not only CSS: the panel builders in `pcss/dashboard.py`
+  embed concrete colors in the JSON payload (series and marker colors), so
+  either the payload carries palette-neutral color roles resolved by
+  `pcss/charts.js` at draw time, or both palettes ride the payload. That
+  payload refactor is the real work.
+- PNG export serializes the SVG to a canvas, and CSS variables inside
+  serialized SVG do not resolve; the export path must inline the computed
+  colors of the active theme or the exported image comes out wrong.
+- The manual override belongs in the permalink hash (item 1's encoder is
+  extensible) so a shared link carries its theme; `localStorage` would keep
+  it per-machine instead — one of the two, chosen deliberately.
+- `tests/e2e_theme.py` and the `light_dashboard_path` fixture simplify to a
+  single build toggled live, but must be reworked in the same change.

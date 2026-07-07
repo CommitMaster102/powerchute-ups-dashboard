@@ -9,9 +9,10 @@ to test the generated output/dashboard.html instead (output/ is gitignored, so
 it must exist locally from a prior analyze_ups.py run).
 
 Fixtures:
-  dashboard_path       — the dark-theme dashboard HTML (session)
-  light_dashboard_path — a light-theme build for the theme suite (session)
-  dash                 — the shared page, reset in place before every test
+  dashboard_path      — the dark-theme dashboard HTML (session)
+  auto_dashboard_path — an "auto"-theme build for the theme suite, which follows
+                        prefers-color-scheme and toggles live (session)
+  dash                — the shared page, reset in place before every test
 """
 from __future__ import annotations
 
@@ -160,8 +161,12 @@ def dashboard_path(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="session")
-def light_dashboard_path(tmp_path_factory) -> Path:
-    return _build_dashboard(tmp_path_factory, "light")
+def auto_dashboard_path(tmp_path_factory) -> Path:
+    """An "auto"-theme build (roadmap item 30) for the theme suite: a single
+    build that follows prefers-color-scheme (emulated via emulate_media) and
+    that the header toggle overrides live, so no second per-theme build is
+    needed."""
+    return _build_dashboard(tmp_path_factory, "auto")
 
 
 @pytest.fixture(scope="session")

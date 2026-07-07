@@ -18,10 +18,8 @@ import pandas as pd
 import pytest
 
 from pcss import config
-from pcss.dashboard import PALETTES, _panel_rt, build_dashboard
+from pcss.dashboard import _panel_rt, build_dashboard
 from pcss.stats import calibrate_runtime_curve
-
-PAL = PALETTES["dark"]
 
 
 def _spans(pairs):
@@ -268,7 +266,7 @@ def test_panel_rt_adds_measured_series_when_calibrated():
         "ts": pd.date_range("2026-01-01", periods=3, freq="5min"),
         "power_w": [250.0, 250.0, 250.0], "interval_sec": 300,
     })
-    panel, latest_w, latest_rt = _panel_rt(energy_df, PAL, calibration)
+    panel, latest_w, latest_rt = _panel_rt(energy_df, calibration)
     assert len(panel["series"]) == 2
     assert panel["series"][1]["x"] == [100.0, 200.0]
     assert panel["series"][1]["y"] == [10.0, 5.0]
@@ -279,13 +277,13 @@ def test_panel_rt_adds_measured_series_when_calibrated():
 def test_panel_rt_no_measured_series_below_floor():
     calibration = {"status": "insufficient_evidence", "n_episodes": 1, "min_episodes": 3,
                    "k": None, "watts": None, "minutes": None}
-    panel, _, _ = _panel_rt(pd.DataFrame(), PAL, calibration)
+    panel, _, _ = _panel_rt(pd.DataFrame(), calibration)
     assert len(panel["series"]) == 1
 
 
 def test_panel_rt_no_calibration_argument_matches_none():
-    panel_default, w1, rt1 = _panel_rt(pd.DataFrame(), PAL)
-    panel_none, w2, rt2 = _panel_rt(pd.DataFrame(), PAL, None)
+    panel_default, w1, rt1 = _panel_rt(pd.DataFrame())
+    panel_none, w2, rt2 = _panel_rt(pd.DataFrame(), None)
     assert len(panel_default["series"]) == len(panel_none["series"]) == 1
     assert w1 == w2 and rt1 == rt2
 

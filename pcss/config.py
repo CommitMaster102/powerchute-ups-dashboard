@@ -164,8 +164,11 @@ BATTERY_CHARGE_CRIT_PCT = 50.0
 RUNTIME_WARN_MIN = 15.0
 RUNTIME_CRIT_MIN = 7.0
 
-# Dashboard color theme: "dark" (the designed default) or "light".
-DASHBOARD_THEME = "dark"
+# Dashboard color theme: "auto" (the default — a single build that follows the
+# viewer's prefers-color-scheme), "dark", or "light". "dark" and "light" pin
+# the initial theme exactly as before; "auto" ships both palettes and lets a
+# header toggle override at view time (roadmap item 30).
+DASHBOARD_THEME = "auto"
 # UPS model name shown in the dashboard header.
 DASHBOARD_MODEL = "APC BX2000M-LM"
 # Dashboard language: "en" or "es". The PCSS installation and the electric
@@ -390,7 +393,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
 
     dash = data.get("dashboard", {})
     theme = str(dash.get("theme", DASHBOARD_THEME)).lower()
-    if theme in ("dark", "light"):
+    if theme in ("auto", "dark", "light"):
         DASHBOARD_THEME = theme
     DASHBOARD_MODEL = str(dash.get("model", DASHBOARD_MODEL))
     DASHBOARD_REFRESH_MINUTES = max(0.0, float(

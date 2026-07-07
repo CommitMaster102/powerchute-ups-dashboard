@@ -52,6 +52,38 @@ def test_png_export(dash, tmp_path):
     assert len(data) > 5_000, "png suspiciously small — likely blank"
 
 
+# The corner pixel of an exported panel is its baked card background — the
+# active palette's panel color. Reading it back proves the PNG follows a theme
+# switch (roadmap item 30): chart ink is concrete SVG attributes resolved from
+# the active palette, so the serialized image reflects the switch by
+# construction — but the roadmap called this out as a real risk, so it is
+# checked rather than assumed.
+_CORNER_JS = """async (key) => {
+    const url = await __chartsDebug.pngDataUrl(key);
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const p = ctx.getImageData(3, 3, 1, 1).data;
+    return [p[0], p[1], p[2]];
+}"""
+
+
+def test_png_reflects_active_theme_after_switch(dash):
+    # Light panel background (#ffffff) exports a bright corner.
+    dash.evaluate("__chartsDebug.setTheme('light')")
+    dash.wait_for_function("__chartsDebug.theme() === 'light'")
+    light_corner = dash.evaluate(_CORNER_JS, "lv")
+    assert sum(light_corner) > 600, f"corner {light_corner} not light after switching to light"
+    # Dark panel background (#181b21) exports a dark corner.
+    dash.evaluate("__chartsDebug.setTheme('dark')")
+    dash.wait_for_function("__chartsDebug.theme() === 'dark'")
+    dark_corner = dash.evaluate(_CORNER_JS, "lv")
+    assert sum(dark_corner) < 200, f"corner {dark_corner} not dark after switching to dark"
+
+
 def test_legend_toggle_rerenders(dash):
     n_before = dash.evaluate("document.querySelectorAll('#panel-bv svg path[stroke]').length")
     dash.evaluate("document.querySelectorAll('#panel-bv .legend-chip')[0]"

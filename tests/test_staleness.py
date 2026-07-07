@@ -18,10 +18,9 @@ import pytest
 
 import pcss.config as cfg
 from pcss.common import fmt_age_hours
-from pcss.dashboard import PALETTES, _build_health
+from pcss.dashboard import _build_health
 from pcss.stats import assess_staleness
 
-PAL = PALETTES["dark"]
 EMPTY = pd.DataFrame()
 
 
@@ -121,38 +120,38 @@ def test_load_config_overrides_stale_thresholds(tmp_path):
 
 # ---------------------------------------------------------------- health pill
 def test_health_pill_unaffected_when_staleness_none():
-    health = _build_health([], None, EMPTY, EMPTY, EMPTY, PAL)
-    assert health["color"] == PAL["green"]
+    health = _build_health([], None, EMPTY, EMPTY, EMPTY)
+    assert health["color"] == "green"
     assert health["label"] == "All systems nominal"
 
 
 def test_health_pill_unaffected_when_fresh():
     staleness = {"level": "fresh", "age_hours": 1.0}
-    health = _build_health([], None, EMPTY, EMPTY, EMPTY, PAL, staleness=staleness)
-    assert health["color"] == PAL["green"]
+    health = _build_health([], None, EMPTY, EMPTY, EMPTY, staleness=staleness)
+    assert health["color"] == "green"
     assert "no new samples" not in health["sub"]
 
 
 def test_health_pill_degrades_amber_on_stale_warn():
     staleness = {"level": "warn", "age_hours": 15.0}
-    health = _build_health([], None, EMPTY, EMPTY, EMPTY, PAL, staleness=staleness)
-    assert health["color"] == PAL["amber"]
+    health = _build_health([], None, EMPTY, EMPTY, EMPTY, staleness=staleness)
+    assert health["color"] == "amber"
     assert "no new samples in" in health["sub"]
     assert "15.0 h" in health["sub"]
 
 
 def test_health_pill_degrades_red_on_stale_crit():
     staleness = {"level": "crit", "age_hours": 100.0}
-    health = _build_health([], None, EMPTY, EMPTY, EMPTY, PAL, staleness=staleness)
-    assert health["color"] == PAL["red"]
+    health = _build_health([], None, EMPTY, EMPTY, EMPTY, staleness=staleness)
+    assert health["color"] == "red"
     assert "no new samples in" in health["sub"]
     assert "4.2 d" in health["sub"]
 
 
 def test_health_pill_stale_crit_outranks_existing_warn_kpi():
     staleness = {"level": "crit", "age_hours": 72.0}
-    health = _build_health(["warn"], None, EMPTY, EMPTY, EMPTY, PAL, staleness=staleness)
-    assert health["color"] == PAL["red"]
+    health = _build_health(["warn"], None, EMPTY, EMPTY, EMPTY, staleness=staleness)
+    assert health["color"] == "red"
     assert "no new samples in" in health["sub"]
     assert "near limits" in health["sub"]
     assert "outside normal range" not in health["sub"]
@@ -168,7 +167,7 @@ def test_health_pill_stale_wording_distinct_from_gap_wording():
         "duration_min": [60.0],
     })
     staleness = {"level": "crit", "age_hours": 100.0}
-    health = _build_health([], None, EMPTY, EMPTY, gaps, PAL, staleness=staleness)
+    health = _build_health([], None, EMPTY, EMPTY, gaps, staleness=staleness)
     assert "no new samples in" in health["sub"]
     assert "1 gap" in health["sub"]
 
