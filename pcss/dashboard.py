@@ -509,8 +509,11 @@ def _panel_daily(energy_summary, pal, flagged: pd.DataFrame | None = None) -> di
     takes the amber accent color (the ``d.color`` per-bar override
     ``pcss/charts.js`` already renders, the same convention
     ``_panel_cad`` uses to highlight one bin), and the panel also carries a
-    ``markers`` list (bar index + deviation-percent label) for any future
-    marker-glyph rendering, mirroring the ``lv``/``bc`` marker-list shape.
+    ``markers`` list (bar index, the bar's own kWh as ``y``, ``type: "dot"``,
+    and a deviation-percent label) that ``renderBar`` in ``pcss/charts.js``
+    draws as a small glyph above the flagged bar, mirroring the ``lv``/``bc``
+    marker-list shape so the same marker-drawing code path serves every
+    panel.
 
     ``flagged`` is the ``flagged`` frame from
     ``pcss.stats.detect_baseline_deviations`` (columns ``date``,
@@ -526,11 +529,13 @@ def _panel_daily(energy_summary, pal, flagged: pd.DataFrame | None = None) -> di
     data = []
     markers = []
     for i, (dt, k) in enumerate(zip(d["date"], d["kwh"], strict=True)):
-        item = {"label": f"{dt.month}/{dt.day}", "y": round(float(k), 4)}
+        kwh = round(float(k), 4)
+        item = {"label": f"{dt.month}/{dt.day}", "y": kwh}
         pct = deviation_by_date.get(dt)
         if pct is not None:
             item["color"] = pal["amber"]
-            markers.append({"x": i, "label": f"+{pct:.0f}%"})
+            markers.append({"x": i, "y": kwh, "type": "dot", "color": pal["amber"],
+                             "label": f"+{pct:.0f}%"})
         data.append(item)
     return {
         "kind": "bar", "unit": "kWh", "dec": 2, "vb": [460, 250], "barName": _L("energy"),

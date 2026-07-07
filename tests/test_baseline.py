@@ -195,6 +195,69 @@ def test_trailing_partial_day_is_excluded():
     assert trailing.date() not in set(result["flagged"]["date"])
 
 
+# ---------------------------------------------------------------- completeness filter
+def test_gap_day_below_90pct_of_peers_is_never_flagged():
+    """A mid-history day whose sampling gap leaves it well under 90% of its
+    peers' median sample count is excluded from flagging entirely, even when
+    the hours it did record deviate wildly. Without the completeness filter
+    this day would flag at several hundred percent deviation (900 W recorded
+    against a ~100 W night baseline), so an empty flagged frame pins the
+    filter itself, not a small deviation."""
+    dates = list(pd.bdate_range("2026-01-05", periods=21))
+    gap_idx = 10
+
+    rows = []
+    for i, d in enumerate(dates):
+        base = pd.Timestamp(d)
+        for h in range(24):
+            if i == gap_idx and h >= 8:
+                continue    # a 16-hour sampling gap: 8 of 24 samples remain
+            watts = 900.0 if i == gap_idx else (100.0 if h < 12 else 300.0)
+            rows.append((base + pd.Timedelta(hours=h), watts))
+    df = pd.DataFrame(rows, columns=["ts", "power_w"])
+    df["interval_sec"] = 3600
+
+    result = detect_baseline_deviations(df)
+    assert result["status"] == "ok"
+    assert dates[gap_idx].date() not in set(result["flagged"]["date"])
+    assert result["flagged"].empty
+
+
+def test_uniformly_coarser_day_is_currently_excluded():
+    """A day recorded at a uniformly coarser cadence — for example PCSS
+    reconfigured from hourly to two-hourly sampling for one day, halving its
+    sample count — falls under the 90%-of-peers completeness bar and is
+    excluded from flagging, even though its coverage of the day is complete
+    and its recorded behavior (flat 900 W) deviates wildly.
+
+    This pins the documented trade-off: the completeness filter counts
+    samples, so it cannot tell a mid-day sampling gap apart from a
+    deliberate interval reconfiguration, and it errs on the side of staying
+    silent about such a day rather than flagging on partial evidence. If the
+    detector is ever taught to weigh coverage (hours spanned) instead of raw
+    sample count, this test is the one to update."""
+    dates = list(pd.bdate_range("2026-01-05", periods=21))
+    coarse_idx = 10
+
+    rows = []
+    for i, d in enumerate(dates):
+        base = pd.Timestamp(d)
+        for h in range(24):
+            if i == coarse_idx and h % 2:
+                continue    # every other hour: 12 of 24 samples, full-day span
+            watts = 900.0 if i == coarse_idx else (100.0 if h < 12 else 300.0)
+            rows.append((base + pd.Timedelta(hours=h), watts))
+    df = pd.DataFrame(rows, columns=["ts", "power_w"])
+    df["interval_sec"] = 3600
+
+    result = detect_baseline_deviations(df)
+    assert result["status"] == "ok"
+    # Current behavior: 12 samples < 0.9 * 24-sample peer median, so the day
+    # is silently excluded and nothing is flagged.
+    assert dates[coarse_idx].date() not in set(result["flagged"]["date"])
+    assert result["flagged"].empty
+
+
 def test_empty_energy_df_is_insufficient_history():
     result = detect_baseline_deviations(pd.DataFrame())
     assert result["status"] == "insufficient_history"
@@ -261,7 +324,10 @@ def test_panel_daily_flags_deviating_day_with_marker_and_color():
     idx = next(i for i, item in enumerate(panel["data"]) if item["label"] == stuck_label)
     assert panel["data"][idx]["color"] == PAL["amber"]
     pct = baseline["flagged"].iloc[0]["deviation_pct"]
-    assert panel["markers"] == [{"x": idx, "label": f"+{pct:.0f}%"}]
+    # The marker carries the y/type/color fields renderBar needs to draw the
+    # glyph above the flagged bar, mirroring the lv/bc marker-list shape.
+    assert panel["markers"] == [{"x": idx, "y": panel["data"][idx]["y"], "type": "dot",
+                                 "color": PAL["amber"], "label": f"+{pct:.0f}%"}]
     # Every other bar stays uncolored (the default panel color applies).
     assert all("color" not in item for i, item in enumerate(panel["data"]) if i != idx)
 

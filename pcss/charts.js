@@ -439,6 +439,30 @@
         t.textContent = d.label;
       }
     });
+    // Markers (baseline-deviation flags on the Daily Energy bars, the same
+    // glyph shapes and label placement as the line renderer's markers, just
+    // anchored to a bar's center and nudged above its top so the glyph never
+    // overlaps the bar it flags).
+    (spec.markers || []).forEach(m => {
+      if (m.x < 0 || m.x >= data.length) return;
+      const x = p.l + m.x * bw + bw / 2;
+      const barY = sy(m.y != null ? m.y : (data[m.x] ? data[m.x].y : yd[0]));
+      const y = barY - 10;
+      if (m.type === "x") {
+        const r = 4.5;
+        svgEl("line", { x1: x - r, y1: y - r, x2: x + r, y2: y + r, stroke: m.color || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
+        svgEl("line", { x1: x - r, y1: y + r, x2: x + r, y2: y - r, stroke: m.color || C.red, "stroke-width": 2, "vector-effect": "non-scaling-stroke" }, svg);
+      } else if (m.type === "star") {
+        svgEl("path", { d: starPath(x, y, 5, 8.5, 3.8), fill: m.color || C.red, stroke: "#fff", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }, svg);
+      } else {
+        svgEl("circle", { cx: x, cy: y, r: 3.5, fill: m.color || C.amber, stroke: C.panel, "stroke-width": 1.5 }, svg);
+      }
+      if (m.label) {
+        const t = svgEl("text", { x, y: y - 13, "text-anchor": "middle", "font-size": 12, fill: m.color || C.text, "font-family": "ui-monospace,monospace", "font-weight": 600 }, svg);
+        t.textContent = m.label;
+      }
+    });
+
     const overlay = svgEl("g", { class: "chart-overlay" }, svg);
     view.svg = svg;
     view.geom = { W, H, p, iw, ih, bw, sy, base, yd };

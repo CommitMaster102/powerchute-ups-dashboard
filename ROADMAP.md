@@ -1008,17 +1008,19 @@ the same floor pattern `battery_replace_projection` and
 documented in `config.example.toml` as deliberately blunt. On the dashboard,
 `_panel_daily` in `pcss/dashboard.py` gives a flagged day's bar the amber
 accent color (the same per-bar `color` override `_panel_cad` already uses)
-and carries a `markers` list (bar index + deviation-percent label) alongside
-it; the Daily Energy card subtitle names the count once at least one day is
-flagged, localized via `_STRINGS_ES`, and stays silent otherwise (whether the
-history is clean or still below the floor). `analyze_ups.py` prints a new
-console block right after the DataLog-gaps line, naming each flagged day with
-its deviation percent or the honest not-enough-history line, and
-`_maybe_write_alerts` gained a `baseline` argument: a `baseline_deviations=N`
-field rides the alert line and the trigger fires on a nonzero flagged count
-alone, same as the existing anomaly counts. Every surface says "deviates from
-the recorded baseline", never a fault claim. `tests/test_baseline.py` (28
-tests).
+and carries a `markers` list (bar index, the bar's kWh, and a
+deviation-percent label) that `renderBar` in `pcss/charts.js` draws as a
+dot glyph above the flagged bar; the Daily Energy card subtitle names the
+count once at least one day is flagged, localized via `_STRINGS_ES`, and
+stays silent otherwise (whether the history is clean or still below the
+floor). `analyze_ups.py` prints a new console block right after the
+DataLog-gaps line, naming each flagged day with its deviation percent or the
+honest not-enough-history line, and `_maybe_write_alerts` gained a
+`baseline` argument: a `baseline_deviations=N` field rides the alert line
+and the trigger fires on a nonzero flagged count alone, same as the existing
+anomaly counts. Every surface says "deviates from the recorded baseline",
+never a fault claim. `tests/test_baseline.py` (29 tests) plus a dedicated
+`tests/e2e_baseline.py` browser check that the marker glyph really renders.
 
 The weekday and weekend hourly profiles (item 9's `wk` panel) define what a
 normal day looks like. Comparing each new day against its profile — mean
