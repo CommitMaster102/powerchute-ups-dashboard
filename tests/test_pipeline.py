@@ -28,7 +28,7 @@ def restore_config():
         "COOPESANTOS_TIER_LIMIT_KWH", "COOPESANTOS_LOW_RATE", "COOPESANTOS_HIGH_RATE",
         "PCSS_FLAT_RATE", "CO2_KG_PER_KWH", "VOLTAGE_NORMAL_LOW", "VOLTAGE_NORMAL_HIGH",
         "HIGH_LOAD_PCT", "DATALOG_EXPECTED_INTERVAL_MIN", "STALE_WARN_HOURS",
-        "STALE_CRIT_HOURS", "ALERTS_ENABLED",
+        "STALE_CRIT_HOURS", "ALERTS_ENABLED", "WEBHOOK_ENABLED",
         "RUNTIME_CURVE_W", "RUNTIME_CURVE_MIN",
         "BATTERY_CHARGE_WARN_PCT", "BATTERY_CHARGE_CRIT_PCT",
         "RUNTIME_WARN_MIN", "RUNTIME_CRIT_MIN", "DASHBOARD_THEME", "DASHBOARD_MODEL",
@@ -159,6 +159,23 @@ def test_load_config_new_roadmap_keys(tmp_path, restore_config):
     assert pytest.approx(24.8) == c.BATTERY_REPLACE_VOLTAGE_V
     assert pytest.approx(45.0) == c.BATTERY_TREND_MIN_DAYS
     assert c.ARCHIVE_ENABLED is False
+
+
+def test_webhook_enabled_defaults_false(restore_config):
+    # Roadmap item 23: the webhook channel is off unless a config explicitly
+    # turns it on -- and it also needs a URL in the keyring, which is checked
+    # by the tray, not here.
+    c = restore_config
+    assert c.WEBHOOK_ENABLED is False
+
+
+def test_load_config_webhook_enabled_override(tmp_path, restore_config):
+    c = restore_config
+    conf = tmp_path / "config.toml"
+    conf.write_text("[alerts]\nenabled = true\nwebhook_enabled = true\n", encoding="utf-8")
+    c.load_config(conf)
+    assert c.ALERTS_ENABLED is True
+    assert c.WEBHOOK_ENABLED is True
 
 
 def test_load_config_rejects_unknown_language(tmp_path, restore_config):

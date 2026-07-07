@@ -1,0 +1,241 @@
+"""Unit tests for the webhook notification channel (roadmap item 23).
+
+Covers the keyring-backed URL storage, the gated send path, and the
+guarantee that the toast still fires when webhook delivery fails. All HTTP
+is mocked (monkeypatching `requests.post`); no real network, no pystray
+loop, no real keyring backend.
+"""
+from __future__ import annotations
+
+import types
+
+import pytest
+import requests
+
+import tray_status as t
+
+
+# ---------------------------------------------------------------- keyring storage
+def test_get_webhook_url_reads_from_keyring(monkeypatch):
+    fake = types.ModuleType("keyring")
+    fake.get_password = lambda svc, u: (
+        "https://ntfy.sh/mytopic" if (svc, u) == (t.KEYRING_SERVICE, t.WEBHOOK_KEYRING_USERNAME)
+        else None
+    )
+    monkeypatch.setattr(t, "keyring", fake)
+    assert t.get_webhook_url() == "https://ntfy.sh/mytopic"
+
+
+def test_get_webhook_url_missing_returns_none(monkeypatch):
+    fake = types.ModuleType("keyring")
+    fake.get_password = lambda svc, u: None
+    monkeypatch.setattr(t, "keyring", fake)
+    assert t.get_webhook_url() is None
+
+
+def test_get_webhook_url_no_backend_returns_none_and_logs(monkeypatch, tmp_path):
+    fake = types.ModuleType("keyring")
+    def boom(*a, **k):
+        raise RuntimeError("no backend")
+    fake.get_password = boom
+    monkeypatch.setattr(t, "keyring", fake)
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+    assert t.get_webhook_url() is None
+    assert "keyring" in log_path.read_text(encoding="utf-8").lower()
+
+
+def test_set_webhook_url_stores_in_keyring(monkeypatch):
+    store: dict = {}
+    fake = types.ModuleType("keyring")
+    fake.set_password = lambda svc, u, v: store.__setitem__((svc, u), v)
+    monkeypatch.setattr(t, "keyring", fake)
+    t.set_webhook_url("https://ntfy.sh/mytopic")
+    assert store[(t.KEYRING_SERVICE, t.WEBHOOK_KEYRING_USERNAME)] == "https://ntfy.sh/mytopic"
+
+
+def test_clear_webhook_url_removes_from_keyring(monkeypatch):
+    store = {(t.KEYRING_SERVICE, t.WEBHOOK_KEYRING_USERNAME): "https://ntfy.sh/mytopic"}
+    fake = types.ModuleType("keyring")
+    fake.delete_password = lambda svc, u: store.pop((svc, u))
+    monkeypatch.setattr(t, "keyring", fake)
+    t.clear_webhook_url()
+    assert (t.KEYRING_SERVICE, t.WEBHOOK_KEYRING_USERNAME) not in store
+
+
+def test_clear_webhook_url_is_harmless_when_nothing_stored(monkeypatch):
+    fake = types.ModuleType("keyring")
+    def boom(svc, u):
+        raise RuntimeError("not found")
+    fake.delete_password = boom
+    monkeypatch.setattr(t, "keyring", fake)
+    t.clear_webhook_url()  # must not raise
+
+
+# ---------------------------------------------------------------- send_webhook payload
+def test_send_webhook_posts_plain_text_body(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return types.SimpleNamespace(ok=True, status_code=200)
+
+    monkeypatch.setattr(t.requests, "post", fake_post)
+    t.send_webhook("https://ntfy.sh/mytopic", "voltage_anomalies=2", timeout=5.0)
+
+    assert len(calls) == 1
+    url, kwargs = calls[0]
+    assert url == "https://ntfy.sh/mytopic"
+    assert kwargs["data"] == b"voltage_anomalies=2"
+    assert kwargs["timeout"] == 5.0
+
+
+def test_send_webhook_non_2xx_is_logged_not_raised(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        t.requests, "post",
+        lambda url, **kw: types.SimpleNamespace(ok=False, status_code=500),
+    )
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+    t.send_webhook("https://example.com/hook", "text")  # must not raise
+    assert "500" in log_path.read_text(encoding="utf-8")
+
+
+def test_send_webhook_timeout_is_swallowed_and_logged(monkeypatch, tmp_path):
+    def raise_timeout(url, **kw):
+        raise requests.exceptions.Timeout("timed out")
+
+    monkeypatch.setattr(t.requests, "post", raise_timeout)
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+
+    t.send_webhook("https://example.com/hook", "text", timeout=5.0)  # must not raise
+
+    logged = log_path.read_text(encoding="utf-8")
+    assert "Webhook" in logged
+    assert "Timeout" in logged
+    # The secret-bearing URL must never be written to the log.
+    assert "example.com" not in logged
+
+
+def test_send_webhook_connection_error_is_swallowed_and_logged(monkeypatch, tmp_path):
+    def raise_conn_error(url, **kw):
+        raise requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr(t.requests, "post", raise_conn_error)
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+
+    t.send_webhook("https://example.com/hook", "text")  # must not raise
+    assert "ConnectionError" in log_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- gating
+def test_maybe_send_webhook_noop_when_disabled(monkeypatch):
+    calls = []
+    monkeypatch.setattr(t.requests, "post", lambda *a, **k: calls.append(1))
+    t.maybe_send_webhook(False, "https://example.com/hook", "text")
+    assert calls == []
+
+
+def test_maybe_send_webhook_noop_when_url_missing(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(t.requests, "post", lambda *a, **k: calls.append(1))
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+    t.maybe_send_webhook(True, None, "text")
+    assert calls == []
+    assert "no url" in log_path.read_text(encoding="utf-8").lower() \
+        or "no-op" in log_path.read_text(encoding="utf-8").lower() \
+        or "skip" in log_path.read_text(encoding="utf-8").lower()
+
+
+def test_maybe_send_webhook_sends_when_enabled_and_url_present(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return types.SimpleNamespace(ok=True, status_code=200)
+
+    monkeypatch.setattr(t.requests, "post", fake_post)
+    t.maybe_send_webhook(True, "https://example.com/hook", "text")
+    assert calls == ["https://example.com/hook"]
+
+
+# ---------------------------------------------------------------- toast still fires
+class _FakeIcon:
+    def __init__(self):
+        self.notifications: list[tuple[str, str]] = []
+
+    def notify(self, message, title=None):
+        self.notifications.append((message, title))
+
+
+class _ImmediateThread:
+    """Runs the target synchronously instead of on a real OS thread, so the
+    test can assert ordering/isolation deterministically without a sleep or
+    join."""
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+
+def test_notify_alert_toasts_even_when_webhook_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(t.threading, "Thread", _ImmediateThread)
+
+    def raise_error(url, **kw):
+        raise requests.exceptions.RequestException("boom")
+
+    monkeypatch.setattr(t.requests, "post", raise_error)
+    log_path = tmp_path / "tray_status.log"
+    monkeypatch.setattr(t, "TRAY_LOG", log_path)
+
+    icon = _FakeIcon()
+    # Must not raise, and the toast must have fired despite the webhook error.
+    t.notify_alert(icon, "voltage_anomalies=2", True, "https://example.com/hook")
+
+    assert icon.notifications
+    assert icon.notifications[0][0] == "voltage_anomalies=2"
+
+
+def test_notify_alert_skips_webhook_thread_when_disabled(monkeypatch):
+    spawned = []
+
+    class _CountingThread(_ImmediateThread):
+        def start(self):
+            spawned.append(1)
+            super().start()
+
+    monkeypatch.setattr(t.threading, "Thread", _CountingThread)
+    monkeypatch.setattr(t.requests, "post", lambda *a, **k: pytest.fail("must not be called"))
+
+    icon = _FakeIcon()
+    t.notify_alert(icon, "some alert", False, None)
+
+    assert icon.notifications
+    # The thread is still spawned (gating happens inside maybe_send_webhook),
+    # but it must be a harmless no-op — requests.post is never called.
+    assert len(spawned) == 1
+
+
+# ---------------------------------------------------------------- CLI flags
+def test_parse_cli_args_set_webhook_url():
+    args = t.parse_cli_args(["--set-webhook-url"])
+    assert args.set_webhook_url is True
+    assert args.clear_webhook_url is False
+
+
+def test_parse_cli_args_clear_webhook_url():
+    args = t.parse_cli_args(["--clear-webhook-url"])
+    assert args.clear_webhook_url is True
+    assert args.set_webhook_url is False
+
+
+def test_parse_cli_args_defaults_to_neither():
+    args = t.parse_cli_args([])
+    assert args.set_webhook_url is False
+    assert args.clear_webhook_url is False

@@ -19,6 +19,7 @@ For autostart, drop a shortcut to run_tray.bat into:
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import ctypes
 import re
@@ -39,6 +40,8 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 from pystray import Icon, Menu, MenuItem
 
+from pcss import config as pcss_config
+
 # ----------------------------------------------------------------------
 # Paths
 # ----------------------------------------------------------------------
@@ -55,6 +58,10 @@ TRAY_LOG = OUTPUT / "tray_status.log"
 PCSS_CERT = OUTPUT / "pcss_cert.pem"
 # OS keyring (Windows Credential Manager) service name for the PCSS password.
 KEYRING_SERVICE = "stateOfUPS-PCSS"
+# Dedicated keyring entry (under the same service) for the webhook URL
+# (roadmap item 23). It is stored under this "username" purely to reuse the
+# keyring's (service, username) -> secret shape; it is not an actual account.
+WEBHOOK_KEYRING_USERNAME = "webhook-url"
 # Scratch log for a tray-triggered analyzer run (item 24) -- overwritten on
 # every run, not history like tray_status.log or the scheduled-run log.
 TRAY_RUN_LOG = OUTPUT / "tray_run.log"
@@ -610,6 +617,100 @@ class AlertWatcher:
 
 
 # ----------------------------------------------------------------------
+# Webhook delivery (item 23) — a second delivery path next to the toast,
+# reusing AlertWatcher's tail/cooldown decision rather than duplicating it.
+# ----------------------------------------------------------------------
+def get_webhook_url() -> str | None:
+    """Read the webhook URL from the OS keyring, or None if unset.
+
+    A missing/unusable keyring backend is logged and treated the same as "no
+    URL configured" rather than raised, so a machine without a keyring
+    backend simply runs with the webhook channel silently inactive.
+    """
+    try:
+        return keyring.get_password(KEYRING_SERVICE, WEBHOOK_KEYRING_USERNAME)
+    except Exception as e:
+        log(f"Webhook: keyring unavailable ({type(e).__name__}); no URL configured.")
+        return None
+
+
+def set_webhook_url(url: str) -> None:
+    """Store the webhook URL in the OS keyring. Mirrors the password's
+    keyring-only storage: the URL never touches credentials.txt, config.toml,
+    or the repo."""
+    keyring.set_password(KEYRING_SERVICE, WEBHOOK_KEYRING_USERNAME, url)
+
+
+def clear_webhook_url() -> None:
+    """Remove the webhook URL from the OS keyring. A harmless no-op if none
+    is currently stored."""
+    with contextlib.suppress(Exception):
+        keyring.delete_password(KEYRING_SERVICE, WEBHOOK_KEYRING_USERNAME)
+
+
+def send_webhook(url: str, text: str, timeout: float = 5.0) -> None:
+    """POST `text` as a plain-text body to `url`.
+
+    Fire-and-forget: a timeout, connection failure, non-2xx response, or any
+    other exception is logged by failure class/status only — never the URL,
+    which may embed a token or topic name — and swallowed rather than
+    raised, so a bad or unreachable webhook endpoint can never disturb the
+    caller (in practice, the tray's alert-toast path).
+    """
+    try:
+        r = requests.post(
+            url,
+            data=text.encode("utf-8"),
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+            timeout=timeout,
+        )
+        if r.ok:
+            log("Webhook delivered.")
+        else:
+            log(f"Webhook delivery failed: HTTP {r.status_code}")
+    except requests.exceptions.RequestException as e:
+        log(f"Webhook delivery failed: {type(e).__name__}")
+    except Exception as e:
+        log(f"Webhook delivery failed (unexpected): {type(e).__name__}")
+
+
+def maybe_send_webhook(webhook_enabled: bool, url: str | None, text: str,
+                        timeout: float = 5.0) -> None:
+    """Gate + deliver one webhook send.
+
+    Sends only when `webhook_enabled` is true AND `url` is a configured
+    (non-empty) keyring value; anything else — disabled, or enabled with no
+    URL stored — is a logged no-op, never an error.
+    """
+    if not webhook_enabled:
+        return
+    if not url:
+        log("Webhook: enabled but no URL is configured in the keyring; skipping.")
+        return
+    send_webhook(url, text, timeout=timeout)
+
+
+def notify_alert(icon: Icon, alert: str, webhook_enabled: bool,
+                  webhook_url: str | None) -> None:
+    """Deliver one new alert line to every active channel: a tray toast
+    (always) and, when configured, a webhook POST on its own daemon thread.
+
+    The toast fires first and unconditionally — a slow or failing webhook
+    (swallowed and logged inside maybe_send_webhook/send_webhook) can never
+    delay or prevent it. The webhook send runs off the polling thread; a
+    daemon thread per alert is fine at this volume (one alert per cooldown
+    window, at most).
+    """
+    icon.notify(alert, "UPS — alerta")
+    log(f"Toast: {alert}")
+    threading.Thread(
+        target=maybe_send_webhook,
+        args=(webhook_enabled, webhook_url, alert),
+        daemon=True,
+    ).start()
+
+
+# ----------------------------------------------------------------------
 # Status parsing
 # ----------------------------------------------------------------------
 @dataclass
@@ -857,6 +958,10 @@ def main():
         )
         raise SystemExit(0)
 
+    # Same config.toml the analyzer reads (module-level state in pcss.config);
+    # this is how [alerts] webhook_enabled reaches the tray.
+    pcss_config.load_config()
+
     cfg = load_credentials()
     client = PCSSClient(cfg["url"], cfg["username"], cfg["password"])
     state = State()
@@ -904,13 +1009,13 @@ def main():
                 icon.update_menu()
         except Exception:
             pass
-        # New analyzer alerts become a toast. Fire-and-forget: notification
-        # failure must never disturb the polling loop.
+        # New analyzer alerts become a toast, and (when configured) a webhook
+        # POST. Fire-and-forget: notification failure must never disturb the
+        # polling loop.
         try:
             alert = watcher.poll()
             if alert:
-                icon.notify(alert, "UPS — alerta")
-                log(f"Toast: {alert}")
+                notify_alert(icon, alert, pcss_config.WEBHOOK_ENABLED, get_webhook_url())
         except Exception as e:
             log(f"Alert toast failed: {e}")
 
@@ -999,5 +1104,55 @@ def main():
     icon.run()
 
 
+# ----------------------------------------------------------------------
+# CLI entry point
+# ----------------------------------------------------------------------
+def parse_cli_args(argv: list[str]) -> argparse.Namespace:
+    """Parse tray_status.py's command-line flags.
+
+    Normal operation takes no flags at all (this is what run_tray.bat and
+    the tray shortcut invoke). --set-webhook-url and --clear-webhook-url are
+    one-shot setup commands (roadmap item 23): each does its job and exits
+    without starting the tray icon.
+    """
+    parser = argparse.ArgumentParser(description="PCSS battery tray icon.")
+    parser.add_argument(
+        "--set-webhook-url", action="store_true",
+        help="Prompt for a webhook URL and store it in the OS keyring, then exit "
+             "(mirrors the automatic password migration: the URL never touches "
+             "credentials.txt or config.toml).",
+    )
+    parser.add_argument(
+        "--clear-webhook-url", action="store_true",
+        help="Remove the stored webhook URL from the OS keyring, then exit.",
+    )
+    return parser.parse_args(argv)
+
+
+def _prompt_and_set_webhook_url() -> None:
+    """Console setup command backing --set-webhook-url: prompts for the URL
+    and stores it in the OS keyring. Not covered by the pytest suite (it
+    calls input()); the storage it delegates to (set_webhook_url) is."""
+    url = input("Webhook URL (e.g. an ntfy.sh topic URL): ").strip()
+    if not url:
+        print("No URL entered; nothing stored.")
+        return
+    set_webhook_url(url)
+    print(f"Webhook URL stored in the OS keyring under service '{KEYRING_SERVICE}'.")
+    print("Remember to also set [alerts] webhook_enabled = true in config.toml.")
+
+
+def _run_clear_webhook_url() -> None:
+    """Console setup command backing --clear-webhook-url."""
+    clear_webhook_url()
+    print("Webhook URL removed from the OS keyring (if one was set).")
+
+
 if __name__ == "__main__":
-    main()
+    cli_args = parse_cli_args(sys.argv[1:])
+    if cli_args.set_webhook_url:
+        _prompt_and_set_webhook_url()
+    elif cli_args.clear_webhook_url:
+        _run_clear_webhook_url()
+    else:
+        main()

@@ -50,27 +50,9 @@ Shipped so far (details in the archive at the bottom):
 | 22 | Selectable comparison periods | `pcss/dashboard.py` (`_panel_cmp`), `pcss/charts.js` (`setCmpSelection`, `cmpResolveBaseline`) |
 | 30 | Auto theme | `pcss/dashboard.py` (`PALETTES`, `_shell_css`), `pcss/charts.js` (`resolveColor`, `applyTheme`, `cycleTheme`) |
 | 24 | Run the analyzer from the tray | `tray_status.py` (`run_analyzer_now`, `SingleFlightRun`, `analyzer_command`, `wants_no_snapshot`) |
+| 23 | Webhook notification channel | `tray_status.py` (`notify_alert`, `maybe_send_webhook`, `send_webhook`) |
 
 ## Alerting and automation
-
-### 23. Webhook or email notification channel (the open remainder of item 14)
-
-The toast reaches someone sitting at the PC. When nobody is, a push channel
-does: a webhook POST (ntfy.sh, a Telegram bot, or any HTTP endpoint) is
-simpler and safer to configure than SMTP and covers phones. The trigger and
-cooldown logic already exist in `AlertWatcher`; this adds a second delivery
-path.
-
-Challenges:
-
-- Ownership: the analyzer stays offline-friendly, so network delivery
-  belongs in the tray process next to the toast (`tray_status.py`), sharing
-  the watcher and its cooldown rather than duplicating them.
-- Secrets: the webhook URL or SMTP credentials go in the OS keyring under
-  the existing `KEYRING_SERVICE` pattern, never in `credentials.txt` or the
-  repo; the config only says which channel is enabled.
-- Delivery failure must never disturb polling — fire-and-forget with a
-  short timeout and a logged error, exactly like the toast path.
 
 ### 32. Weekly digest
 
@@ -1278,3 +1260,50 @@ Challenges:
   consulted rather than duplicated.
 - Failure surfacing: a nonzero exit should toast the last lines of the log,
   not fail silently.
+
+### 23. Webhook or email notification channel (the open remainder of item 14)
+
+SHIPPED: the webhook route only — no SMTP, a deliberate scope cut, since the
+roadmap text itself already called the webhook simpler and safer to
+configure; email stays unbuilt. Delivery lives in `tray_status.py`'s
+`AlertWatcher` path, next to the toast, sharing its tail/cooldown decision
+rather than duplicating it: `notify_alert(icon, alert, webhook_enabled,
+webhook_url)` always raises the toast first and unconditionally, then spawns
+a daemon thread running `maybe_send_webhook(webhook_enabled, webhook_url,
+text)`, which is a logged no-op unless both `[alerts] webhook_enabled = true`
+(read through `pcss.config.load_config()`, the same loader `analyze_ups.py`
+uses) and a URL is present in the OS keyring — the gating and the actual
+send (`send_webhook(url, text, timeout=5.0)`, a plain-text POST) are both
+plain functions, testable with `requests.post` mocked and no real network,
+pystray loop, or keyring backend. The URL is a secret and never appears in
+`credentials.txt`, `config.toml`, or a log line (failures are logged by
+exception class or HTTP status only); it is stored in the OS keyring under
+the existing `KEYRING_SERVICE`, a dedicated entry name
+(`WEBHOOK_KEYRING_USERNAME = "webhook-url"`), via two one-shot CLI flags on
+`tray_status.py` — `--set-webhook-url` (prompts, stores, exits) and
+`--clear-webhook-url` (removes, exits) — that mirror the existing password
+migration's keyring-only storage. `send_webhook` swallows and logs every
+failure mode (timeout, connection error, non-2xx, anything else) rather than
+raising, and because the toast in `notify_alert` fires before the webhook is
+even attempted, a webhook failure can never delay or suppress it.
+`tests/test_webhook.py` covers the gating (disabled key, missing URL),
+payload content, timeout/exception swallowing with a log line, and the
+toast-still-fires guarantee (via a synchronous fake `threading.Thread` so
+the assertion is deterministic).
+
+The toast reaches someone sitting at the PC. When nobody is, a push channel
+does: a webhook POST (ntfy.sh, a Telegram bot, or any HTTP endpoint) is
+simpler and safer to configure than SMTP and covers phones. The trigger and
+cooldown logic already exist in `AlertWatcher`; this adds a second delivery
+path.
+
+Challenges:
+
+- Ownership: the analyzer stays offline-friendly, so network delivery
+  belongs in the tray process next to the toast (`tray_status.py`), sharing
+  the watcher and its cooldown rather than duplicating them.
+- Secrets: the webhook URL or SMTP credentials go in the OS keyring under
+  the existing `KEYRING_SERVICE` pattern, never in `credentials.txt` or the
+  repo; the config only says which channel is enabled.
+- Delivery failure must never disturb polling — fire-and-forget with a
+  short timeout and a logged error, exactly like the toast path.

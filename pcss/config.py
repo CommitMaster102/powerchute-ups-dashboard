@@ -204,6 +204,16 @@ DASHBOARD_MAX_DAYS = 0.0
 ALERTS_ENABLED = False
 ALERTS_LOG = OUTPUT / "alerts.log"
 
+# Push notification channel (roadmap item 23): when true, the tray posts
+# each new alerts.log line to a webhook URL as well as raising the toast.
+# This key only says whether the channel is turned on; the URL itself is
+# never configured here — it lives in the OS keyring (tray_status.py's
+# KEYRING_SERVICE, under a dedicated entry name), so it never appears in
+# this file or the repo. A webhook send still requires that keyring entry to
+# exist; with this flag true and no URL configured, the tray logs a no-op
+# rather than sending anything. Off by default.
+WEBHOOK_ENABLED = False
+
 # DataLog archive: PCSS keeps roughly one month of DataLog samples and
 # discards older ones, so each analyzer run appends the freshly loaded rows
 # to monthly CSV partitions under ARCHIVE_DIR and the pipeline merges the
@@ -326,7 +336,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global BATTERY_CHARGE_WARN_PCT, BATTERY_CHARGE_CRIT_PCT, RUNTIME_WARN_MIN, RUNTIME_CRIT_MIN
     global DASHBOARD_THEME, DASHBOARD_MODEL, DASHBOARD_REFRESH_MINUTES, DASHBOARD_LANGUAGE
     global DASHBOARD_MAX_DAYS
-    global ALERTS_ENABLED, ARCHIVE_ENABLED
+    global ALERTS_ENABLED, WEBHOOK_ENABLED, ARCHIVE_ENABLED
 
     if path is None:
         default = Path("config.toml")
@@ -408,7 +418,9 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
         RUNTIME_CURVE_MIN = np.array(rc["minutes"], dtype=float)
     CALIBRATION_MIN_EPISODES = int(rc.get("calibration_min_episodes", CALIBRATION_MIN_EPISODES))
 
-    ALERTS_ENABLED = bool(data.get("alerts", {}).get("enabled", ALERTS_ENABLED))
+    alerts = data.get("alerts", {})
+    ALERTS_ENABLED = bool(alerts.get("enabled", ALERTS_ENABLED))
+    WEBHOOK_ENABLED = bool(alerts.get("webhook_enabled", WEBHOOK_ENABLED))
     ARCHIVE_ENABLED = bool(data.get("archive", {}).get("enabled", ARCHIVE_ENABLED))
 
     DASHBOARD_HTML = Path(output) if output else (OUTPUT / "dashboard.html")

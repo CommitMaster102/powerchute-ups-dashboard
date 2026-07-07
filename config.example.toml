@@ -167,6 +167,16 @@ calibration_min_episodes = 3
 # watches that file and raises a Windows toast for new lines (30-minute
 # cooldown). Off by default.
 enabled = false
+# Roadmap item 23: opt-in push channel alongside the toast. When true, the
+# tray also POSTs each new alerts.log line as a plain-text body to a webhook
+# URL (ntfy.sh, a Telegram bot, or any HTTP endpoint), so an alert reaches a
+# phone even when nobody is at the PC. This key only says the channel is
+# turned on — the URL itself is a secret and is never set here. Store it
+# with `tray_status.py --set-webhook-url` (it goes into the OS keyring, the
+# same place the PCSS password lives) and remove it with
+# `tray_status.py --clear-webhook-url`. With this true and no URL stored,
+# the tray logs a no-op rather than sending anything. Off by default.
+webhook_enabled = false
 
 [archive]
 # PCSS keeps roughly one month of DataLog samples. When enabled (the default),
