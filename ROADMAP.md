@@ -1042,31 +1042,42 @@ Challenges:
 
 SHIPPED: the cheap alternative the item itself favored, not the server-side
 decimation pass — `[dashboard] max_days` in `pcss/config.py` (default `0`,
-no effect at all). A positive value windows only the raw per-sample frames
-fed to `build_dashboard` — the DataLog and energylog series, the
-size-history growth series, and the gap/voltage-anomaly/on-battery-episode
-overlays that ride alongside them on the same time panels — to the newest
-`max_days` days, anchored to the newest DataLog sample rather than the wall
-clock. The cut is a single pair of helpers in `analyze_ups.py`
+no effect at all). A positive value windows every dashboard-only surface to
+the newest `max_days` days, anchored to the newest DataLog sample rather
+than the wall clock: the raw per-sample frames (the DataLog and energylog
+series, the size-history growth series), the span overlays that ride
+alongside them (DataLog gaps, high-load episodes, on-battery episodes — kept
+when their END reaches into the window even if they started before the
+cutoff, so a span straddling the cutoff still renders its visible tail
+instead of being dropped whole), the self-test markers on the Battery Charge
+panel, and a second `energy_summary` recomputed from the windowed energylog
+frame, which is what carries the window into every energy-derived surface —
+the kw/daily/cmp panels, the Energy & Cost section note, the Reference
+summary rows, and the Billing Periods table — not just the charts.
+`compute_energy_summary`'s own partial-period labeling then applies
+naturally to a billing period the window has truncated the start of (for
+example the previous period on the cmp panel), with no extra code needed for
+that to read honestly. The cut is a pair of helpers in `analyze_ups.py`
 (`_dashboard_window` computes the cutoff or returns `None` when nothing
-should change; `_window_df` filters one frame by its own timestamp column)
-applied once, right before `build_dashboard()` is called. Everything
-computed earlier in `main()` — the console summary, `--json`, alerts, the
-archive append, and every fitted stats surface (the battery replace-by
-projection, the cost forecast, bill reconciliation, grid-quality trend) —
-still runs against the complete history, since those are computed from the
-unwindowed frames before the window is applied; the archive on disk is
-never touched or truncated either way. When the window actually removes
-rows, the dashboard footer names the days shown and points at
-`output/archive/` for the rest, localized via `_STRINGS_ES`; `max_days = 0`
-or a `max_days` larger than the recorded span both leave the page
-byte-identical, with no note. The roadmap's own ponytail question — does
-the server-side min/max decimation pass need to exist at all — is answered
-"not yet": no decimation shipped with this change, and the decimation
-variant described below (full resolution inside a horizon, thinned min/max
-buckets before it, a CSV honesty flag on decimated series) remains the
-deliberate follow-up if `max_days` alone ever proves insufficient for a
-genuinely multi-year archive. `tests/test_dashboard_window.py`.
+should change; `_window_df` filters one frame by its own timestamp column,
+or by a second end-of-span column when one is given) applied once, right
+before `build_dashboard()` is called. Everything computed earlier in
+`main()` — the console summary, `--json`, alerts, the archive append, and
+every fitted stats surface (the battery replace-by projection, the cost
+forecast, bill reconciliation, grid-quality trend) — still runs against the
+complete history, since those are computed from the unwindowed frames before
+the window is applied; the archive on disk is never touched or truncated
+either way. When the window actually removes rows, the dashboard footer
+names the days shown and points at `output/archive/` for the rest,
+localized via `_STRINGS_ES`; `max_days = 0` or a `max_days` larger than the
+recorded span both leave the page byte-identical, with no note. The
+roadmap's own ponytail question — does the server-side min/max decimation
+pass need to exist at all — is answered "not yet": no decimation shipped
+with this change, and the decimation variant described below (full
+resolution inside a horizon, thinned min/max buckets before it, a CSV
+honesty flag on decimated series) remains the deliberate follow-up if
+`max_days` alone ever proves insufficient for a genuinely multi-year
+archive. `tests/test_dashboard_window.py`.
 
 The DataLog archive grows without bound by design. At 20-minute cadence a
 year is roughly 26,000 rows per series; a few years multiplied across the

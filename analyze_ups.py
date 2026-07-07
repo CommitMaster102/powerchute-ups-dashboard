@@ -133,14 +133,29 @@ def _dashboard_window(datalog_df: pd.DataFrame, max_days: float) -> pd.Timestamp
     return cutoff
 
 
-def _window_df(df: pd.DataFrame | None, col: str, cutoff: pd.Timestamp) -> pd.DataFrame | None:
-    """Filter one dashboard-input frame to rows at or after cutoff, by its
-    own timestamp column col. A frame that is None, empty, or missing that
-    column passes through unchanged, so a caller can apply this uniformly
-    without special-casing frames that happen to have nothing to trim."""
-    if df is None or df.empty or col not in df.columns:
+def _window_df(df: pd.DataFrame | None, col: str, cutoff: pd.Timestamp,
+               end_col: str | None = None) -> pd.DataFrame | None:
+    """Filter one dashboard-input frame to rows at or after cutoff.
+
+    By default a row is kept when its own col timestamp is at/after cutoff.
+    When end_col names a second timestamp column — a span's end, for gaps,
+    high-load episodes, and on-battery episodes — a row is kept when THAT
+    column is at/after cutoff instead, so an entry that began before the
+    cutoff but extends into the window keeps its still-visible tail rather
+    than being dropped whole (roadmap item 25 review finding 4: filtering a
+    span on its start alone silently discards the visible portion of one
+    straddling the cutoff). end_col is only used when it is actually present
+    on df; otherwise this falls back to col, same as before end_col existed.
+
+    A frame that is None, empty, or missing the relevant column passes
+    through unchanged, so a caller can apply this uniformly without
+    special-casing frames that happen to have nothing to trim."""
+    if df is None or df.empty:
         return df
-    return df[df[col] >= cutoff].reset_index(drop=True)
+    key = end_col if end_col is not None and end_col in df.columns else col
+    if key not in df.columns:
+        return df
+    return df[df[key] >= cutoff].reset_index(drop=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -573,32 +588,54 @@ def main(argv: list[str] | None = None) -> int:
     # grid_quality, ...) — has already run against the full history. From
     # here on, only what the dashboard visualizes may be narrowed, and only
     # the raw per-sample frames that actually scale with the archive's size:
-    # DataLog, energylog, the size-history growth series, and the
-    # gap/anomaly/episode overlays that ride alongside them on the same time
-    # panels. dash_cutoff is None (the default) whenever nothing should
-    # change, so every dash_* frame below is simply the original frame.
+    # DataLog, energylog, the size-history growth series, the self-test
+    # markers, and the gap/anomaly/episode overlays that ride alongside them
+    # on the same time panels. dash_cutoff is None (the default) whenever
+    # nothing should change, so every dash_* frame below is simply the
+    # original frame — this is what keeps max_days = 0 byte-identical.
+    #
+    # energy_summary itself is also re-derived from the windowed energy frame
+    # rather than reused as-is: every energy-derived dashboard surface (the
+    # kw/daily/cmp panels, the Energy & Cost section note, the Reference
+    # summary rows, the Billing Periods table) is built from this one dict,
+    # so recomputing it here is what makes those surfaces windowed too,
+    # matching the footer's "showing the last N days" claim page-wide.
+    # compute_energy_summary's own partial-period labeling then applies
+    # naturally to a period the window has truncated the start of (for
+    # example the previous billing period on the cmp panel) — no extra code
+    # needed for that to read honestly.
     dash_cutoff = _dashboard_window(datalog_df, config.DASHBOARD_MAX_DAYS)
     if dash_cutoff is None:
         dash_datalog_df, dash_energy_df, dash_hist = datalog_df, energy_df, hist
         dash_gaps, dash_voltage_anomalies = gaps, voltage_anomalies
         dash_high_load, dash_episodes = high_load, episodes
+        dash_energy_summary, dash_self_tests = energy_summary, self_tests
         dashboard_window_days = None
     else:
         dash_datalog_df = _window_df(datalog_df, "ts", dash_cutoff)
         dash_energy_df = _window_df(energy_df, "ts", dash_cutoff)
         dash_hist = _window_df(hist, "timestamp", dash_cutoff)
-        dash_gaps = _window_df(gaps, "from", dash_cutoff)
+        # gaps/high-load episodes/on-battery episodes are spans: keep an
+        # entry whose end reaches into the window even if it started before
+        # the cutoff, so the still-visible portion renders instead of the
+        # whole entry being dropped (roadmap item 25 review finding 4).
+        dash_gaps = _window_df(gaps, "from", dash_cutoff, end_col="to")
         dash_voltage_anomalies = _window_df(voltage_anomalies, "ts", dash_cutoff)
-        dash_high_load = _window_df(high_load, "start", dash_cutoff)
-        dash_episodes = _window_df(episodes, "start", dash_cutoff)
+        dash_high_load = _window_df(high_load, "start", dash_cutoff, end_col="end")
+        dash_episodes = _window_df(episodes, "start", dash_cutoff, end_col="end")
+        dash_self_tests = _window_df(self_tests, "ts", dash_cutoff)
+        dash_energy_summary = (compute_energy_summary(dash_energy_df)
+                               if dash_energy_df is not None and not dash_energy_df.empty
+                               else {})
         dashboard_window_days = config.DASHBOARD_MAX_DAYS
 
     section("DASHBOARD")
     html = build_dashboard(
-        dash_datalog_df, dash_energy_df, dash_hist, dl_stats, hist_stats, sizes, energy_summary,
+        dash_datalog_df, dash_energy_df, dash_hist, dl_stats, hist_stats, sizes,
+        dash_energy_summary,
         stats_table, dash_gaps, dash_voltage_anomalies, dash_high_load, crossval, dash_episodes,
         battery, events_summary, staleness, forecast, reconciled_bills, annotations_df,
-        calibration, self_tests=self_tests, baseline=baseline,
+        calibration, self_tests=dash_self_tests, baseline=baseline,
         grid_quality=grid_quality, dashboard_window_days=dashboard_window_days,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")

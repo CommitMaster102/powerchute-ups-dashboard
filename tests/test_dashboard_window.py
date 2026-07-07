@@ -192,13 +192,16 @@ def restore_config_analyze():
         setattr(cfg, n, v)
 
 
-def _write_multiday_agent(agent, days=30):
+def _write_multiday_agent(agent, days=30, start=None):
     """A synthetic PCSS agent directory spanning `days` days: DataLog at the
     factory 20-minute cadence, energylog at 5 minutes. Values are constant
-    (this suite only exercises the windowing cut, not anomaly detection)."""
+    (this suite only exercises the windowing cut, not anomaly detection).
+    `start` defaults to 2026-05-01 (the original fixture date); a caller that
+    needs the window to cross a calendar-month boundary (for example, to
+    exercise the cmp panel's two-billing-period overlay) can pass its own."""
     agent.mkdir(parents=True, exist_ok=True)
     (agent / "energylog").mkdir(exist_ok=True)
-    start = datetime(2026, 5, 1)
+    start = start or datetime(2026, 5, 1)
     n = days * 72
     dl = ["Date and Time\tLine Voltage\tBattery Voltage\tUPS Load\tBattery Capacity"]
     for i in range(n):
@@ -285,3 +288,140 @@ def test_analyze_max_days_leaves_stats_surfaces_full_history(tmp_path, restore_c
                       "--config", str(_config(tmp_path, 10)), "--json", str(j10)])
     assert json.loads(j0.read_text()) == json.loads(j10.read_text())
     assert html0_path.read_text(encoding="utf-8") != html10_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- review round 1: every heavy
+# series must shrink, not just lv/pw (Finding 3), and a span straddling the
+# cutoff must keep its visible tail (Finding 4).
+def test_analyze_max_days_shrinks_kw_daily_hm_panels(tmp_path, restore_config_analyze):
+    """Before this fix, energy_summary was computed from the full energylog
+    before the window cut and reused as-is for every energy-derived panel,
+    so kw/daily/hm shipped the complete history regardless of max_days —
+    only lv/pw (built from datalog_df/energy_df directly, already windowed)
+    actually shrank. A 60-day history windowed to the last 10 days must
+    shrink kw's point count, daily's bar count, and hm's day-row count."""
+    import analyze_ups
+    agent, _ = _write_multiday_agent(tmp_path / "agent", days=60)
+    out0 = tmp_path / "dash0.html"
+    out10 = tmp_path / "dash10.html"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out0), "--no-browser",
+                      "--quiet", "--no-snapshot", "--config", str(_config(tmp_path, 0))])
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out10), "--no-browser",
+                      "--quiet", "--no-snapshot", "--config", str(_config(tmp_path, 10))])
+    p0 = _payload(out0.read_text(encoding="utf-8"))
+    p10 = _payload(out10.read_text(encoding="utf-8"))
+
+    kw0 = len(p0["panels"]["kw"]["series"][0]["x"])
+    kw10 = len(p10["panels"]["kw"]["series"][0]["x"])
+    assert kw0 == 60 * 288
+    assert 0 < kw10 < kw0
+    assert kw10 < 12 * 288   # ~10 days plus a fractional boundary day, nowhere near 60 days
+
+    daily0 = len(p0["panels"]["daily"]["data"])
+    daily10 = len(p10["panels"]["daily"]["data"])
+    assert daily0 == 60
+    assert 0 < daily10 < daily0
+    assert daily10 <= 12
+
+    hm0 = len(p0["panels"]["hm"]["days"])
+    hm10 = len(p10["panels"]["hm"]["days"])
+    assert hm0 == 60
+    assert 0 < hm10 < hm0
+    assert hm10 <= 12
+
+
+def test_windowed_energy_summary_previous_period_reads_partial():
+    """Finding 1 note: analyze_ups.py recomputes energy_summary from the
+    windowed energylog frame rather than reusing the full-history one, so
+    the cmp panel's previous billing period comes back partial once the
+    window truncates its start. compute_energy_summary's own partial-period
+    detection (a period is partial when the recorded span starts after or
+    ends before the period's own calendar bounds) needs no special case for
+    this — windowing the input is enough, which this proves directly."""
+    energy_df = _energy(n=46 * 288, start="2026-04-20 00:00")   # spans April 20 -> June 4
+
+    full_summary = compute_energy_summary(energy_df)
+    full_monthly = full_summary["monthly"].set_index("month")
+    assert not bool(full_monthly.loc["2026-05", "partial"])   # May is fully recorded
+
+    cutoff = pd.Timestamp("2026-05-21")   # inside May: truncates only the previous period
+    windowed_df = energy_df[energy_df["ts"] >= cutoff].reset_index(drop=True)
+    windowed_summary = compute_energy_summary(windowed_df)
+    windowed_monthly = windowed_summary["monthly"].set_index("month")
+    assert bool(windowed_monthly.loc["2026-05", "partial"])   # now truncated by the window
+
+
+def test_analyze_cmp_previous_period_truncated_when_window_crosses_month(
+    tmp_path, restore_config_analyze,
+):
+    """End-to-end companion to the unit test above: analyze_ups.py's own
+    dash_energy_summary swap must actually reach the cmp panel. A fixture
+    spanning April 20 -> June 4 windowed to the last 15 days (May 20 ->
+    June 4) crosses the April/May.../May/June boundary, so the cmp panel's
+    previous-period series (May) starts partway through May instead of at
+    its own day-0 -- while the unwindowed run starts that same series at
+    day 0, because before this fix dash_energy_summary was just the
+    full-history energy_summary regardless of max_days."""
+    import analyze_ups
+    agent, _ = _write_multiday_agent(tmp_path / "agent", days=46, start=datetime(2026, 4, 20))
+    out0 = tmp_path / "dash0.html"
+    out15 = tmp_path / "dash15.html"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out0), "--no-browser",
+                      "--quiet", "--no-snapshot", "--config", str(_config(tmp_path, 0))])
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out15), "--no-browser",
+                      "--quiet", "--no-snapshot", "--config", str(_config(tmp_path, 15))])
+    cmp0 = _payload(out0.read_text(encoding="utf-8"))["panels"]["cmp"]
+    cmp15 = _payload(out15.read_text(encoding="utf-8"))["panels"]["cmp"]
+    assert cmp0 is not None and cmp15 is not None   # both runs still show two periods
+
+    prev_x0 = cmp0["series"][0]["x"]     # the previous-period (May) series
+    prev_x15 = cmp15["series"][0]["x"]
+    assert min(prev_x0) < 1        # full history: May's own series starts at day 0
+    assert min(prev_x15) > 5       # windowed: truncated partway through May
+
+
+def test_analyze_windows_self_tests_before_dashboard(tmp_path, restore_config_analyze, monkeypatch):
+    """Finding 1 note: analyze_ups.py must window self_tests the same way it
+    windows every other dashboard overlay. The bc panel places self-test
+    markers with merge_asof(direction="nearest") against Battery Capacity
+    readings, so an unwindowed test from well before the cutoff would
+    otherwise snap onto the first surviving reading and draw a marker for a
+    test that never happened inside the visible window."""
+    import analyze_ups
+    agent, _ = _write_multiday_agent(tmp_path / "agent", days=30)
+
+    # A fixed detect_self_tests double: one test well before the max_days=10
+    # cutoff (near the start of the 30-day history), one comfortably inside it.
+    def fake_detect_self_tests(datalog_df, events=None):
+        ts_sorted = datalog_df["ts"].sort_values().reset_index(drop=True)
+        return pd.DataFrame({"ts": [ts_sorted.iloc[5], ts_sorted.iloc[-5]]})
+    monkeypatch.setattr(analyze_ups, "detect_self_tests", fake_detect_self_tests)
+
+    out = tmp_path / "dash.html"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(out), "--no-browser",
+                      "--quiet", "--no-snapshot", "--config", str(_config(tmp_path, 10))])
+    html = out.read_text(encoding="utf-8")
+    markers = _payload(html)["panels"]["bc"]["markers"]
+    assert len(markers) == 1
+
+
+def test_window_df_keeps_span_straddling_cutoff_via_end_col():
+    """Finding 4 (review, roadmap item 25): gaps/high-load episodes/
+    on-battery episodes were windowed on their start column alone, so an
+    entry that began before the cutoff but extends into the window was
+    dropped whole rather than showing its still-visible tail. Passing
+    end_col keeps a straddling entry, filtering on its end instead."""
+    base = pd.Timestamp("2026-06-01 00:00")
+    gaps = pd.DataFrame({
+        "from": [base, base + pd.Timedelta(days=5)],
+        "to": [base + pd.Timedelta(hours=2), base + pd.Timedelta(days=5, hours=1)],
+        "duration_min": [120.0, 60.0],
+    })
+    cutoff = base + pd.Timedelta(hours=1)   # inside the first gap: starts before, ends after
+
+    by_start_only = _window_df(gaps, "from", cutoff)
+    assert len(by_start_only) == 1   # the bug: the straddling gap is dropped whole
+
+    windowed = _window_df(gaps, "from", cutoff, end_col="to")
+    assert len(windowed) == 2
+    assert (windowed["to"] >= cutoff).all()
