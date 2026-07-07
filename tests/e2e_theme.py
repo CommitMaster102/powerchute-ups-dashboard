@@ -45,6 +45,15 @@ def _heatmap_outline_strokes(page):
         "'#panel-hm svg .chart-overlay rect')).map(r => r.getAttribute('stroke'))")
 
 
+def _bar_hover_rect(page, key):
+    """Fill and stroke attributes of the bar-hover highlight rect drawn in
+    that panel's overlay on hover, as (fill, stroke), or None if absent."""
+    return page.evaluate(
+        f"(() => {{ const r = document.querySelector("
+        f"'#panel-{key} svg .chart-overlay rect'); "
+        "return r && [r.getAttribute('fill'), r.getAttribute('stroke')]; })()")
+
+
 def _lv_stroke(page):
     """The Line Voltage series stroke — the "blue" role resolved to the active
     palette's concrete hex (the series path is the one #-prefixed stroke)."""
@@ -176,6 +185,45 @@ def test_light_theme_heatmap_hover_outline_is_not_white(auto_page, auto_dashboar
     hover_panel(auto_page, "hm", fx=0.6, fy=0.4)
     strokes = _heatmap_outline_strokes(auto_page)
     assert strokes, "no heatmap overlay outline found"
+    for s in strokes:
+        assert s is not None
+        assert "255,255,255" not in s and s.lower() != "#fff"
+        assert s.lower() == LIGHT_TEXT
+
+
+def test_light_theme_bar_hover_highlight_is_not_white(auto_page, auto_dashboard_path):
+    _open(auto_page, auto_dashboard_path, "light")
+    hover_panel(auto_page, "daily")
+    rect = _bar_hover_rect(auto_page, "daily")
+    assert rect, "no bar-hover highlight rect found"
+    fill, stroke = rect
+    assert fill is not None and stroke is not None
+    assert "255,255,255" not in fill and fill.lower() != "#fff"
+    assert "255,255,255" not in stroke and stroke.lower() != "#fff"
+    assert fill.lower() == LIGHT_TEXT
+    assert stroke.lower() == LIGHT_TEXT
+
+
+def test_dark_theme_bar_hover_highlight_unchanged(auto_page, auto_dashboard_path):
+    # Mirrors the crosshair dark control above: the dark palette's text role
+    # reads near-white, so the fix stays visually equivalent to the old
+    # literal white rgba on the theme it always worked on.
+    _open(auto_page, auto_dashboard_path, "dark")
+    hover_panel(auto_page, "cad")
+    fill, stroke = _bar_hover_rect(auto_page, "cad")
+    assert fill.lower() == DARK_TEXT
+    assert stroke.lower() == DARK_TEXT
+
+
+def test_light_theme_sync_hover_mirrors_heatmap_outline(auto_page, auto_dashboard_path):
+    # This is a DIFFERENT code path from the direct-hover test above: hovering
+    # a SYNC panel (lv) calls hoverLineAt, which calls highlightHeatmap, so the
+    # hm panel's overlay is redrawn from a mirrored timestamp rather than from
+    # a pointer event over the heatmap itself.
+    _open(auto_page, auto_dashboard_path, "light")
+    hover_panel(auto_page, "lv")
+    strokes = _heatmap_outline_strokes(auto_page)
+    assert strokes, "no heatmap sync-mirror outline found"
     for s in strokes:
         assert s is not None
         assert "255,255,255" not in s and s.lower() != "#fff"
