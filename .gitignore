@@ -7,6 +7,9 @@ output/
 # Secrets — localhost-only plaintext fallback; never commit
 credentials.txt
 
+# Machine-specific real configuration (paths, tariff history); never commit
+config.toml
+
 # Personal bill data for reconciliation (roadmap item 29); never commit
 bills.csv
 

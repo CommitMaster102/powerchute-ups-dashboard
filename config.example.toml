@@ -30,8 +30,15 @@ bills_file = 'bills.csv'
 annotations_file = 'annotations.csv'
 
 [tariff]                 # CRC per kWh; Coopesantos T-RE Residencial.
-coopesantos_low  = 78.17 # first `tier_limit_kwh` per billing period
-coopesantos_high = 126.51
+# These are the real 2026 net (con CVG) rates. Coopesantos bills energy as
+# the structural rates (78.17 for the first 200 kWh, 126.51 for each
+# additional kWh) plus a separate negative CVG line of -2.67 and -4.31 per
+# kWh — the "I trimestre" column at https://www.coopesantos.com/tarifas/,
+# fixed by Aresep in Alcance No. 161 of La Gaceta No. 236 (2025-12-16) — and
+# real mid-2026 bills still carry that credit, so the net values below are
+# what a kWh actually costs before taxes and fixed charges.
+coopesantos_low  = 75.50 # first `tier_limit_kwh` per billing period
+coopesantos_high = 122.20
 tier_limit_kwh   = 200.0
 pcss_flat        = 126.51 # single rate PCSS itself reports with
 # Day of the month the Coopesantos billing cycle starts on. 1 groups costs by
@@ -60,12 +67,17 @@ forecast_min_days = 5
 # for the flat-key fallback) — so a rate boundary mid-history doesn't read as
 # a consumption change.
 #
+# The entry below is the real 2026 history for T-RE Residencial: the Alcance
+# No. 161 rates took effect on 2026-01-01 and were still applied on real
+# bills in mid-2026. Uncomment it to have each billing period labeled with
+# the rates that priced it; add a new entry when Aresep publishes a change.
+#
 # [[tariff.history]]
-# effective_from  = "2026-04-01"
-# coopesantos_low  = 82.30
-# coopesantos_high = 133.10
+# effective_from   = "2026-01-01" # Alcance No. 161 del 16-12-2025, con CVG.
+# coopesantos_low  = 75.50
+# coopesantos_high = 122.20
 # tier_limit_kwh   = 200.0
-# pcss_flat        = 133.10
+# pcss_flat        = 126.51
 
 [grid]
 co2_kg_per_kwh = 0.098    # Costa Rica grid intensity (Low Carbon Power 2024)
