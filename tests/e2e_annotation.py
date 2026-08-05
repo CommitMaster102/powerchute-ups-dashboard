@@ -8,15 +8,23 @@ padding off the chart.
 from __future__ import annotations
 
 import pytest
-from harness import panel_box
+from harness import dash_payload, full_xwin, panel_box
 
 pytestmark = pytest.mark.e2e
 
 
 def test_annotation_label_stays_within_plot_near_right_edge(dash):
-    # The fixture annotation is at 2026-06-29 00:00, encoded as wall-clock-as-
-    # UTC epoch-ms just like every timestamp on the payload.
-    anno_ms = dash.evaluate("Date.UTC(2026, 5, 29, 0, 0, 0)")
+    # Any annotation inside the data span serves (the synthetic fixture's is
+    # at 2026-06-29 00:00, wall-clock-as-UTC epoch-ms like every payload
+    # timestamp). setWindow clamps to the data span, so an annotation outside
+    # it (a real dashboard whose only entry predates the archived history)
+    # cannot be brought into view and there is nothing to position.
+    full = full_xwin(dash, "lv")
+    in_domain = [a["x"] for a in dash_payload(dash).get("annotations", [])
+                 if full[0] + 12 * 3600e3 <= a["x"] <= full[1]]
+    if not in_domain:
+        pytest.skip("no annotation inside the data span; the window cannot reach one")
+    anno_ms = in_domain[0]
     # Put the annotation near the window's right edge (about 92% across).
     dash.evaluate(f"__chartsDebug.setWindow({anno_ms} - 12*3600e3, {anno_ms} + 3600e3)")
     dash.wait_for_timeout(80)

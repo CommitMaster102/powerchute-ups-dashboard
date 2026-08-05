@@ -9,8 +9,16 @@ pytestmark = pytest.mark.e2e
 
 @pytest.mark.parametrize("key", ["lv", "bv", "kw", "rt", "growth"])
 def test_line_tooltip(dash, key):
-    hover_panel(dash, key)
-    hov = dash.evaluate(f"__chartsDebug.hover('{key}')")
+    # A hover inside a data hole honestly reports no sample (rows: [] with a
+    # hole tag) instead of snapping to one days away, and on a real dashboard
+    # the nightly PC-off gaps cover much of the timeline — so probe a few
+    # positions for one that actually carries data.
+    hov = None
+    for fx in (0.5, 0.55, 0.45, 0.6, 0.4, 0.65, 0.35, 0.7, 0.8, 0.9):
+        hover_panel(dash, key, fx)
+        hov = dash.evaluate(f"__chartsDebug.hover('{key}')")
+        if hov and hov.get("rows"):
+            break
     assert hov and "ts" in hov and hov["rows"], f"panel {key}: no hover snap"
     tt = dash.locator(".chart-tooltip:not(.is-pinned)")
     assert not tt.evaluate("el => el.hidden")

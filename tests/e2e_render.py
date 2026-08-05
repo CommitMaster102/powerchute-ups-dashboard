@@ -2,8 +2,10 @@
 health pill are filled in, and the reference tables carry data."""
 from __future__ import annotations
 
+import os
+
 import pytest
-from harness import PANELS, svg_js
+from harness import PANELS, dash_payload, full_xwin, svg_js
 
 pytestmark = pytest.mark.e2e
 
@@ -71,12 +73,30 @@ def test_anomaly_markers_present(dash):
 
 
 def test_annotation_marker_present(dash):
-    """The synthetic fixture (tests/conftest.py) writes one battery_replaced
-    annotation inside the synthesized DataLog's range; a dashed vertical
-    marker with the entry's label must render on a time-axis panel."""
+    """An annotation inside the charted window renders as a dashed vertical
+    marker with its label (the synthetic fixture writes one battery_replaced
+    entry inside the synthesized DataLog's range); an annotation payload with
+    nothing inside the window (a real dashboard whose only entry predates the
+    archived history) must render nothing — absence is asserted, never
+    skipped. The exact label text is only the synthetic fixture's to pin."""
+    real = os.environ.get("STATEOFUPS_E2E_REAL") == "1"
+    full = full_xwin(dash, "lv")
+    in_window = [a for a in dash_payload(dash).get("annotations", [])
+                 if full[0] <= a["x"] <= full[1]]
     labels = dash.locator("#panel-lv svg text.annotation-label")
+    lines = dash.evaluate(
+        "document.querySelectorAll('#panel-lv svg line.annotation-marker').length")
+    if not in_window:
+        assert labels.count() == 0 and lines == 0, \
+            "no annotation lies in the window, yet a marker rendered"
+        return
     assert labels.count() >= 1
-    assert labels.first.text_content().strip() == "New battery installed"
+    assert lines >= 1
+    text = labels.first.text_content().strip()
+    if real:
+        assert text
+    else:
+        assert text == "New battery installed"
     lines = dash.evaluate(
         "document.querySelectorAll('#panel-lv svg line.annotation-marker').length")
     assert lines >= 1

@@ -202,6 +202,14 @@ _STRINGS_ES = {
     "On-battery (EventLog)": "En batería (EventLog)",
     "Last event": "Último evento",
     "last sample {t} ago": "última muestra hace {t}",
+    "estimated": "estimado",
+    "data lost (UPS link down)": "datos perdidos (enlace UPS caído)",
+    "no data (monitoring off)": "sin datos (monitoreo apagado)",
+    "lost-data window": "ventana de datos perdidos",
+    "lost-data windows": "ventanas de datos perdidos",
+    "Lost telemetry (UPS link down)": "Telemetría perdida (enlace UPS caído)",
+    "incident": "incidente",
+    "incidents": "incidentes",
     "No data in the analyzed window.": "Sin datos en la ventana analizada.",
     "Latest": "Último",
     "minimum": "mínimo",
@@ -372,7 +380,8 @@ def _panel_lv(datalog_df, voltage_anomalies) -> dict | None:
         ay = _vals(voltage_anomalies["Line Voltage"])
         markers = [{"x": x, "y": y, "type": "x"} for x, y in zip(ax, ay, strict=True)]
     return {
-        "kind": "line", "unit": "V", "dec": 1, "sync": True, "gaps": True, "vb": [820, 250],
+        "kind": "line", "unit": "V", "dec": 1, "sync": True, "gaps": True, "xbreak": True,
+        "vb": [820, 250],
         "series": [_line_series(_L("Line Voltage"), "blue", *xy, width=1.8, fill=True)],
         "band": [config.VOLTAGE_NORMAL_LOW, config.VOLTAGE_NORMAL_HIGH],
         # The nominal reference is a theme-neutral grey that reads on either
@@ -387,7 +396,8 @@ def _panel_ul(datalog_df) -> dict | None:
     if xy is None:
         return None
     return {
-        "kind": "line", "unit": "%", "dec": 0, "sync": True, "gaps": True, "vb": [460, 250],
+        "kind": "line", "unit": "%", "dec": 0, "sync": True, "gaps": True, "xbreak": True,
+        "vb": [460, 250],
         "series": [_line_series(_L("UPS Load"), "amber", *xy, width=1.6, fill=True)],
         "yDomain": [0, 100], "yFixed": True,
         "hlines": [{"y": config.HIGH_LOAD_PCT, "color": "red", "dash": "5 4",
@@ -402,7 +412,11 @@ def _panel_pw(energy_df) -> dict | None:
     if s.empty:
         return None
     return {
-        "kind": "line", "unit": "W", "dec": 0, "sync": True, "vb": [460, 250],
+        # gaps/xbreak: the energylog stops for the same holes the DataLog
+        # does (the PC off, the link down), so the strips and the line
+        # breaking reuse the DataLog spans, which match within minutes.
+        "kind": "line", "unit": "W", "dec": 0, "sync": True, "gaps": True, "xbreak": True,
+        "vb": [460, 250],
         "series": [_line_series("Power", "blue", _ms_list(s["ts"]), _vals(s["power_w"]),
                                 width=1.4, fill=True)],
     }
@@ -459,11 +473,14 @@ def _panel_bv(datalog_df) -> tuple[dict | None, float | None]:
         slope, intercept = np.polyfit(days, volts, 1)
         slope_day = float(slope)
         x0, x1 = _ms_list(ts.iloc[[0, -1]])
+        # nobreak: the fitted trend is a two-point line spanning the whole
+        # range by construction; breaking it at data holes (xbreak below)
+        # would erase it rather than make it more honest.
         series.append(_line_series(_L("trend"), "amber", [x0, x1],
                                    _vals([intercept, intercept + slope * days[-1]]),
-                                   width=2, dash="6 4"))
+                                   width=2, dash="6 4", nobreak=True))
     panel = {
-        "kind": "line", "unit": "V", "dec": 2, "sync": True, "gaps": True,
+        "kind": "line", "unit": "V", "dec": 2, "sync": True, "gaps": True, "xbreak": True,
         "legend": True, "vb": [820, 250], "series": series,
     }
     return panel, slope_day
@@ -486,7 +503,8 @@ def _panel_bc(datalog_df, self_tests: pd.DataFrame | None = None) -> dict | None
             markers = [{"x": x, "y": y, "type": "dot"} for x, y in
                        zip(_ms_list(merged["ts"]), _vals(merged["Battery Capacity"]), strict=True)]
     return {
-        "kind": "line", "unit": "%", "dec": 0, "sync": True, "gaps": True, "vb": [460, 250],
+        "kind": "line", "unit": "%", "dec": 0, "sync": True, "gaps": True, "xbreak": True,
+        "vb": [460, 250],
         "series": [_line_series("Battery %", "green", *xy, width=1.8, fill=True)],
         "yDomain": [max(0.0, lo - 4), 103],
         "markers": markers,
@@ -948,15 +966,18 @@ def _build_kpis(datalog_df, energy_df, latest_w, latest_rt):
 
 
 def _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps,
-                  on_battery=None, battery=None, staleness=None) -> dict:
+                  on_battery=None, battery=None, staleness=None, lost=None) -> dict:
     n_crit = sevs.count("crit")
     n_warn = sevs.count("warn")
     n_ob = 0 if on_battery is None else len(on_battery)
     ob_bit = f"{n_ob} {_L('on-battery')} · " if n_ob else ""
+    n_lost = 0 if lost is None else len(lost["incidents"])
+    lost_bit = (f" · {_count(n_lost, _L('lost-data window'), _L('lost-data windows'))}"
+                if n_lost else "")
     counts = (f"{_count(len(voltage_anomalies), _L('anomaly'), _L('anomalies'))} · "
               f"{ob_bit}"
               f"{len(high_load_episodes)} {_L('high-load')} · "
-              f"{_count(len(gaps), _L('gap'), _L('gaps'))} {_L('in window')}")
+              f"{_count(len(gaps), _L('gap'), _L('gaps'))} {_L('in window')}{lost_bit}")
 
     # "Stale now" (the feed itself has gone quiet) is a different fact from
     # the historical DataLog gaps folded into `counts` above, so it gets its
@@ -1276,7 +1297,7 @@ def _summary_list_html(rows: list[tuple[str, str, str | None]]) -> str:
 
 def _summary_rows(datalog_df, energy_summary, crossval, sizes, hist_stats,
                   voltage_anomalies, high_load_episodes, gaps, on_battery=None,
-                  events_summary=None):
+                  events_summary=None, lost=None):
     """The two Reference lists — every field the classic tables reported."""
     latest_rows: list[tuple[str, str, str | None]] = []
     if not datalog_df.empty:
@@ -1327,6 +1348,12 @@ def _summary_rows(datalog_df, energy_summary, crossval, sizes, hist_stats,
                      "amber" if len(high_load_episodes) else None))
     run_rows.append((f"{_L('DataLog gaps')} (>{config.DATALOG_EXPECTED_INTERVAL_MIN * 2:.0f} min)",
                      f"{len(gaps)}", "amber" if len(gaps) else None))
+    if lost is not None and len(lost["incidents"]):
+        run_rows.append((_L("Lost telemetry (UPS link down)"),
+                         f"{_count(len(lost['incidents']), _L('incident'), _L('incidents'))} · "
+                         f"{lost['total_hours']:.1f} h · ~{lost['total_est_kwh']:.1f} kWh "
+                         f"{_L('estimated')}",
+                         "amber"))
     if events_summary:
         run_rows.append(("#", _L("Events"), None))
         run_rows.append((_L("Parsed events"), str(events_summary["n"]), None))
@@ -1559,8 +1586,16 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
                     baseline: dict | None = None,
                     grid_quality: pd.DataFrame | None = None,
                     dashboard_window_days: float | None = None,
-                    events: pd.DataFrame | None = None) -> str:
-    """Assemble the dashboard page and return the finished HTML string."""
+                    events: pd.DataFrame | None = None,
+                    lost: dict | None = None) -> str:
+    """Assemble the dashboard page and return the finished HTML string.
+
+    `lost` is a pcss.stats.reconstruct_lost_windows result (or None): its
+    stretches ride the payload as `lost` spans, its per-channel band
+    segments attach to the lv/ul/pw panels as `recon`, and its totals feed
+    the health line and the run summary. Everything it contributes renders
+    clearly marked as estimated; no measured series or statistic changes.
+    """
     if on_battery is None:
         on_battery = pd.DataFrame()
     if self_tests is None:
@@ -1600,9 +1635,22 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         "ev": _panel_ev(events),
     }
 
+    # Reconstruction bands attach to the panels whose channels the lost
+    # windows actually hide; the other line panels keep only the broken
+    # line and the strips.
+    if lost is not None:
+        for pk in ("lv", "ul", "pw"):
+            segs = (lost.get("recon") or {}).get(pk) or []
+            panel = panels.get(pk)
+            if panel and segs:
+                panel["recon"] = [
+                    {"x": _ms_list(seg["ts"]), "mean": _vals(seg["mean"], 2),
+                     "lo": _vals(seg["lo"], 2), "hi": _vals(seg["hi"], 2)}
+                    for seg in segs]
+
     kpis, sparks, sevs = _build_kpis(datalog_df, energy_df, latest_w, latest_rt)
     health = _build_health(sevs, bv_slope, voltage_anomalies, high_load_episodes, gaps,
-                           on_battery, battery, staleness)
+                           on_battery, battery, staleness, lost=lost)
 
     last_sample_ms = None
     if not datalog_df.empty:
@@ -1627,6 +1675,11 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
         "palettes": {"dark": PALETTES["dark"], "light": PALETTES["light"]},
         "gaps": _gap_spans(gaps),
         "episodes": _episode_spans(on_battery),
+        # Lost-telemetry stretches, the same [start_ms, end_ms] shape as
+        # gaps/episodes; charts.js draws the grey lost strip and the honest
+        # in-hole tooltip from these.
+        "lost": (_gap_spans(lost["stretches"])
+                 if lost is not None and not lost["stretches"].empty else []),
         "annotations": _annotation_markers(annotations),
         "panels": panels,
         "sparks": sparks,
@@ -1641,11 +1694,17 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
             "themeAuto": _L("auto"),
             "themeDark": _L("dark"),
             "themeLight": _L("light"),
+            "estimated": _L("estimated"),
+            "dataLost": _L("data lost (UPS link down)"),
+            "monitoringOff": _L("no data (monitoring off)"),
         },
         "meta": {
             "last_sample_ms": last_sample_ms,
             "expected_interval_min": config.DATALOG_EXPECTED_INTERVAL_MIN,
             "default_preset_days": default_preset_days,
+            "lost_incidents": (len(lost["incidents"]) if lost is not None else 0),
+            "lost_hours": (round(float(lost["total_hours"]), 2) if lost is not None else 0),
+            "lost_est_kwh": (round(float(lost["total_est_kwh"]), 2) if lost is not None else 0),
         },
     }
 
@@ -1744,7 +1803,7 @@ def build_dashboard(datalog_df: pd.DataFrame, energy_df: pd.DataFrame, hist: pd.
 
     latest_rows, run_rows = _summary_rows(datalog_df, energy_summary, crossval, sizes,
                                           hist_stats, voltage_anomalies, high_load_episodes,
-                                          gaps, on_battery, events_summary)
+                                          gaps, on_battery, events_summary, lost=lost)
 
     generated = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
     foot = (f"{_L('Generated')} {generated} · {_L('read-only analytics snapshot')} · "

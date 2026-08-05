@@ -59,6 +59,11 @@ def test_coarse_pointer_always_shows_tools(touch_page):
 
 def test_horizontal_drag_zooms_vertical_does_not(touch_page):
     page = touch_page
+    # A real dashboard with a long history opens on the 30-day preset, which
+    # already counts as zoomed; reset to the pristine full window so the
+    # no-zoom-on-vertical-swipe assertion tests the swipe, not the preset.
+    page.evaluate("__chartsDebug.resetAll()")
+    page.wait_for_timeout(80)
     box = _panel_box(page, "lv")
     x, y = box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.5
     # A vertical swipe is a scroll, never a zoom claim.

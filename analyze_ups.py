@@ -50,6 +50,7 @@ from pcss.stats import (
     detect_baseline_deviations,
     detect_gaps,
     detect_high_load_episodes,
+    detect_lost_windows,
     detect_on_battery_episodes,
     detect_self_tests,
     detect_voltage_anomalies,
@@ -57,6 +58,7 @@ from pcss.stats import (
     forecast_period_cost,
     grid_quality_trend,
     reconcile_bills,
+    reconstruct_lost_windows,
     self_test_sag_trend,
 )
 
@@ -376,6 +378,14 @@ def main(argv: list[str] | None = None) -> int:
     energy_summary = compute_energy_summary(energy_df) if not energy_df.empty else {}
     forecast = forecast_period_cost(energy_summary)
 
+    # Lost-telemetry windows: runs of null-power energylog rows (PCSS up,
+    # UPS link down) detected structurally, then reconstructed from the
+    # healthy history's hour-of-day distribution. The estimate stays a
+    # separate line everywhere; no measured statistic changes.
+    lost_stretches = detect_lost_windows(energy_df)
+    lost = (reconstruct_lost_windows(lost_stretches, datalog_df, energy_df, energy_summary)
+            if not lost_stretches.empty else None)
+
     section("ENERGY LOG SUMMARY")
     if energy_df.empty:
         say("  energylog/ empty or unparseable.")
@@ -430,6 +440,19 @@ def main(argv: list[str] | None = None) -> int:
             say(f"  Forecast: not enough of the period recorded yet "
                 f"({forecast['evidence_days']}/{forecast['min_days']:.0f} days) — no projection.")
 
+    if lost is not None and len(lost["incidents"]):
+        say("")
+        say(f"  Lost-telemetry windows (UPS link down; PC-off hours excluded): "
+            f"{len(lost['incidents'])}")
+        for frm, to, n_stretches, hours, est_kwh in lost["incidents"].itertuples(
+                index=False, name=None):
+            say(f"    {frm} -> {to}  ({_count(n_stretches, 'stretch', 'stretches')}, "
+                f"{hours:.1f} h lost)  est. ~{est_kwh:.1f} kWh unrecorded")
+        per = lost["by_period"]
+        say(f"  Estimated unrecorded energy: {lost['total_est_kwh']:.1f} kWh   "
+            f"PCSS ~CRC {per['est_cost_pcss'].sum():,.2f}   "
+            f"Tiered ~CRC {per['est_cost_tiered'].sum():,.2f}   (estimates, not measured)")
+
     # Bill reconciliation: a user-owned bills.csv is opt-in
     # and, missing, disables the feature with no warning at all. A malformed
     # row or a period_start that does not align to a billing-period boundary
@@ -440,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     bills_df, bill_load_warnings = load_bills()
     for msg in bill_load_warnings:
         print(f"  [warn] {msg}")
-    reconciled_bills, bill_align_warnings = reconcile_bills(bills_df, energy_summary)
+    reconciled_bills, bill_align_warnings = reconcile_bills(bills_df, energy_summary, lost=lost)
     for msg in bill_align_warnings:
         print(f"  [warn] {msg}")
     if not reconciled_bills.empty:
@@ -567,6 +590,22 @@ def main(argv: list[str] | None = None) -> int:
         )
     if alert_path:
         say(f"  [alert] appended to {alert_path}")
+
+    # Data-loss alerts fire once per incident (a watermark file remembers
+    # the newest one already alerted), guarded for the same reason as the
+    # block above: an append failure must never cost the dashboard.
+    try:
+        lost_alert_path = _maybe_write_lost_alerts(lost, now)
+    except Exception as e:
+        lost_alert_path = None
+        print(
+            f"[warn] data-loss alert append failed and was skipped this run: "
+            f"{type(e).__name__}: {e}\n"
+            "       The analyzer run continues normally and still writes the dashboard.",
+            file=sys.stderr,
+        )
+    if lost_alert_path:
+        say(f"  [alert] data-loss line(s) appended to {lost_alert_path}")
 
     # Grid-quality trend: the envelope violations and
     # interruption episodes above, aggregated per calendar month with a rate
@@ -700,7 +739,7 @@ def main(argv: list[str] | None = None) -> int:
                             voltage_anomalies, high_load, on_battery, gaps, crossval,
                             archive_df, archive_added, battery,
                             events_df, ev_status, ev_spans, forecast, reconciled_bills,
-                            grid_quality, calibration)
+                            grid_quality, calibration, lost=lost)
         say(f"  Wrote JSON summary to {args.json}")
 
     events_summary = None
@@ -741,6 +780,7 @@ def main(argv: list[str] | None = None) -> int:
         dash_high_load, dash_episodes = high_load, episodes
         dash_energy_summary, dash_self_tests = energy_summary, self_tests
         dash_events = events_df
+        dash_lost = lost
         dashboard_window_days = None
     else:
         dash_datalog_df = _window_df(datalog_df, "ts", dash_cutoff)
@@ -761,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
         dash_energy_summary = (compute_energy_summary(dash_energy_df)
                                if dash_energy_df is not None and not dash_energy_df.empty
                                else {})
+        dash_lost = _window_lost(lost, dash_cutoff)
         dashboard_window_days = config.DASHBOARD_MAX_DAYS
 
     section("DASHBOARD")
@@ -771,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         battery, events_summary, staleness, forecast, reconciled_bills, annotations_df,
         calibration, self_tests=dash_self_tests, baseline=baseline,
         grid_quality=grid_quality, dashboard_window_days=dashboard_window_days,
-        events=dash_events,
+        events=dash_events, lost=dash_lost,
     )
     config.DASHBOARD_HTML.write_text(html, encoding="utf-8")
     say(f"  Wrote {config.DASHBOARD_HTML}")
@@ -852,7 +893,8 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
                         voltage_anomalies, high_load, on_battery, gaps, crossval,
                         archive_df, archive_added, battery,
                         events_df, ev_status, ev_spans, forecast=None,
-                        reconciled_bills=None, grid_quality=None, calibration=None) -> None:
+                        reconciled_bills=None, grid_quality=None, calibration=None,
+                        lost=None) -> None:
     """Structured machine-readable summary for external tooling (--json)."""
     energy_json = {k: energy_summary.get(k) for k in
                    ("total_kwh", "total_cost_pcss", "total_cost_tiered", "total_co2_kg",
@@ -896,6 +938,15 @@ def _write_json_summary(path: Path, sizes, dl_stats, hist_stats, energy_summary,
         summary["bills"] = _bills_for_json(reconciled_bills)
     if grid_quality is not None and not grid_quality.empty:
         summary["grid_quality"] = _grid_quality_for_json(grid_quality)
+    if lost is not None and len(lost["incidents"]):
+        summary["lost_windows"] = {
+            "incidents": [
+                {"from": frm, "to": to, "n_stretches": int(n),
+                 "hours": float(h), "est_kwh": float(k)}
+                for frm, to, n, h, k in lost["incidents"].itertuples(index=False, name=None)],
+            "total_hours": float(lost["total_hours"]),
+            "total_est_kwh": float(lost["total_est_kwh"]),
+        }
     Path(path).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
 
 
@@ -930,6 +981,77 @@ def _maybe_write_alerts(voltage_anomalies, high_load, on_battery, staleness=None
     with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
         f.write(line)
     return config.ALERTS_LOG
+
+
+def _maybe_write_lost_alerts(lost, now=None) -> Path | None:
+    """Opt-in (config [alerts] enabled): append one alerts.log line per
+    newly closed lost-telemetry incident (pcss.stats.detect_lost_windows).
+
+    A watermark file (config.LOST_ALERT_MARKER) stores the end timestamp of
+    the newest incident already alerted, so a rerun never re-toasts an old
+    incident; a missing or malformed marker means nothing has been alerted
+    yet and every incident fires exactly once. Append first, then advance
+    the marker atomically (the weekly-digest pattern): a failed append is
+    retried next run, and a failed marker write costs at most one duplicate
+    line, never a crash.
+    """
+    if not config.ALERTS_ENABLED or lost is None:
+        return None
+    incidents = lost.get("incidents")
+    if incidents is None or incidents.empty:
+        return None
+    marker = None
+    try:
+        text = config.LOST_ALERT_MARKER.read_text(encoding="utf-8").strip()
+        marker = pd.Timestamp(text) if text else None
+    except (OSError, ValueError):
+        marker = None
+    new = incidents if marker is None else incidents[incidents["to"] > marker]
+    if new.empty:
+        return None
+    stamp = now if now is not None else pd.Timestamp.now()
+    lines = []
+    for frm, to, _n, hours, est_kwh in new.itertuples(index=False, name=None):
+        lines.append(f"{stamp:%Y-%m-%d %H:%M:%S}  data_lost  "
+                     f"from={frm:%Y-%m-%d %H:%M} to={to:%Y-%m-%d %H:%M}  "
+                     f"hours={hours:.1f}  est_kwh={est_kwh:.1f}\n")
+    with config.ALERTS_LOG.open("a", encoding="utf-8") as f:
+        f.writelines(lines)
+    newest = incidents["to"].max()
+    marker_path = config.LOST_ALERT_MARKER
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = marker_path.with_name(marker_path.name + ".tmp")
+    tmp_path.write_text(f"{newest:%Y-%m-%d %H:%M:%S}", encoding="utf-8")
+    try:
+        os.replace(tmp_path, marker_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return config.ALERTS_LOG
+
+
+def _window_lost(lost, cutoff):
+    """Window a reconstruct_lost_windows result to the dashboard cut.
+
+    Keeps stretches (and their band segments) whose end reaches into the
+    window, the same still-visible-tail rule _window_df applies to spans,
+    and recomputes the incident rows and totals from what remains so the
+    header counters describe the windowed view. Returns None when nothing
+    survives; a None cutoff returns the input unchanged.
+    """
+    if lost is None or cutoff is None:
+        return lost
+    stretches = _window_df(lost["stretches"], "from", cutoff, end_col="to")
+    if stretches is None or stretches.empty:
+        return None
+    out = dict(lost)
+    out["stretches"] = stretches
+    out["incidents"] = _window_df(lost["incidents"], "from", cutoff, end_col="to")
+    recon = {k: [seg for seg in segs if seg["ts"][-1] >= cutoff]
+             for k, segs in (lost.get("recon") or {}).items()}
+    out["recon"] = {k: v for k, v in recon.items() if v}
+    out["total_hours"] = float(stretches["hours"].sum())
+    out["total_est_kwh"] = float(stretches["est_kwh"].sum())
+    return out
 
 
 # ======================================================================

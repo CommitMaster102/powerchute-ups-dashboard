@@ -55,6 +55,20 @@ def wait_ready(page: Page, timeout_ms: int = 20_000) -> None:
                            timeout=timeout_ms)
 
 
+def dash_payload(page: Page) -> dict:
+    """The embedded __DASH_DATA__ payload, parsed out of the page's own
+    inline script text. DATA lives inside charts.js's IIFE, so no debug hook
+    can hand the whole object back; the JSON literal in the script is the
+    same one tests/test_chart_payload.py parses from the HTML."""
+    return page.evaluate(
+        "(() => {"
+        " const s = Array.from(document.scripts, e => e.textContent)"
+        "   .find(t => t && t.includes('const DATA = '));"
+        " const m = s.match(/const DATA = (\\{[\\s\\S]*?\\});\\n/);"
+        " return JSON.parse(m[1]);"
+        "})()")
+
+
 def panel_box(page: Page, key: str) -> dict:
     """Viewport bounding box of one panel's SVG, scrolled into view first —
     page.mouse events only land inside the viewport, and the lower panels sit

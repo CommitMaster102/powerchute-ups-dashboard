@@ -130,6 +130,86 @@ def assess_staleness(newest_sample: datetime | pd.Timestamp, now: datetime | pd.
     return {"level": level, "age_hours": age_hours}
 
 
+_LOST_WINDOW_COLUMNS = ["from", "to", "n_rows", "hours", "incident"]
+
+
+def _null_power_mask(energy_df: pd.DataFrame) -> pd.Series:
+    """True for rows PCSS wrote with null load and power (UPS link down)."""
+    m = energy_df["power_w"].isna()
+    if "load_pct" in energy_df.columns:
+        m &= energy_df["load_pct"].isna()
+    return m
+
+
+def detect_lost_windows(energy_df: pd.DataFrame,
+                        min_minutes: float | None = None) -> pd.DataFrame:
+    """Runs of null-power energylog rows: PCSS running, UPS link down.
+
+    While the serial link is down but the PC is on, PCSS keeps writing
+    energylog rows at its normal cadence with null load and power (the
+    loader parses those to NaN). Healthy history contains no such rows at
+    all, so a run of them is a direct observation of "system up, telemetry
+    lost", not a statistical inference: there is no false-positive surface,
+    and this failure mode cannot produce anything else. Rows the PC never
+    wrote (machine off) are deliberately NOT lost windows: the load during
+    those hours was genuinely different and unobserved, so they stay
+    ordinary gaps and are never reconstructed.
+
+    A stretch is a maximal run of consecutive null-power rows whose
+    neighbors sit at most 3 sample intervals apart; a stretch shorter than
+    min_minutes (config LOST_MIN_MINUTES) is ignored so a stray null row at
+    service start can never register. Stretches separated only by row-less
+    holes (no valid-power row between them) share an incident id: one
+    unplugged-cable week reads as one incident even though the PC still
+    went off overnight inside it.
+
+    Returns a DataFrame with columns from, to, n_rows, hours, incident;
+    empty when the frame has no null-power rows, which is every healthy
+    month.
+    """
+    if min_minutes is None:
+        min_minutes = config.LOST_MIN_MINUTES
+    empty = pd.DataFrame(columns=_LOST_WINDOW_COLUMNS)
+    if energy_df is None or energy_df.empty or "power_w" not in energy_df.columns:
+        return empty
+    df = energy_df.sort_values("ts").reset_index(drop=True)
+    isnull = _null_power_mask(df)
+    if not bool(isnull.any()):
+        return empty
+    nulls = df[isnull]
+    ts = nulls["ts"].reset_index(drop=True)
+    iv = (nulls["interval_sec"].astype(float).reset_index(drop=True)
+          if "interval_sec" in nulls.columns
+          else pd.Series(300.0, index=range(len(nulls))))
+    # Split runs where consecutive null rows sit more than 3 sample
+    # intervals apart: a row-less hole (the PC off) separates two stretches.
+    step = ts.diff().dt.total_seconds()
+    run_id = (step > 3.0 * iv).cumsum()
+    stretches = []
+    for _rid, grp in ts.groupby(run_id):
+        hours = float(iv[grp.index].sum()) / 3600.0
+        if hours * 60.0 < float(min_minutes):
+            continue
+        stretches.append({"from": grp.iloc[0], "to": grp.iloc[-1],
+                          "n_rows": int(len(grp)), "hours": hours})
+    if not stretches:
+        return empty
+    out = pd.DataFrame(stretches)
+    # Merge stretches into incidents: consecutive stretches with no
+    # valid-power row between them belong to the same one.
+    valid_ts = df.loc[~isnull, "ts"].to_numpy()
+    incident = 0
+    ids = [0]
+    for i in range(1, len(out)):
+        lo = np.searchsorted(valid_ts, out["to"].iloc[i - 1].to_datetime64(), side="right")
+        hi = np.searchsorted(valid_ts, out["from"].iloc[i].to_datetime64(), side="left")
+        if hi > lo:
+            incident += 1
+        ids.append(incident)
+    out["incident"] = ids
+    return out
+
+
 def detect_voltage_anomalies(df: pd.DataFrame) -> pd.DataFrame:
     """Rows where Line Voltage falls outside the 114-126V envelope."""
     if df.empty or "Line Voltage" not in df.columns:
@@ -397,6 +477,54 @@ def weekday_weekend_profiles(energy_df: pd.DataFrame) -> dict[str, pd.Series]:
             continue
         profiles[name] = part.groupby(part["ts"].dt.hour)["power_w"].mean()
     return profiles
+
+
+def hourly_profile_with_std(df: pd.DataFrame, col: str) -> dict[str, pd.DataFrame]:
+    """Per-hour-of-day mean and standard deviation of one column, split
+    weekday versus weekend, from the rows where the column has a value.
+
+    The same weekday/weekend hour-of-day definition of a normal day that
+    ``weekday_weekend_profiles`` uses, extended with the spread the
+    lost-telemetry reconstruction band needs. Returns ``{"weekday": frame,
+    "weekend": frame}``, each indexed by hour of day (0 through 23) with
+    columns ``mean`` and ``std`` (population std, so a single-sample hour
+    reads 0 rather than NaN). A day type with no rows is simply absent,
+    like ``weekday_weekend_profiles``.
+    """
+    profiles: dict[str, pd.DataFrame] = {}
+    if df is None or df.empty or col not in df.columns or "ts" not in df.columns:
+        return profiles
+    s = df.dropna(subset=[col])
+    if s.empty:
+        return profiles
+    dow = s["ts"].dt.dayofweek
+    for mask, name in [(dow < 5, "weekday"), (dow >= 5, "weekend")]:
+        part = s[mask]
+        if part.empty:
+            continue
+        g = part.groupby(part["ts"].dt.hour)[col]
+        profiles[name] = pd.DataFrame({"mean": g.mean(), "std": g.std(ddof=0)})
+    return profiles
+
+
+def _profile_value(profiles: dict[str, pd.DataFrame],
+                   ts: pd.Timestamp) -> tuple[float, float] | None:
+    """The (mean, std) the profile expects at ts, weekday/weekend aware.
+
+    Falls back to the other day type when ts's own has no rows, and to the
+    day type's all-hours average when its history never recorded ts's hour.
+    None only when the profile dict is empty altogether.
+    """
+    name = "weekend" if ts.dayofweek >= 5 else "weekday"
+    prof = profiles.get(name)
+    if prof is None or prof.empty:
+        prof = profiles.get("weekend" if name == "weekday" else "weekday")
+    if prof is None or prof.empty:
+        return None
+    if ts.hour in prof.index:
+        row = prof.loc[ts.hour]
+        return float(row["mean"]), float(row["std"])
+    return float(prof["mean"].mean()), float(prof["std"].mean())
 
 
 _BASELINE_DEVIATION_COLUMNS = ["date", "day_type", "deviation_pct"]
@@ -1031,7 +1159,8 @@ _BILL_RECONCILE_COLUMNS = [
 ]
 
 
-def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.DataFrame, list[str]]:
+def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict,
+                    lost: dict | None = None) -> tuple[pd.DataFrame, list[str]]:
     """Join a user-owned bills.csv against the analyzer's
     own per-billing-period UPS kWh, to answer what share of a real,
     whole-house bill the UPS's own outlets account for — the UPS-metered
@@ -1047,7 +1176,11 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
     and excluded rather than silently joined to the wrong period. A bill
     that aligns but has no matching row in
     `compute_energy_summary`'s "monthly" frame (no UPS energy data recorded
-    for that period) is likewise reported and excluded. Neither case raises;
+    for that period) is likewise reported and excluded. When `lost` (a
+    reconstruct_lost_windows result) is passed and its stretches overlap a
+    reconciled bill's period, a note naming the lost hours and the
+    estimated unrecorded kWh is appended to the warnings list; the
+    reconciled numbers themselves stay measured-only. Neither case raises;
     the analyzer never crashes on this file. Two bills that both align to the
     same period are NOT deduplicated — dropping either one would silently
     discard real billed data — but the second one triggers a warning naming
@@ -1129,6 +1262,10 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict) -> tuple[pd.Da
             "rate_tag": rate_tag,
             "partial": bool(m["partial"]),
         })
+        if lost is not None:
+            note = _lost_overlap_note(lost, label, period_start, start_day)
+            if note:
+                warnings.append(note)
     if not records:
         return empty, warnings
     return pd.DataFrame(records, columns=_BILL_RECONCILE_COLUMNS), warnings
@@ -1147,6 +1284,159 @@ def compute_tiered_cost(kwh: float, *, low: float | None = None, high: float | N
     if kwh <= tier_limit:
         return kwh * low
     return tier_limit * low + (kwh - tier_limit) * high
+
+
+_LOST_INCIDENT_COLUMNS = ["from", "to", "n_stretches", "hours", "est_kwh"]
+_LOST_PERIOD_COLUMNS = ["period", "est_kwh", "est_cost_pcss", "est_cost_tiered"]
+
+
+def reconstruct_lost_windows(stretches: pd.DataFrame, datalog_df: pd.DataFrame,
+                             energy_df: pd.DataFrame,
+                             energy_summary: dict | None = None) -> dict:
+    """Estimate what the lost-telemetry stretches most likely contained.
+
+    The healthy history defines a per-hour normal model for each channel
+    (``hourly_profile_with_std``; the null rows themselves are NaN and so
+    never feed the model). Each stretch then gets an hourly series of the
+    model mean with a 2-standard-deviation band, which the dashboard draws
+    clearly marked as estimated. Estimated energy is summed per null row
+    (each row is one sample interval the UPS certainly ran, since PCSS was
+    up to write it) and priced per billing period with the same tariff
+    helpers the measured summary uses. The tiered figure is marginal: the
+    tiered cost of measured plus estimated, minus the tiered cost of
+    measured alone, so it reads as what the bill likely gained rather than
+    a standalone re-pricing. Nothing here is persisted or folded into any
+    measured statistic; callers display it as a separate estimated line.
+
+    Returns a dict with keys stretches (the input frame plus an est_kwh
+    column), incidents, by_period, total_hours, total_est_kwh, and recon
+    (per-channel lists of per-stretch {ts, mean, lo, hi} band segments,
+    keyed lv / ul / pw).
+    """
+    result: dict = {
+        "stretches": stretches,
+        "incidents": pd.DataFrame(columns=_LOST_INCIDENT_COLUMNS),
+        "by_period": pd.DataFrame(columns=_LOST_PERIOD_COLUMNS),
+        "total_hours": 0.0, "total_est_kwh": 0.0, "recon": {},
+    }
+    if stretches is None or stretches.empty:
+        return result
+
+    pw_profiles = hourly_profile_with_std(energy_df, "power_w")
+    channels = {
+        "lv": hourly_profile_with_std(datalog_df, "Line Voltage"),
+        "ul": hourly_profile_with_std(datalog_df, "UPS Load"),
+        "pw": pw_profiles,
+    }
+    recon: dict[str, list[dict]] = {}
+    for key, profiles in channels.items():
+        if not profiles:
+            continue
+        segs = []
+        for frm, to in zip(stretches["from"], stretches["to"], strict=True):
+            frm, to = pd.Timestamp(frm), pd.Timestamp(to)
+            marks = pd.date_range(frm.ceil("h"), to.floor("h"), freq="h")
+            pts = (pd.DatetimeIndex([frm]).append(marks)
+                   .append(pd.DatetimeIndex([to])).unique().sort_values())
+            means, los, his = [], [], []
+            ok = True
+            for t in pts:
+                mv = _profile_value(profiles, t)
+                if mv is None:
+                    ok = False
+                    break
+                mean, std = mv
+                means.append(mean)
+                los.append(max(0.0, mean - 2.0 * std))
+                his.append(mean + 2.0 * std)
+            if ok and len(pts) >= 2:
+                segs.append({"ts": list(pts), "mean": means, "lo": los, "hi": his})
+        if segs:
+            recon[key] = segs
+    result["recon"] = recon
+
+    # Estimated energy, summed per null row so each row is priced with its
+    # own recorded sampling interval, then grouped by billing period with
+    # the exact labeling compute_energy_summary uses.
+    df = energy_df.sort_values("ts").reset_index(drop=True)
+    nulls = df[_null_power_mask(df)]
+    iv = (nulls["interval_sec"].astype(float) if "interval_sec" in nulls.columns
+          else pd.Series(300.0, index=nulls.index))
+    start_day = int(getattr(config, "BILLING_CYCLE_START_DAY", 1))
+    period_kwh: dict[str, float] = {}
+    est_kwh_per_stretch = []
+    for frm, to in zip(stretches["from"], stretches["to"], strict=True):
+        in_stretch = (nulls["ts"] >= frm) & (nulls["ts"] <= to)
+        kwh = 0.0
+        for t, sec in zip(nulls.loc[in_stretch, "ts"], iv[in_stretch], strict=True):
+            mv = _profile_value(pw_profiles, t)
+            if mv is None:
+                continue
+            row_kwh = mv[0] / 1000.0 * (float(sec) / 3600.0)
+            kwh += row_kwh
+            label = (f"{t:%Y-%m}" if start_day <= 1
+                     else f"{_billing_period_start(t, start_day):%Y-%m-%d}")
+            period_kwh[label] = period_kwh.get(label, 0.0) + row_kwh
+        est_kwh_per_stretch.append(kwh)
+    stretches = stretches.copy()
+    stretches["est_kwh"] = est_kwh_per_stretch
+    result["stretches"] = stretches
+
+    result["incidents"] = stretches.groupby("incident").agg(
+        **{"from": ("from", "first"), "to": ("to", "last"),
+           "n_stretches": ("from", "size"), "hours": ("hours", "sum"),
+           "est_kwh": ("est_kwh", "sum")}).reset_index(drop=True)
+
+    measured_by_period: dict[str, float] = {}
+    if energy_summary:
+        monthly = energy_summary.get("monthly")
+        if monthly is not None and not monthly.empty:
+            measured_by_period = dict(zip(monthly["month"].astype(str),
+                                          monthly["kwh"].astype(float), strict=True))
+    period_rows = []
+    for label in sorted(period_kwh):
+        kwh = period_kwh[label]
+        p_start, _p_end = _billing_period_bounds(label, start_day)
+        low, high, tier_limit, flat, _tag = config.tariff_rates_for(p_start.date())
+        measured = measured_by_period.get(label, 0.0)
+        tiered = (compute_tiered_cost(measured + kwh, low=low, high=high, tier_limit=tier_limit)
+                  - compute_tiered_cost(measured, low=low, high=high, tier_limit=tier_limit))
+        period_rows.append({"period": label, "est_kwh": kwh,
+                            "est_cost_pcss": kwh * flat, "est_cost_tiered": tiered})
+    result["by_period"] = pd.DataFrame(period_rows, columns=_LOST_PERIOD_COLUMNS)
+    result["total_hours"] = float(stretches["hours"].sum())
+    result["total_est_kwh"] = float(stretches["est_kwh"].sum())
+    return result
+
+
+def _lost_overlap_note(lost: dict, label: str, period_start, start_day: int) -> str | None:
+    """One reconciliation note when lost-telemetry stretches overlap a
+    reconciled bill's period: how many UPS-metered hours went unrecorded and
+    roughly how much estimated consumption the measured share is missing.
+    Text only; the reconciled numbers stay measured."""
+    stretches = lost.get("stretches")
+    if stretches is None or stretches.empty:
+        return None
+    p_start, p_end = _billing_period_bounds(label, start_day)
+    # Each stretch's "hours" sums its rows' sampling intervals (the true
+    # telemetry time lost); prorate it by the wall-clock share of the
+    # stretch that falls inside this billing period.
+    span = (stretches["to"] - stretches["from"]).dt.total_seconds()
+    overlap = ((stretches["to"].clip(upper=p_end) - stretches["from"].clip(lower=p_start))
+               .dt.total_seconds().clip(lower=0.0))
+    frac = (overlap / span.replace(0.0, np.nan)).fillna((overlap > 0).astype(float))
+    hours = float((stretches["hours"] * frac.clip(upper=1.0)).sum())
+    if hours <= 0:
+        return None
+    kwh = 0.0
+    by_period = lost.get("by_period")
+    if by_period is not None and not by_period.empty:
+        row = by_period[by_period["period"] == label]
+        if not row.empty:
+            kwh = float(row["est_kwh"].iloc[0])
+    return (f"bill for {period_start}: {hours:.1f} h of UPS telemetry were lost in this "
+            f"period (UPS link down), so about {kwh:.1f} kWh of UPS consumption is "
+            "estimated rather than measured and the UPS-metered share reads low")
 
 
 def estimate_runtime(power_w: float) -> float:

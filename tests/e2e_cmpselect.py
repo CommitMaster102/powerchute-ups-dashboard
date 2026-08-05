@@ -182,14 +182,28 @@ def test_csv_export_reflects_selected_comparison(_browser, cmpselect_dashboard_p
         page.close()
 
 
-def test_quarter_pill_disabled_with_short_history(dash):
-    """The shared hermetic fixture's energylog spans only two billing
-    periods, well under the four "quarter" needs — must not be reshaped for
-    this suite (other suites depend on its shape)."""
+def test_quarter_pill_matches_history_depth(dash):
+    """With fewer than four billing periods the quarter pill is disabled and
+    driving the mode directly falls back (the shared hermetic fixture's two
+    periods — the fixture must not be reshaped for this suite, other suites
+    depend on its shape); with four or more (a real dashboard under
+    STATEOFUPS_E2E_REAL) it is enabled and selects the period exactly three
+    cycles back."""
+    past = dash.eval_on_selector_all(
+        ".cmp-period-select option", "els => els.map(e => e.value).filter(v => v)")
+    n_periods = len(past) + 1          # the current period is never listed
     pill = dash.locator('.cmp-pill[data-mode="quarter"]')
-    assert pill.is_disabled()
-    # Driving the mode directly (bypassing the disabled control) still
-    # falls back instead of silently comparing against the wrong period.
+    if n_periods < 4:
+        assert pill.is_disabled()
+        # Driving the mode directly (bypassing the disabled control) still
+        # falls back instead of silently comparing against the wrong period.
+        dash.evaluate("__chartsDebug.setCmpSelection('quarter')")
+        dash.wait_for_timeout(50)
+        assert dash.evaluate("__chartsDebug.cmpSelection()")["mode"] == "previous"
+        return
+    assert not pill.is_disabled()
     dash.evaluate("__chartsDebug.setCmpSelection('quarter')")
     dash.wait_for_timeout(50)
-    assert dash.evaluate("__chartsDebug.cmpSelection()")["mode"] == "previous"
+    sel = dash.evaluate("__chartsDebug.cmpSelection()")
+    assert sel["mode"] == "quarter"
+    assert sel["baseline"] == past[-3], "quarter must compare three cycles back"

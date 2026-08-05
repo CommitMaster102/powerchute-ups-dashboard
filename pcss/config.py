@@ -156,6 +156,18 @@ DATALOG_EXPECTED_INTERVAL_MIN = 20.0
 STALE_WARN_HOURS = 12.0
 STALE_CRIT_HOURS = 48.0
 
+# Lost-telemetry windows: while the serial link is down but the PC is on,
+# PCSS keeps writing energylog rows with null load and power, so a run of
+# null-power rows is a direct observation of "system up, telemetry lost"
+# (pcss.stats.detect_lost_windows). A run shorter than this many minutes is
+# ignored so a stray null row at service start can never register as a lost
+# window; the shortest real stretch observed on this machine is 3.3 hours.
+LOST_MIN_MINUTES = 30.0
+# Watermark for the once-per-incident data-loss alert line: the end
+# timestamp of the newest incident that has already been alerted, so a
+# re-run never re-toasts old incidents (the weekly-digest marker pattern).
+LOST_ALERT_MARKER = OUTPUT / "last_lost_alert.txt"
+
 # KPI status-pill cut points for the dashboard header row. Battery charge is
 # WARN below the warn threshold and ALERT below the crit threshold; estimated
 # runtime works the same way in minutes.
@@ -365,7 +377,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global BILLING_CYCLE_START_DAY, TARIFF_HISTORY, FORECAST_MIN_DAYS
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
-    global STALE_WARN_HOURS, STALE_CRIT_HOURS
+    global STALE_WARN_HOURS, STALE_CRIT_HOURS, LOST_MIN_MINUTES
     global ON_BATTERY_VOLTAGE_V, ON_BATTERY_CAPACITY_DROP_PCT
     global SELFTEST_DIP_PCT, SELFTEST_RECOVERY_SAMPLES
     global BATTERY_REPLACE_VOLTAGE_V, BATTERY_TREND_MIN_DAYS, CALIBRATION_MIN_EPISODES
@@ -433,6 +445,7 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     DATALOG_EXPECTED_INTERVAL_MIN = float(th.get("datalog_expected_interval_min", DATALOG_EXPECTED_INTERVAL_MIN))
     STALE_WARN_HOURS = float(th.get("stale_warn_hours", STALE_WARN_HOURS))
     STALE_CRIT_HOURS = float(th.get("stale_crit_hours", STALE_CRIT_HOURS))
+    LOST_MIN_MINUTES = float(th.get("lost_min_minutes", LOST_MIN_MINUTES))
     BATTERY_CHARGE_WARN_PCT = float(th.get("battery_charge_warn_pct", BATTERY_CHARGE_WARN_PCT))
     BATTERY_CHARGE_CRIT_PCT = float(th.get("battery_charge_crit_pct", BATTERY_CHARGE_CRIT_PCT))
     RUNTIME_WARN_MIN = float(th.get("runtime_warn_min", RUNTIME_WARN_MIN))

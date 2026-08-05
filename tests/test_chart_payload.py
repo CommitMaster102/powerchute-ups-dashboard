@@ -573,6 +573,98 @@ def test_inspect_badge_and_live_region_present():
         assert f'inspect-badge" data-panel="{key}"' not in html, key
 
 
+# ---------------------------------------------------------------- lost telemetry
+def _lost_smoke_inputs():
+    """Smoke inputs whose energy frame carries one 2-hour null-power run,
+    plus the reconstruct_lost_windows result the pipeline would pass in."""
+    from pcss.stats import detect_lost_windows, reconstruct_lost_windows
+    inputs = _smoke_inputs()
+    energy = inputs["energy_df"].copy()
+    energy.loc[36:59, "power_w"] = np.nan          # 24 rows at 5 min
+    from pcss.stats import compute_energy_summary
+    inputs["energy_df"] = energy
+    inputs["energy_summary"] = compute_energy_summary(energy)
+    stretches = detect_lost_windows(energy)
+    inputs["lost"] = reconstruct_lost_windows(stretches, inputs["datalog_df"], energy,
+                                              inputs["energy_summary"])
+    return inputs
+
+
+def test_lost_spans_and_meta_in_payload():
+    """Lost stretches ride the payload as epoch-ms pairs (the gap-span
+    shape) and the meta carries the incident totals."""
+    html = build_dashboard(**_lost_smoke_inputs())
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert len(payload["lost"]) == 1
+    a, b = payload["lost"][0]
+    assert isinstance(a, int) and isinstance(b, int)
+    assert b - a == 23 * 5 * 60 * 1000
+    assert payload["meta"]["lost_incidents"] == 1
+    assert payload["meta"]["lost_hours"] == pytest.approx(2.0)
+    assert payload["meta"]["lost_est_kwh"] > 0
+    assert payload["strings"]["dataLost"]
+    assert payload["strings"]["monitoringOff"]
+    assert payload["strings"]["estimated"]
+    # The server-rendered run summary names the incident too.
+    assert "Lost telemetry (UPS link down)" in html
+
+
+def test_recon_bands_attached_to_lv_ul_pw():
+    """The reconstruction bands attach to exactly the opted-in panels, span
+    the stretch, and obey the epoch-ms contract."""
+    html = build_dashboard(**_lost_smoke_inputs())
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    for k in ("lv", "ul", "pw"):
+        recon = payload["panels"][k].get("recon")
+        assert recon and len(recon) == 1, k
+        seg = recon[0]
+        assert len(seg["x"]) == len(seg["mean"]) == len(seg["lo"]) == len(seg["hi"])
+        assert all(isinstance(v, int) for v in seg["x"])
+        assert seg["x"] == sorted(seg["x"])
+        assert seg["x"][0] == payload["lost"][0][0]
+        assert seg["x"][-1] == payload["lost"][0][1]
+        assert all(lo <= mu <= hi for lo, mu, hi in
+                   zip(seg["lo"], seg["mean"], seg["hi"], strict=True))
+    for k in ("bv", "bc"):
+        assert "recon" not in (payload["panels"][k] or {}), k
+
+
+def test_lost_absent_by_default():
+    """Without lost windows the payload stays exactly as before: empty lost
+    list, zeroed meta, no recon key anywhere."""
+    html = build_dashboard(**_smoke_inputs())
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    assert payload["lost"] == []
+    assert payload["meta"]["lost_incidents"] == 0
+    assert "recon" not in payload["panels"]["lv"]
+    assert "Lost telemetry" not in html
+
+
+def test_xbreak_flags_on_sample_panels():
+    """The per-sample time panels opt into hole-aware line breaking; the
+    linear-axis runtime curve does not (and the bv trend series opts out
+    per series, since it spans the whole range by construction)."""
+    html = build_dashboard(**_smoke_inputs())
+    m = re.search(r"const DATA = (\{.*?\});\n", html, re.DOTALL)
+    payload = json.loads(m.group(1).replace("<\\/", "</"))
+    for k in ("lv", "ul", "pw", "bv", "bc"):
+        assert payload["panels"][k].get("xbreak") is True, k
+    assert not (payload["panels"]["rt"] or {}).get("xbreak")
+    # The bv trend series needs a long declining history to exist at all.
+    inputs = _smoke_inputs()
+    long_df = _datalog(120)
+    long_df["Battery Voltage"] = 27.4 - np.linspace(0, 0.5, len(long_df))
+    inputs["datalog_df"] = long_df
+    html2 = build_dashboard(**inputs)
+    m2 = re.search(r"const DATA = (\{.*?\});\n", html2, re.DOTALL)
+    payload2 = json.loads(m2.group(1).replace("<\\/", "</"))
+    bv_series = {s["name"]: s for s in payload2["panels"]["bv"]["series"]}
+    assert bv_series["trend"].get("nobreak") is True
+
+
 # ---------------------------------------------------------------- build_dashboard smoke
 def _smoke_inputs():
     datalog = _datalog(72)

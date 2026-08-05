@@ -92,6 +92,12 @@ datalog_expected_interval_min = 20.0
 # or a wedged agent instead of an ordinary quiet night with the PC off.
 stale_warn_hours = 12
 stale_crit_hours = 48
+# Lost-telemetry windows: while the serial link is down but the PC is on, PCSS
+# writes energylog rows with null load and power; a run of them shorter than
+# this many minutes is ignored (a stray startup null must never register as a
+# lost window). Detected windows are reconstructed from the healthy history's
+# hour-of-day distribution and always drawn and reported as estimated.
+lost_min_minutes = 30
 # KPI status-pill cut points (dashboard header row).
 battery_charge_warn_pct = 90.0  # WARN below this % charge
 battery_charge_crit_pct = 50.0  # ALERT below this % charge

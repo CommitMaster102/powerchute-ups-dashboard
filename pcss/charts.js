@@ -212,10 +212,18 @@
   function renderLine(view) {
     const key = view.key, spec = view.spec, st = STATE[key];
     const W = view.vb[0], H = view.vb[1];
-    const p = spec.pad || { l: 46, r: (spec.series || []).some(s => s.right) ? 56 : 16, t: spec.legend ? 26 : 14, b: 26 };
+    const p = spec.pad || { l: 46, r: (spec.series || []).some(s => s.right) ? 56 : 16, t: (spec.legend || (spec.recon && spec.recon.length)) ? 26 : 14, b: 26 };
     const iw = W - p.l - p.r, ih = H - p.t - p.b;
     const xd = xWindowFor(key, spec);
     const zoomed = isZoomed(key, spec);
+
+    // Data holes the series must not be drawn across: the DataLog gap spans
+    // plus the lost-telemetry stretches. Break on spans, not on point
+    // spacing, because min/max decimation legitimately spaces kept points
+    // far apart at wide zoom.
+    const HOLES = (spec.xbreak && spec.xkind !== "linear")
+      ? (spec.gaps ? (DATA.gaps || []) : []).concat(DATA.lost || [])
+      : [];
 
     // Visible slice per series (one extra point each side keeps the line
     // continuous through the window edge; the plot area is clipped).
@@ -326,6 +334,17 @@
                         fill: C.amber, "fill-opacity": 0.55, class: "ep-strip" }, plot);
       });
     }
+    // Lost-telemetry stretches (system up, UPS link down): a grey strip
+    // above the amber episode lane, so "telemetry lost" reads apart from
+    // "monitoring off" (the red gap strip along the axis).
+    if (spec.gaps && DATA.lost && spec.xkind !== "linear") {
+      DATA.lost.forEach(g => {
+        if (g[1] < xd[0] || g[0] > xd[1]) return;
+        const x0 = sx(Math.max(g[0], xd[0])), x1 = sx(Math.min(g[1], xd[1]));
+        svgEl("rect", { x: x0, y: p.t + ih - 14, width: Math.max(2, x1 - x0), height: 4, rx: 1,
+                        fill: C.faint, "fill-opacity": 0.7, class: "lost-strip" }, plot);
+      });
+    }
     // Battery lifecycle annotations: a dashed vertical
     // line with a short label near the top of the plot area, on every
     // time-axis panel — distinct from the red gap strips and the amber
@@ -368,25 +387,75 @@
       }
     });
 
+    // Reconstruction bands: the estimated mean with a 2-sigma band over each
+    // lost-telemetry stretch, drawn under the measured series and visually
+    // apart from them (grey fill, dashed grey center line). The "estimated"
+    // legend chip below toggles them per panel.
+    if (spec.recon && spec.recon.length && !st.reconHidden && spec.xkind !== "linear") {
+      spec.recon.forEach(seg => {
+        const n = seg.x.length;
+        if (!n || seg.x[n - 1] < xd[0] || seg.x[0] > xd[1]) return;
+        let bd = "";
+        seg.x.forEach((xv, k) => { bd += (k ? "L" : "M") + sx(xv).toFixed(1) + "," + syL(seg.hi[k]).toFixed(1); });
+        for (let k = n - 1; k >= 0; k--) bd += "L" + sx(seg.x[k]).toFixed(1) + "," + syL(seg.lo[k]).toFixed(1);
+        svgEl("path", { d: bd + "Z", fill: C.faint, "fill-opacity": 0.16, class: "recon-band" }, plot);
+        let md = "";
+        seg.x.forEach((xv, k) => { md += (k ? "L" : "M") + sx(xv).toFixed(1) + "," + syL(seg.mean[k]).toFixed(1); });
+        svgEl("path", { d: md, fill: "none", stroke: C.mut, "stroke-width": 1.6,
+                        "stroke-dasharray": "5 4", "stroke-linecap": "round",
+                        "vector-effect": "non-scaling-stroke", class: "recon-mean" }, plot);
+      });
+    }
+
     // Series paths. s.color is a palette role; resolve once for the stroke and
-    // for the low-opacity area fill (hex + "14" alpha suffix).
+    // for the low-opacity area fill (hex + "14" alpha suffix). With xbreak on,
+    // a segment crossing a data hole starts a new subpath instead of drawing a
+    // fake line across it (the straight "stable" line an 8-day hole used to
+    // paint); a lone sample stranded between two holes gets a dot, because a
+    // bare "M" subpath draws no ink.
     visible.forEach(v => {
       const s = v.s, sy = s.right ? syR : syL;
       const col = resolveColor(s.color);
+      const canBreak = HOLES.length && !s.nobreak;
+      const segs = [];
+      let cur = [], prevX = null;
+      v.idx.forEach(i => {
+        const xv = s.x[i];
+        if (canBreak && prevX !== null && HOLES.some(g => g[0] >= prevX && g[1] <= xv)) {
+          if (cur.length) segs.push(cur);
+          cur = [];
+        }
+        cur.push(i);
+        prevX = xv;
+      });
+      if (cur.length) segs.push(cur);
       let d = "";
-      v.idx.forEach((i, k) => { d += (k ? "L" : "M") + sx(s.x[i]).toFixed(1) + "," + sy(s.y[i]).toFixed(1); });
+      segs.forEach(seg => {
+        seg.forEach((i, k) => { d += (k ? "L" : "M") + sx(s.x[i]).toFixed(1) + "," + sy(s.y[i]).toFixed(1); });
+      });
       if (!d) return;
       if (s.fill && v.idx.length > 1) {
         const base = syL(yd[0]);
-        const fd = d + "L" + sx(s.x[v.idx[v.idx.length - 1]]).toFixed(1) + "," + base.toFixed(1) +
-          "L" + sx(s.x[v.idx[0]]).toFixed(1) + "," + base.toFixed(1) + "Z";
-        svgEl("path", { d: fd, fill: resolveColor(s.fillColor) || (col + "14") }, plot);
+        let fd = "";
+        segs.forEach(seg => {
+          if (seg.length < 2) return;
+          seg.forEach((i, k) => { fd += (k ? "L" : "M") + sx(s.x[i]).toFixed(1) + "," + sy(s.y[i]).toFixed(1); });
+          fd += "L" + sx(s.x[seg[seg.length - 1]]).toFixed(1) + "," + base.toFixed(1) +
+            "L" + sx(s.x[seg[0]]).toFixed(1) + "," + base.toFixed(1) + "Z";
+        });
+        if (fd) svgEl("path", { d: fd, fill: resolveColor(s.fillColor) || (col + "14") }, plot);
       }
       svgEl("path", {
         d, fill: "none", stroke: col, "stroke-width": s.width || 2,
         "stroke-dasharray": s.dash || "none", "stroke-linejoin": "round", "stroke-linecap": "round",
         "vector-effect": "non-scaling-stroke", opacity: s.opacity == null ? 1 : s.opacity,
       }, plot);
+      segs.forEach(seg => {
+        if (seg.length === 1) {
+          svgEl("circle", { cx: sx(s.x[seg[0]]).toFixed(1), cy: sy(s.y[seg[0]]).toFixed(1),
+                            r: 2, fill: col, opacity: s.opacity == null ? 1 : s.opacity }, plot);
+        }
+      });
     });
 
     // Markers (anomaly X's, projection dots, the runtime star).
@@ -414,8 +483,8 @@
     });
 
     // Legend chips (clickable, toggle series).
+    let lx = p.l + 2;
     if (spec.legend && (spec.series || []).length > 1) {
-      let lx = p.l + 2;
       spec.series.forEach((s, si) => {
         const g = svgEl("g", { class: "legend-chip", "data-si": si }, svg);
         g.style.cursor = "pointer";
@@ -437,6 +506,23 @@
           rerenderPanel(key);
         });
         lx += 26 + s.name.length * 6.7;
+      });
+    }
+    // The "estimated" chip explains and toggles the reconstruction band. It
+    // is independent of spec.legend so single-series panels get it too.
+    if (spec.recon && spec.recon.length) {
+      const g = svgEl("g", { class: "legend-chip recon-chip" }, svg);
+      g.style.cursor = "pointer";
+      if (st.reconHidden) g.setAttribute("opacity", "0.35");
+      svgEl("line", { x1: lx, x2: lx + 16, y1: p.t - 8, y2: p.t - 8, stroke: C.mut, "stroke-width": 2, "stroke-dasharray": "5 4", "vector-effect": "non-scaling-stroke" }, g);
+      const label = S.estimated || "estimated";
+      const t = svgEl("text", { x: lx + 20, y: p.t - 4, "font-size": 11.5, fill: C.mut, "font-family": "ui-monospace,monospace" }, g);
+      t.textContent = label;
+      svgEl("rect", { x: lx - 3, y: p.t - 18, width: 26 + label.length * 6.7, height: 18, fill: "transparent" }, g);
+      g.addEventListener("click", ev => {
+        ev.stopPropagation();
+        st.reconHidden = !st.reconHidden;
+        rerenderPanel(key);
       });
     }
 
@@ -1028,6 +1114,26 @@
     if (st) st.views.forEach(v => { if (v.overlay) v.overlay.replaceChildren(); });
   }
 
+  // A hover deep inside a data hole must not snap to a sample days away
+  // (the second half of the flat-line lie). Within this tolerance of a
+  // hole's edge the edge sample is still the honest answer.
+  const HOLE_TOL_MS = 45 * 60e3;
+  function holeSpanAt(spans, ts) {
+    return (spans || []).find(g => ts > g[0] + HOLE_TOL_MS && ts < g[1] - HOLE_TOL_MS) || null;
+  }
+  function reconMeanAt(spec, ts) {
+    for (const seg of spec.recon || []) {
+      const n = seg.x.length;
+      if (!n || ts < seg.x[0] || ts > seg.x[n - 1]) continue;
+      const i = lowerBound(seg.x, ts);
+      if (i <= 0) return seg.mean[0];
+      if (i >= n) return seg.mean[n - 1];
+      const f = (ts - seg.x[i - 1]) / (seg.x[i] - seg.x[i - 1] || 1);
+      return seg.mean[i - 1] + f * (seg.mean[i] - seg.mean[i - 1]);
+    }
+    return null;
+  }
+
   function lineTooltipHTML(key, spec, ts, rows) {
     let h = "";
     if (spec.xkind === "linear") h += '<div class="tt-ts">' + fmt(ts) + " " + (spec.xunit || "") + "</div>";
@@ -1044,6 +1150,43 @@
     const st = STATE[key];
     if (!st || !st.spec || st.spec.kind !== "line") return;
     const spec = st.spec;
+    // Inside a data hole, tell the truth instead of snapping: a
+    // lost-telemetry span reports the estimated value (when the panel
+    // carries a band), any other gap says there is no data at this time.
+    if (spec.xkind !== "linear" && spec.xbreak) {
+      const lostSpan = holeSpanAt(DATA.lost, ts);
+      const gapSpan = lostSpan ? null : (spec.gaps ? holeSpanAt(DATA.gaps, ts) : null);
+      if (lostSpan || gapSpan) {
+        LAST_HOVER[key] = { ts, rows: [], hole: lostSpan ? "lost" : "gap" };
+        st.views.forEach(v => {
+          if (!v.geom || !v.overlay) return;
+          const g = v.geom;
+          v.overlay.replaceChildren();
+          if (ts < g.xd[0] || ts > g.xd[1]) return;
+          const x = g.sx(ts);
+          svgEl("line", { x1: x, x2: x, y1: g.p.t, y2: g.p.t + g.ih, stroke: C.text, "stroke-opacity": 0.28, "stroke-width": 1, "stroke-dasharray": "3 3", "vector-effect": "non-scaling-stroke" }, v.overlay);
+        });
+        if (!fromSync && clientX != null) {
+          let h = '<div class="tt-ts">' + fmtFull(ts) + "</div>";
+          const est = (lostSpan && !st.reconHidden) ? reconMeanAt(spec, ts) : null;
+          if (lostSpan) {
+            const estBit = est == null ? "" :
+              '<span class="tt-val">~' + fmtVal(est, spec.dec) + " " + (spec.unit || "") + "</span>";
+            h += '<div class="tt-row"><span class="tt-name">' + (S.dataLost || "data lost (UPS link down)") + "</span>" + estBit + "</div>";
+          } else {
+            h += '<div class="tt-row"><span class="tt-name">' + (S.monitoringOff || "no data (monitoring off)") + "</span></div>";
+          }
+          ttLive.innerHTML = h;
+          placeTooltip(ttLive, clientX, clientY);
+        }
+        if (spec.sync && !fromSync) {
+          TIME.hoverTs = ts;
+          syncKeys().forEach(k => { if (k !== key) hoverLineAt(k, ts, null, null, true); });
+          highlightHeatmap(ts);
+        }
+        return;
+      }
+    }
     const rows = [];
     let snappedTs = null;
     (spec.series || []).forEach((s, si) => {
@@ -1833,6 +1976,7 @@
       // timeline's housekeeping-off default survives a between-test reset.
       STATE[k].hidden = defaultHidden(STATE[k].spec);
       STATE[k].anomIdx = null;
+      STATE[k].reconHidden = false;
       delete LAST_HOVER[k];
     });
     Object.keys(STATE).forEach(rerenderPanel);
@@ -1853,6 +1997,8 @@
     hover: k => LAST_HOVER[k] || null,
     pinned: () => (PINNED ? { key: PINNED.key } : null),
     hidden: k => (STATE[k] ? Array.from(STATE[k].hidden) : []),
+    lost: () => (DATA.lost || []).map(s => s.slice()),
+    reconHidden: k => !!(STATE[k] && STATE[k].reconHidden),
     lightbox: () => LIGHTBOX_KEY,
     openLightbox,
     cmpSelection: () => ({
