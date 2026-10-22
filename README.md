@@ -72,7 +72,9 @@ Two more `[dashboard]` and `[alerts]` knobs are worth calling out:
 
 Two optional user-owned CSV files, read from the repo root (or a `[paths]` override) and never written by the analyzer, add context when present and change nothing when absent:
 
-- **`bills.csv`** (`period_start,kwh,amount_crc`) records what Coopesantos actually billed the whole house per period. The analyzer reconciles each period against its own UPS-metered kWh and reports the UPS share of the billed consumption — the UPS sees only its own outlets, never a house meter. Copy `bills.example.csv` to start.
+- **`bills.csv`** (`period_start,kwh,amount_crc`) records what Coopesantos actually billed the whole house per period. The analyzer reconciles each period against its own UPS-metered kWh and reports the UPS share of the billed consumption — the UPS sees only its own outlets, never a house meter. Copy `bills.example.csv` to start. With a `[bill_charges]` section in `config.toml`, each bill is also checked against the tariff: the analyzer rebuilds the expected total from the rates in force for the period plus IVA, bomberos, alumbrado público, capital social, and Cruz Roja, and reports whether the billed amount matches. A bill from before the UPS data started is still checked, without a UPS share.
+
+`[paths] tariff_history_file` can point at a tariff history CSV (`historical_t_re.csv`) built from every archive.org capture of the Coopesantos tariffs page. Each published table in it becomes a tariff history entry dated from its alcance and trimestre labels, so refreshing that file is enough to price new periods with a new tariff. A `[[tariff.history]]` entry with the same date overrides it. `config.example.toml` documents the columns and the date rule.
 - **`annotations.csv`** (`date,kind,label`) records dated events — a `battery_replaced` entry segments the battery replace-by projection so two batteries' trends never blend, and any other `kind` still draws a labeled vertical marker across the time charts. Copy `annotations.example.csv` to start.
 
 ## Scheduled daily run (Windows)

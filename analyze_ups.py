@@ -235,12 +235,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         used_cfg = config.load_config(args.config, agent_dir=args.agent_dir, output=args.output)
     except ValueError as e:
-        # A malformed [[tariff.history]] entry raises a loud,
-        # already-worded "config error: ..." ValueError from _parse_tariff_history.
-        # Surface just that message and exit nonzero, rather than dumping a
-        # traceback at a user who only mistyped a date in config.toml.
+        # A malformed [[tariff.history]] entry or [bill_charges] value raises
+        # a loud, already-worded "config error: ..." ValueError from
+        # _parse_tariff_history or _parse_bill_charges. Surface just that
+        # message and exit nonzero, rather than dumping a traceback at a user
+        # who only mistyped a value in config.toml.
         print(str(e), file=sys.stderr)
         return 2
+    # Problems in the tariff history CSV never stop the run: the bad rows are
+    # skipped, and each one is reported here even under --quiet, like the
+    # bills.csv warnings below.
+    for msg in config.TARIFF_HISTORY_WARNINGS:
+        print(f"  [warn] {msg}")
 
     def say(*a, **k):
         if not quiet:
@@ -398,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         say(f"  Total energy        : {energy_summary['total_kwh']:.4f} kWh")
         say(f"  Cost @ PCSS flat    : CRC {energy_summary['total_cost_pcss']:,.2f}")
         say(f"  Cost @ Coop. tiered : CRC {energy_summary['total_cost_tiered']:,.2f}")
+        if config.TARIFF_HISTORY_SUMMARY:
+            say(f"  Tariff history      : {config.TARIFF_HISTORY_SUMMARY}")
         say(f"  CO2 emitted         : {energy_summary['total_co2_kg']:.4f} kg")
         if energy_summary["monthly"] is not None and not energy_summary["monthly"].empty:
             say("")
@@ -469,12 +477,24 @@ def main(argv: list[str] | None = None) -> int:
     if not reconciled_bills.empty:
         section("BILL RECONCILIATION")
         for row in reconciled_bills.itertuples(index=False):
-            say(f"  {row.period}: UPS {row.ups_kwh:.4f} kWh / billed {row.billed_kwh:.4f} kWh "
-                f"({row.share_pct:.1f}% UPS-metered share of the billed consumption)")
-            say(f"    UPS cost (tiered) CRC {row.ups_cost_tiered:,.2f}   "
-                f"billed CRC {row.billed_amount_crc:,.2f}   "
-                f"implied rate CRC {row.implied_rate_crc_per_kwh:,.2f}/kWh   "
-                f"vs tariff CRC {row.tariff_low:g}/{row.tariff_high:g} ({row.rate_tag})")
+            has_ups = not pd.isna(row.ups_kwh)
+            if has_ups:
+                say(f"  {row.period}: UPS {row.ups_kwh:.4f} kWh / billed {row.billed_kwh:.4f} kWh "
+                    f"({row.share_pct:.1f}% UPS-metered share of the billed consumption)")
+            else:
+                say(f"  {row.period}: billed {row.billed_kwh:.4f} kWh "
+                    "(no UPS data for this period; tariff check only)")
+            ups_bit = f"UPS cost (tiered) CRC {row.ups_cost_tiered:,.2f}   " if has_ups else ""
+            rate_bit = f"implied rate CRC {row.implied_rate_crc_per_kwh:,.2f}/kWh"
+            if row.tariff_check:
+                verdict = ("match" if row.tariff_check == "match"
+                           else f"differs by {row.amount_diff_crc:+,.2f}")
+                say(f"    {ups_bit}billed CRC {row.billed_amount_crc:,.2f}   "
+                    f"expected CRC {row.expected_amount_crc:,.2f} "
+                    f"({verdict}, {row.tariff_source})   {rate_bit}")
+            else:
+                say(f"    {ups_bit}billed CRC {row.billed_amount_crc:,.2f}   {rate_bit}   "
+                    f"vs tariff CRC {row.tariff_low:g}/{row.tariff_high:g} ({row.tariff_source})")
 
     # Battery lifecycle annotations: a user-owned
     # annotations.csv is opt-in and, missing, disables the feature with no
@@ -844,19 +864,31 @@ def _periods_for_json(monthly: pd.DataFrame) -> list[dict]:
 def _bills_for_json(reconciled: pd.DataFrame) -> list[dict]:
     """The reconciled-bills table as plain dicts for
     --json — only meaningful (and only called) once at least one bill
-    reconciles, so the key is simply absent otherwise."""
+    reconciles, so the key is simply absent otherwise. A tariff-check-only
+    row's UPS fields and a check-off row's expected fields are NaN in the
+    frame and become null here rather than a non-standard NaN token, and an
+    empty tariff_check becomes null too."""
+    def clean(v):
+        return None if isinstance(v, float) and pd.isna(v) else v
+
     cols = ["period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
             "billed_amount_crc", "implied_rate_crc_per_kwh",
-            "tariff_low", "tariff_high", "tariff_flat", "rate_tag", "partial"]
+            "tariff_low", "tariff_high", "tariff_flat", "rate_tag", "partial",
+            "expected_amount_crc", "expected_unrounded_crc", "amount_diff_crc",
+            "tariff_check", "tariff_source"]
     return [
-        {"period": period, "ups_kwh": ups_kwh, "billed_kwh": billed_kwh,
-         "share_pct": share_pct, "ups_cost_tiered": ups_cost_tiered,
+        {"period": period, "ups_kwh": clean(ups_kwh), "billed_kwh": billed_kwh,
+         "share_pct": clean(share_pct), "ups_cost_tiered": clean(ups_cost_tiered),
          "billed_amount_crc": billed_amount_crc,
          "implied_rate_crc_per_kwh": implied_rate, "tariff_low": tariff_low,
          "tariff_high": tariff_high, "tariff_flat": tariff_flat, "rate_tag": rate_tag,
-         "partial": bool(partial)}
+         "partial": bool(partial), "expected_amount_crc": clean(expected_amount),
+         "expected_unrounded_crc": clean(expected_unrounded),
+         "amount_diff_crc": clean(amount_diff), "tariff_check": tariff_check or None,
+         "tariff_source": tariff_source}
         for (period, ups_kwh, billed_kwh, share_pct, ups_cost_tiered, billed_amount_crc,
-             implied_rate, tariff_low, tariff_high, tariff_flat, rate_tag, partial)
+             implied_rate, tariff_low, tariff_high, tariff_flat, rate_tag, partial,
+             expected_amount, expected_unrounded, amount_diff, tariff_check, tariff_source)
         in reconciled[cols].itertuples(index=False, name=None)
     ]
 

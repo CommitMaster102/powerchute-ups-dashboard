@@ -79,6 +79,34 @@ def test_bill_reconciliation_headers_spanish(spanish):
     assert "Notas" in html              # Notes
 
 
+def test_bill_check_columns_spanish(spanish):
+    nan = float("nan")
+    reconciled = pd.DataFrame([{
+        "period": "2026-08-21", "ups_kwh": 90.0, "billed_kwh": 430.0, "share_pct": 20.9,
+        "ups_cost_tiered": 6700.0, "billed_amount_crc": 52080.0,
+        "implied_rate_crc_per_kwh": 121.12, "tariff_low": 75.5, "tariff_high": 122.2,
+        "rate_tag": "rates from 2026-01-01", "partial": False,
+        "expected_amount_crc": 52080.0, "expected_unrounded_crc": 52079.39,
+        "amount_diff_crc": 0.0, "tariff_check": "match",
+        "tariff_source": "Alcance 161 del 16-12-2025",
+    }, {
+        "period": "2026-02-21", "ups_kwh": nan, "billed_kwh": 350.0, "share_pct": nan,
+        "ups_cost_tiered": nan, "billed_amount_crc": 40435.0,
+        "implied_rate_crc_per_kwh": 115.53, "tariff_low": 75.5, "tariff_high": 122.2,
+        "rate_tag": "rates from 2026-01-01", "partial": False,
+        "expected_amount_crc": 40435.0, "expected_unrounded_crc": 40433.42,
+        "amount_diff_crc": 0.0, "tariff_check": "match",
+        "tariff_source": "Alcance 161 del 16-12-2025",
+    }])
+    html = _bills_table_html(reconciled)
+    assert "Esperado ₡" in html                       # Expected
+    assert "Verificación" in html                     # Check
+    assert "coincide" in html                         # match
+    assert "solo verificación de tarifa" in html      # tariff check only
+    assert "Alcance 161 del 16-12-2025" in html       # a proper name, never translated
+    assert "—" in html                                # the tariff-only row's UPS cells
+
+
 # ---------------------------------------------------------------- card-tool tooltips
 def test_card_tool_tooltips_spanish(spanish):
     """The per-card tool button titles route through _L now, so a

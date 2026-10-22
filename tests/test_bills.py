@@ -21,7 +21,7 @@ import pytest
 
 from pcss import config
 from pcss.loaders import load_bills
-from pcss.stats import compute_energy_summary, reconcile_bills
+from pcss.stats import compute_energy_summary, expected_bill_total, reconcile_bills
 
 
 def _write_bills(tmp_path, text):
@@ -286,6 +286,117 @@ def test_duplicate_bill_for_same_period_reconciles_both_with_a_warning():
     assert "2026-05" in warnings[0]
 
 
+# The bill-total check, priced the way Coopesantos priced 2026: the
+# Alcance 161 net rates, billing periods from the 21st, and the default
+# [bill_charges] values read from the September 2026 bill.
+ALCANCE_161 = config.TariffPeriod(
+    effective_from=date(2026, 1, 1), coopesantos_low=75.50, coopesantos_high=122.20,
+    tier_limit_kwh=200.0, pcss_flat=126.51, source="Alcance 161 del 16-12-2025")
+
+
+@pytest.fixture
+def coopesantos_2026(monkeypatch):
+    monkeypatch.setattr(config, "TARIFF_HISTORY", [ALCANCE_161])
+    monkeypatch.setattr(config, "BILLING_CYCLE_START_DAY", 21)
+    monkeypatch.setattr(config, "BILL_CHARGES_ENABLED", True)
+
+
+@pytest.mark.parametrize("period_start, kwh, amount_crc", [
+    (date(2026, 2, 21), 310, 34610.00),
+    (date(2026, 3, 21), 375, 44075.00),
+    (date(2026, 4, 21), 405, 48440.00),
+    (date(2026, 5, 21), 430, 52080.00),
+    (date(2026, 6, 21), 470, 57900.00),
+    (date(2026, 7, 21), 498, 61980.00),
+    (date(2026, 8, 21), 350, 40435.00),
+])
+def test_expected_total_rounds_like_a_coopesantos_bill(
+        coopesantos_2026, period_start, kwh, amount_crc):
+    """Made-up bills whose totals were worked out by hand from the published
+    2026 rates and charges, rounded to the nearest 5 colones. The real bills
+    the lookup returned on 2026-10-21 matched the same way; their figures
+    stay out of the repo, like bills.csv."""
+    expected, unrounded = expected_bill_total(kwh, period_start)
+    assert expected == amount_crc
+    assert abs(unrounded - amount_crc) <= 2.5
+
+
+def test_expected_total_breaks_down_into_the_bill_lines(coopesantos_2026):
+    """350 kWh: importe plus CVG 33,430.00, IVA 13% and bomberos 1.75% of
+    that, 350 x (3.35 + 2.00) per kWh, and 200 for Cruz Roja."""
+    _expected, unrounded = expected_bill_total(350, date(2026, 8, 21))
+    energy = 200 * 75.50 + 150 * 122.20
+    assert energy == pytest.approx(33430.00)
+    assert unrounded == pytest.approx(energy * 1.1475 + 350 * 5.35 + 200)
+
+
+def test_expected_total_is_none_with_the_check_off():
+    assert config.BILL_CHARGES_ENABLED is False
+    assert expected_bill_total(424, date(2026, 8, 21)) is None
+
+
+def test_iva_is_exempt_at_280_kwh_and_charged_on_everything_above(coopesantos_2026):
+    _e, at_280 = expected_bill_total(280, date(2026, 8, 21))
+    _e, at_281 = expected_bill_total(281, date(2026, 8, 21))
+    energy_280 = 200 * 75.50 + 80 * 122.20
+    energy_281 = 200 * 75.50 + 81 * 122.20
+    assert at_280 == pytest.approx(energy_280 * 1.0175 + 280 * 5.35 + 200)
+    assert at_281 == pytest.approx(energy_281 * 1.1475 + 281 * 5.35 + 200)
+
+
+def test_reconciled_bill_reports_match_and_its_tariff(coopesantos_2026):
+    es = compute_energy_summary(_edf([("2026-08-25 12:00", 1200.0)]))
+    reconciled, warnings = reconcile_bills(_bills([(date(2026, 8, 21), 430.0, 52080.0)]), es)
+    assert warnings == []
+    row = reconciled.iloc[0]
+    assert row["expected_amount_crc"] == 52080.0
+    assert row["amount_diff_crc"] == 0.0
+    assert row["tariff_check"] == "match"
+    assert row["tariff_source"] == "Alcance 161 del 16-12-2025"
+
+
+def test_bill_that_differs_from_the_tariff_is_flagged(coopesantos_2026):
+    es = compute_energy_summary(_edf([("2026-08-25 12:00", 1200.0)]))
+    reconciled, _warnings = reconcile_bills(_bills([(date(2026, 8, 21), 430.0, 52175.0)]), es)
+    row = reconciled.iloc[0]
+    assert row["tariff_check"] == "differs"
+    assert row["amount_diff_crc"] == pytest.approx(95.0)
+
+
+def test_bill_without_ups_data_becomes_a_tariff_check_only_row(coopesantos_2026):
+    es = compute_energy_summary(_edf([("2026-08-25 12:00", 1200.0)]))
+    bills = _bills([(date(2026, 2, 21), 350.0, 40435.0), (date(2026, 8, 21), 430.0, 52080.0)])
+    reconciled, warnings = reconcile_bills(bills, es)
+    assert warnings == []
+    assert list(reconciled["period"]) == ["2026-02-21", "2026-08-21"]
+    early = reconciled.iloc[0]
+    assert pd.isna(early["ups_kwh"]) and pd.isna(early["share_pct"])
+    assert pd.isna(early["ups_cost_tiered"])
+    assert bool(early["partial"]) is False
+    assert early["tariff_check"] == "match"
+
+
+def test_check_on_still_checks_bills_when_there_is_no_ups_data_at_all(coopesantos_2026):
+    reconciled, warnings = reconcile_bills(_bills([(date(2026, 8, 21), 430.0, 52080.0)]), {})
+    assert warnings == []
+    assert reconciled.iloc[0]["tariff_check"] == "match"
+
+
+def test_check_on_still_excludes_a_misaligned_bill(coopesantos_2026):
+    reconciled, warnings = reconcile_bills(_bills([(date(2026, 8, 1), 430.0, 52080.0)]), {})
+    assert reconciled.empty
+    assert len(warnings) == 1 and "2026-07-21" in warnings[0]
+
+
+def test_check_off_rows_leave_the_check_columns_empty():
+    es = compute_energy_summary(_edf([("2026-05-14 12:00", 1200.0)]))
+    reconciled, _warnings = reconcile_bills(_bills([(date(2026, 5, 1), 300.0, 40000.0)]), es)
+    row = reconciled.iloc[0]
+    assert row["tariff_check"] == ""
+    assert pd.isna(row["expected_amount_crc"]) and pd.isna(row["amount_diff_crc"])
+    assert row["tariff_source"] == "current rates"
+
+
 # ---------------------------------------------------------------- end-to-end (analyze_ups.main)
 def _write_energy_agent(agent_dir, days, start=datetime(2026, 5, 1), power_w=1000.0):
     """A DataLog + energylog pair spanning `days` full days from `start`, all
@@ -509,3 +620,47 @@ def test_hermetic_e2e_build_pins_bills_file_against_repo_root_leak(
     finally:
         for n, v in saved.items():
             setattr(config, n, v)
+
+
+def test_tariff_check_only_row_reaches_console_json_and_dashboard(tmp_path, capsys):
+    """With [bill_charges] on, a March bill against May-only UPS data is kept
+    as a tariff-check-only row: null UPS fields in --json, an em dash and a
+    note on the dashboard, and its own console wording."""
+    import json as _json
+
+    import analyze_ups
+    agent = _write_energy_agent(tmp_path / "agent", days=31)
+    bills_path = tmp_path / "bills.csv"
+    bills_path.write_text("period_start,kwh,amount_crc\n2026-03-01,350,40435.00\n",
+                          encoding="utf-8")
+    conf = _hermetic_config(tmp_path, bills_file=str(bills_path))
+    conf.write_text(conf.read_text(encoding="utf-8") + "\n[bill_charges]\n", encoding="utf-8")
+    j = tmp_path / "out.json"
+    html_path = tmp_path / "d.html"
+    analyze_ups.main(["--agent-dir", str(agent), "-o", str(html_path),
+                      "--no-browser", "--no-snapshot", "--config", str(conf),
+                      "--json", str(j)])
+    out = capsys.readouterr().out
+    assert "no UPS data for this period; tariff check only" in out
+    assert "expected CRC" in out
+    assert "excluded from reconciliation" not in out
+    entry = _json.loads(j.read_text())["bills"][0]
+    assert entry["ups_kwh"] is None and entry["share_pct"] is None
+    assert entry["ups_cost_tiered"] is None
+    assert entry["tariff_check"] in ("match", "differs")
+    assert isinstance(entry["expected_amount_crc"], float)
+    assert entry["tariff_source"] == "current rates"
+    assert "nan" not in j.read_text().lower()
+    html = html_path.read_text(encoding="utf-8")
+    assert "Expected ₡" in html
+    assert "tariff check only" in html
+
+
+def test_bad_bill_charge_value_is_a_config_error(tmp_path, capsys):
+    import analyze_ups
+    conf = tmp_path / "config.toml"
+    conf.write_text("[bill_charges]\niva_pct = 'trece'\n", encoding="utf-8")
+    code = analyze_ups.main(["--agent-dir", str(tmp_path), "--no-browser", "--quiet",
+                             "--no-snapshot", "--config", str(conf)])
+    assert code == 2
+    assert "[bill_charges] 'iva_pct' must be a number" in capsys.readouterr().err

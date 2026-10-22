@@ -3,7 +3,7 @@ cross-validation over the loaded PCSS data."""
 from __future__ import annotations
 
 import calendar
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
@@ -1156,7 +1156,32 @@ _BILL_RECONCILE_COLUMNS = [
     "period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
     "billed_amount_crc", "implied_rate_crc_per_kwh",
     "tariff_low", "tariff_high", "tariff_flat", "rate_tag", "partial",
+    "expected_amount_crc", "expected_unrounded_crc", "amount_diff_crc",
+    "tariff_check", "tariff_source",
 ]
+
+
+def expected_bill_total(kwh: float, period_start: date) -> tuple[float, float] | None:
+    """Rebuild a Coopesantos bill total from the tariff in force.
+
+    The energy charge is the tiered cost at the net (con CVG) rates that
+    config.tariff_rates_for picks for the period. IVA and bomberos are
+    percentages of that energy charge, IVA only above the exempt
+    consumption. Alumbrado publico and capital social are per kWh, Cruz Roja
+    is fixed, and the sum is rounded the way Coopesantos rounds its totals.
+    Returns (rounded, unrounded), or None when [bill_charges] is not
+    configured.
+    """
+    if not config.BILL_CHARGES_ENABLED:
+        return None
+    low, high, tier_limit, _flat, _tag = config.tariff_rates_for(period_start)
+    energy = compute_tiered_cost(kwh, low=low, high=high, tier_limit=tier_limit)
+    iva = 0.0 if kwh <= config.BILL_IVA_EXEMPT_MAX_KWH else energy * config.BILL_IVA_PCT / 100.0
+    bomberos = energy * config.BILL_BOMBEROS_PCT / 100.0
+    per_kwh = kwh * (config.BILL_ALUMBRADO_CRC_PER_KWH + config.BILL_CAPITAL_CRC_PER_KWH)
+    total = energy + iva + bomberos + per_kwh + config.BILL_FIXED_CRC
+    step = config.BILL_ROUND_TO_CRC
+    return round(total / step) * step, total
 
 
 def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict,
@@ -1176,7 +1201,10 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict,
     and excluded rather than silently joined to the wrong period. A bill
     that aligns but has no matching row in
     `compute_energy_summary`'s "monthly" frame (no UPS energy data recorded
-    for that period) is likewise reported and excluded. When `lost` (a
+    for that period) is likewise reported and excluded, unless the bill-total
+    check is on: then the bill becomes a tariff-check-only row whose UPS
+    fields (ups_kwh, share_pct, ups_cost_tiered) are NaN, with no warning,
+    because the check needs only the tariff. When `lost` (a
     reconstruct_lost_windows result) is passed and its stretches overlap a
     reconciled bill's period, a note naming the lost hours and the
     estimated unrecorded kWh is appended to the warnings list; the
@@ -1194,8 +1222,14 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict,
     implied_rate_crc_per_kwh (amount_crc / kwh — the bill's own blended
     rate), the tariff's own effective rates for the period (tariff_low,
     tariff_high, tariff_flat, rate_tag — config.tariff_rates_for,
-    reused rather than duplicated), and partial (whether the analyzer's own
-    coverage of that period was incomplete, from compute_energy_summary).
+    reused rather than duplicated), partial (whether the analyzer's own
+    coverage of that period was incomplete, from compute_energy_summary),
+    and the bill-total check: expected_amount_crc and expected_unrounded_crc
+    (expected_bill_total), amount_diff_crc (billed minus expected),
+    tariff_check ("match" within config.BILL_TOLERANCE_CRC, "differs"
+    beyond it, "" with the check off, when the three numbers are NaN), and
+    tariff_source (config.tariff_source_for, such as "Alcance 161 del
+    16-12-2025").
     """
     empty = pd.DataFrame(columns=_BILL_RECONCILE_COLUMNS)
     warnings: list[str] = []
@@ -1203,15 +1237,19 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict,
         return empty, warnings
 
     start_day = int(getattr(config, "BILLING_CYCLE_START_DAY", 1))
+    check_on = bool(config.BILL_CHARGES_ENABLED)
     monthly = energy_summary.get("monthly") if energy_summary else None
-    if monthly is None or monthly.empty:
+    if (monthly is None or monthly.empty) and not check_on:
         for row in bills_df.itertuples(index=False):
             warnings.append(
                 f"bill for {row.period_start}: the analyzer has no UPS "
                 "energy data for this period; excluded from reconciliation")
         return empty, warnings
 
-    monthly = monthly.set_index("month")
+    if monthly is None or monthly.empty:
+        monthly = pd.DataFrame(columns=["kwh", "cost_tiered", "partial"])
+    else:
+        monthly = monthly.set_index("month")
     records: list[dict] = []
     seen_periods: set[str] = set()
     for row in bills_df.itertuples(index=False):
@@ -1229,7 +1267,8 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict,
                 f"{nearest}); excluded from reconciliation")
             continue
         label = f"{period_start:%Y-%m}" if start_day <= 1 else f"{period_start:%Y-%m-%d}"
-        if label not in monthly.index:
+        has_ups = label in monthly.index
+        if not has_ups and not check_on:
             warnings.append(
                 f"bill for {period_start}: the analyzer has no UPS energy "
                 "data for this period; excluded from reconciliation")
@@ -1243,26 +1282,49 @@ def reconcile_bills(bills_df: pd.DataFrame, energy_summary: dict,
                 f"bill for {period_start}: another bill already reconciles "
                 f"the {label} period; both are kept in the reconciliation")
         seen_periods.add(label)
-        m = monthly.loc[label]
         billed_kwh = float(row.kwh)
-        ups_kwh = float(m["kwh"])
+        billed_amount = float(row.amount_crc)
+        nan = float("nan")
+        if has_ups:
+            m = monthly.loc[label]
+            ups_kwh = float(m["kwh"])
+            share_pct = (ups_kwh / billed_kwh * 100.0) if billed_kwh else nan
+            ups_cost_tiered = float(m["cost_tiered"])
+            partial = bool(m["partial"])
+        else:
+            ups_kwh = share_pct = ups_cost_tiered = nan
+            partial = False
         low, high, _tier_limit, flat, rate_tag = config.tariff_rates_for(period_start)
+        expected = expected_bill_total(billed_kwh, period_start)
+        if expected is None:
+            expected_amount = expected_unrounded = amount_diff = nan
+            tariff_check = ""
+        else:
+            expected_amount, expected_unrounded = expected
+            amount_diff = billed_amount - expected_amount
+            tariff_check = ("match" if abs(amount_diff) <= config.BILL_TOLERANCE_CRC
+                            else "differs")
         records.append({
             "period": label,
             "ups_kwh": ups_kwh,
             "billed_kwh": billed_kwh,
-            "share_pct": (ups_kwh / billed_kwh * 100.0) if billed_kwh else float("nan"),
-            "ups_cost_tiered": float(m["cost_tiered"]),
-            "billed_amount_crc": float(row.amount_crc),
+            "share_pct": share_pct,
+            "ups_cost_tiered": ups_cost_tiered,
+            "billed_amount_crc": billed_amount,
             "implied_rate_crc_per_kwh": (
-                float(row.amount_crc) / billed_kwh if billed_kwh else float("nan")),
+                billed_amount / billed_kwh if billed_kwh else nan),
             "tariff_low": low,
             "tariff_high": high,
             "tariff_flat": flat,
             "rate_tag": rate_tag,
-            "partial": bool(m["partial"]),
+            "partial": partial,
+            "expected_amount_crc": expected_amount,
+            "expected_unrounded_crc": expected_unrounded,
+            "amount_diff_crc": amount_diff,
+            "tariff_check": tariff_check,
+            "tariff_source": config.tariff_source_for(period_start),
         })
-        if lost is not None:
+        if lost is not None and has_ups:
             note = _lost_overlap_note(lost, label, period_start, start_day)
             if note:
                 warnings.append(note)

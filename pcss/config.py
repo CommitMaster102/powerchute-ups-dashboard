@@ -6,6 +6,8 @@ analyze_ups.py CONFIG block). Phase 2 layers a `Config` dataclass +
 """
 from __future__ import annotations
 
+import csv
+import re
 import tomllib
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -66,12 +68,18 @@ FORECAST_MIN_DAYS = 5.0
 class TariffPeriod:
     """One [[tariff.history]] entry: the rate set Coopesantos and PCSS had in
     force from effective_from onward, until a later entry (if any) takes
-    over. Field names mirror the flat [tariff] keys above."""
+    over. Field names mirror the flat [tariff] keys above.
+
+    source is empty for an entry written in config.toml. An entry read from
+    the tariff history CSV carries the Gaceta supplement that set it, such as
+    "Alcance 161 del 16-12-2025".
+    """
     effective_from: date
     coopesantos_low: float
     coopesantos_high: float
     tier_limit_kwh: float
     pcss_flat: float
+    source: str = ""
 
 
 # Historical tariff rate sets, oldest first (load_config() keeps this list
@@ -79,6 +87,38 @@ class TariffPeriod:
 # billing period is priced with the flat [tariff] keys above, exactly as
 # before this feature existed.
 TARIFF_HISTORY: list[TariffPeriod] = []
+
+# Path to the historical_t_re.csv written by the coopesantos_history
+# project's extract_rates.py, one row per archive.org or live capture of
+# coopesantos.com/tarifas. load_config() turns its rows into TariffPeriod
+# entries and merges them into TARIFF_HISTORY, so rerunning extract_rates.py
+# is enough to pick up a new tariff. None (the default) or a missing file
+# disables the feature without a warning. The analyzer only reads the file.
+TARIFF_HISTORY_FILE: Path | None = None
+# The one-line console summary of the last CSV load ("" when no CSV was
+# read), and the problems it found. analyze_ups.py prints both.
+TARIFF_HISTORY_SUMMARY = ""
+TARIFF_HISTORY_WARNINGS: list[str] = []
+
+# Bill-total check. With a [bill_charges] section in config.toml, each bill
+# in bills.csv gets an expected total rebuilt from the tariff in force for
+# its period plus the charges below, and the reconciliation reports whether
+# the billed amount matches. Without the section the check is off. The
+# defaults are the charges on the real September 2026 Coopesantos bill:
+# IVA and bomberos are percentages of energy plus CVG, alumbrado publico
+# (3.51 less its 0.16 CVG credit) and capital social are colones per kWh,
+# Cruz Roja is a fixed amount, and the total is rounded to the nearest 5
+# colones. IVA does not apply to a month of 280 kWh or less (Ley del IVA,
+# artículo 8, inciso 11; above that it applies to the whole consumption).
+BILL_CHARGES_ENABLED = False
+BILL_IVA_PCT = 13.0
+BILL_IVA_EXEMPT_MAX_KWH = 280.0
+BILL_BOMBEROS_PCT = 1.75
+BILL_ALUMBRADO_CRC_PER_KWH = 3.35
+BILL_CAPITAL_CRC_PER_KWH = 2.00
+BILL_FIXED_CRC = 200.0
+BILL_ROUND_TO_CRC = 5.0
+BILL_TOLERANCE_CRC = 5.0
 # Costa Rica grid CO2 intensity (Low Carbon Power 2024 dataset):
 CO2_KG_PER_KWH = 0.098
 
@@ -263,17 +303,190 @@ def tariff_rates_for(period_start: date) -> tuple[float, float, float, float, st
     `chosen` for each one in turn, so the entry that sorted LATER wins — see
     _parse_tariff_history's docstring for the full tie-break explanation.
     """
+    chosen = _tariff_period_for(period_start)
+    if chosen is None:
+        return (COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, COOPESANTOS_TIER_LIMIT_KWH,
+                PCSS_FLAT_RATE, "current rates")
+    return (chosen.coopesantos_low, chosen.coopesantos_high, chosen.tier_limit_kwh,
+            chosen.pcss_flat, f"rates from {chosen.effective_from:%Y-%m-%d}")
+
+
+def _tariff_period_for(period_start: date) -> TariffPeriod | None:
+    """The newest TARIFF_HISTORY entry in force on period_start, or None."""
     chosen: TariffPeriod | None = None
     for entry in TARIFF_HISTORY:
         if entry.effective_from <= period_start:
             chosen = entry
         else:
             break
+    return chosen
+
+
+def tariff_source_for(period_start: date) -> str:
+    """Name the tariff that priced a billing period starting on period_start.
+
+    An entry read from the tariff history CSV is named by its Gaceta
+    supplement ("Alcance 161 del 16-12-2025"). A config.toml entry and the
+    flat-key fallback get the same label tariff_rates_for() returns.
+    """
+    chosen = _tariff_period_for(period_start)
     if chosen is None:
-        return (COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, COOPESANTOS_TIER_LIMIT_KWH,
-                PCSS_FLAT_RATE, "current rates")
-    return (chosen.coopesantos_low, chosen.coopesantos_high, chosen.tier_limit_kwh,
-            chosen.pcss_flat, f"rates from {chosen.effective_from:%Y-%m-%d}")
+        return "current rates"
+    return chosen.source or f"rates from {chosen.effective_from:%Y-%m-%d}"
+
+
+# The page labels each T-RE table with the quarter it covers. Its 2020 and
+# 2021 fourth-quarter tables say "IIII", so both spellings map to October.
+_TRIMESTRE_MONTH = {"I": 1, "II": 4, "III": 7, "IV": 10, "IIII": 10}
+_ALCANCE_RE = re.compile(r"(\d+)\s+del\s+(\d{1,2})-(\d{1,2})-(\d{4})")
+
+
+def tariff_effective_from(alcance: str, trimestre: str) -> date:
+    """The date a published T-RE table took effect.
+
+    alcance is the label the tariffs page prints, such as "161 del
+    16-12-2025" (supplement number and publication date), and trimestre is
+    the quarter the table covers. The result is the first day of that
+    quarter. When the quarter had already ended by the publication date, as
+    for a December supplement labeled I, the quarter is the next year's.
+    The result is never earlier than the publication date, so a late
+    supplement (83 del 28-04-2021, quarter II) takes effect when it was
+    published. Raises ValueError for a label it cannot read.
+    """
+    m = _ALCANCE_RE.fullmatch(alcance.strip())
+    if m is None:
+        raise ValueError(f"unrecognized alcance {alcance!r}")
+    month = _TRIMESTRE_MONTH.get(trimestre.strip().upper())
+    if month is None:
+        raise ValueError(f"unrecognized trimestre {trimestre!r}")
+    published = date(int(m[4]), int(m[3]), int(m[2]))
+    start = date(published.year, month, 1)
+    if published.month - month >= 3:
+        start = date(published.year + 1, month, 1)
+    return max(start, published)
+
+
+def _load_tariff_history_csv(path: Path) -> tuple[list[TariffPeriod], str, list[str]]:
+    """Read the coopesantos_history CSV into one TariffPeriod per tariff.
+
+    Returns (periods, summary, warnings). A missing file returns ([], "", [])
+    so the feature stays silent until the file exists. Only rows with status
+    OK, an alcance, a trimestre, and both con-CVG rates (first200_b and
+    addl_b, which are what a bill charges net) become tariffs. Column c is
+    never read, because older pages printed the CVG difference without its
+    sign. A row without the con-CVG rates (the 2023-11-29 capture showed
+    only the structural rates) is counted in the summary rather than
+    reported as a problem. Several captures of one alcance collapse into a
+    single tariff. When they disagree, the latest capture wins and a warning
+    names the alcance. A row whose rates or labels cannot be read is
+    reported and skipped, and a file without the needed columns is reported
+    and ignored, so the analyzer never fails on this file. pcss_flat comes
+    from the [tariff] keys, because it is the rate set in PCSS and not a
+    Coopesantos tariff.
+    """
+    if not path.exists():
+        return [], "", []
+    warnings: list[str] = []
+    required = ("date", "status", "alcance", "trimestre", "first200_b", "addl_b")
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        missing = [c for c in required if c not in (reader.fieldnames or [])]
+        if missing:
+            warnings.append(
+                f"tariff history file {path}: missing column(s) {', '.join(missing)}; "
+                "the file is ignored")
+            return [], "", warnings
+        latest: dict[str, tuple[str, TariffPeriod]] = {}
+        skipped = 0
+        for row in reader:
+            alcance = (row.get("alcance") or "").strip()
+            low_raw = (row.get("first200_b") or "").strip()
+            high_raw = (row.get("addl_b") or "").strip()
+            if (row.get("status") or "").strip() != "OK" or not alcance or not low_raw \
+                    or not high_raw or not (row.get("trimestre") or "").strip():
+                skipped += 1
+                continue
+            captured = (row.get("date") or "").strip()
+            try:
+                period = TariffPeriod(
+                    effective_from=tariff_effective_from(alcance, row["trimestre"]),
+                    coopesantos_low=float(low_raw),
+                    coopesantos_high=float(high_raw),
+                    tier_limit_kwh=200.0,
+                    pcss_flat=PCSS_FLAT_RATE,
+                    source=f"Alcance {alcance}",
+                )
+            except ValueError as exc:
+                warnings.append(
+                    f"tariff history file {path.name}: capture {captured}: {exc}; row skipped")
+                continue
+            previous = latest.get(alcance)
+            if previous is not None:
+                prev_captured, prev_period = previous
+                if (prev_period.coopesantos_low, prev_period.coopesantos_high) != (
+                        period.coopesantos_low, period.coopesantos_high):
+                    warnings.append(
+                        f"tariff history: captures of Alcance {alcance} disagree "
+                        f"({prev_captured}: {prev_period.coopesantos_low:g}/"
+                        f"{prev_period.coopesantos_high:g}, {captured}: "
+                        f"{period.coopesantos_low:g}/{period.coopesantos_high:g}); "
+                        "the latest capture is used")
+                if captured < prev_captured:
+                    continue
+            latest[alcance] = (captured, period)
+    periods = sorted((p for _c, p in latest.values()), key=lambda p: p.effective_from)
+    summary = f"{len(periods)} tariffs from {path.name}"
+    if skipped:
+        noun = "capture" if skipped == 1 else "captures"
+        summary += f" ({skipped} {noun} without con-CVG rates skipped)"
+    return periods, summary, warnings
+
+
+def _merge_tariff_history(existing: list[TariffPeriod],
+                          from_csv: list[TariffPeriod]) -> list[TariffPeriod]:
+    """Combine config.toml entries with the tariffs read from the CSV.
+
+    A config.toml entry wins over a CSV tariff with the same effective_from,
+    so a hand correction always overrides the scraped page. Entries a
+    previous load_config() call took from a CSV are dropped first, which
+    keeps a second call from adding the same tariffs twice.
+    """
+    manual = [p for p in existing if not p.source]
+    taken = {p.effective_from for p in manual}
+    merged = manual + [p for p in from_csv if p.effective_from not in taken]
+    merged.sort(key=lambda p: p.effective_from)
+    return merged
+
+
+def _parse_bill_charges(section: object) -> dict[str, float]:
+    """Read the numeric [bill_charges] keys, failing loudly on a bad value.
+
+    Returns only the keys the section sets, keyed by their config.toml name.
+    A non-numeric value, a negative value, or a round_to_crc of zero is a
+    user config error and raises ValueError naming the key.
+    """
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"config error: [bill_charges] must be a table (got {type(section).__name__})")
+    keys = ("iva_pct", "iva_exempt_max_kwh", "bomberos_pct", "alumbrado_crc_per_kwh",
+            "capital_social_crc_per_kwh", "fixed_crc", "round_to_crc", "tolerance_crc")
+    values: dict[str, float] = {}
+    for key in keys:
+        if key not in section:
+            continue
+        raw = section[key]
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"config error: [bill_charges] '{key}' must be a number (got {raw!r})") from exc
+        if value < 0 or (key == "round_to_crc" and value == 0):
+            raise ValueError(
+                f"config error: [bill_charges] '{key}' must be "
+                f"{'greater than zero' if key == 'round_to_crc' else 'zero or more'} "
+                f"(got {raw!r})")
+        values[key] = value
+    return values
 
 
 def _parse_tariff_history(entries: object) -> list[TariffPeriod]:
@@ -356,7 +569,13 @@ def _parse_tariff_history(entries: object) -> list[TariffPeriod]:
                     f"config error: [[tariff.history]] entry {i} (effective_from="
                     f"{effective_from}) has a non-numeric '{field}' value "
                     f"{raw_value!r}: {exc}") from exc
-        parsed.append(TariffPeriod(effective_from=effective_from, **rates))
+        parsed.append(TariffPeriod(
+            effective_from=effective_from,
+            coopesantos_low=rates["coopesantos_low"],
+            coopesantos_high=rates["coopesantos_high"],
+            tier_limit_kwh=rates["tier_limit_kwh"],
+            pcss_flat=rates["pcss_flat"],
+        ))
     parsed.sort(key=lambda p: p.effective_from)
     return parsed
 
@@ -375,6 +594,10 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     global ANNOTATIONS_FILE
     global COOPESANTOS_TIER_LIMIT_KWH, COOPESANTOS_LOW_RATE, COOPESANTOS_HIGH_RATE, PCSS_FLAT_RATE
     global BILLING_CYCLE_START_DAY, TARIFF_HISTORY, FORECAST_MIN_DAYS
+    global TARIFF_HISTORY_FILE, TARIFF_HISTORY_SUMMARY, TARIFF_HISTORY_WARNINGS
+    global BILL_CHARGES_ENABLED, BILL_IVA_PCT, BILL_IVA_EXEMPT_MAX_KWH, BILL_BOMBEROS_PCT
+    global BILL_ALUMBRADO_CRC_PER_KWH, BILL_CAPITAL_CRC_PER_KWH, BILL_FIXED_CRC
+    global BILL_ROUND_TO_CRC, BILL_TOLERANCE_CRC
     global CO2_KG_PER_KWH, RUNTIME_CURVE_W, RUNTIME_CURVE_MIN
     global VOLTAGE_NORMAL_LOW, VOLTAGE_NORMAL_HIGH, HIGH_LOAD_PCT, DATALOG_EXPECTED_INTERVAL_MIN
     global STALE_WARN_HOURS, STALE_CRIT_HOURS, LOST_MIN_MINUTES
@@ -427,6 +650,28 @@ def load_config(path: Path | None = None, *, agent_dir: Path | None = None,
     raw_history = tariff.get("history")
     if raw_history is not None:
         TARIFF_HISTORY = _parse_tariff_history(raw_history)
+    tariff_history_file = paths.get("tariff_history_file")
+    if tariff_history_file:
+        TARIFF_HISTORY_FILE = Path(tariff_history_file)
+    if TARIFF_HISTORY_FILE is not None:
+        from_csv, TARIFF_HISTORY_SUMMARY, TARIFF_HISTORY_WARNINGS = _load_tariff_history_csv(
+            TARIFF_HISTORY_FILE)
+        TARIFF_HISTORY = _merge_tariff_history(TARIFF_HISTORY, from_csv)
+
+    raw_charges = data.get("bill_charges")
+    if raw_charges is not None:
+        charges = _parse_bill_charges(raw_charges)
+        BILL_CHARGES_ENABLED = bool(raw_charges.get("enabled", True))
+        BILL_IVA_PCT = charges.get("iva_pct", BILL_IVA_PCT)
+        BILL_IVA_EXEMPT_MAX_KWH = charges.get("iva_exempt_max_kwh", BILL_IVA_EXEMPT_MAX_KWH)
+        BILL_BOMBEROS_PCT = charges.get("bomberos_pct", BILL_BOMBEROS_PCT)
+        BILL_ALUMBRADO_CRC_PER_KWH = charges.get("alumbrado_crc_per_kwh",
+                                                 BILL_ALUMBRADO_CRC_PER_KWH)
+        BILL_CAPITAL_CRC_PER_KWH = charges.get("capital_social_crc_per_kwh",
+                                               BILL_CAPITAL_CRC_PER_KWH)
+        BILL_FIXED_CRC = charges.get("fixed_crc", BILL_FIXED_CRC)
+        BILL_ROUND_TO_CRC = charges.get("round_to_crc", BILL_ROUND_TO_CRC)
+        BILL_TOLERANCE_CRC = charges.get("tolerance_crc", BILL_TOLERANCE_CRC)
     CO2_KG_PER_KWH = float(grid.get("co2_kg_per_kwh", CO2_KG_PER_KWH))
     VOLTAGE_NORMAL_LOW = float(th.get("voltage_normal_low", VOLTAGE_NORMAL_LOW))
     VOLTAGE_NORMAL_HIGH = float(th.get("voltage_normal_high", VOLTAGE_NORMAL_HIGH))

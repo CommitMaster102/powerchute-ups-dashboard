@@ -52,6 +52,7 @@ Shipped so far (details in the archive at the bottom):
 | 24 | Run the analyzer from the tray | `tray_status.py` (`run_analyzer_now`, `SingleFlightRun`, `analyzer_command`, `wants_no_snapshot`) |
 | 23 | Webhook notification channel | `tray_status.py` (`notify_alert`, `maybe_send_webhook`, `send_webhook`) |
 | 32 | Weekly digest | `analyze_ups.py` (`_maybe_write_weekly_digest`, `_build_weekly_digest_line`) |
+| 33 | Tariff-checked bills from the published rate history | `pcss/config.py` (`_load_tariff_history_csv`, `tariff_effective_from`, `tariff_source_for`), `pcss/stats.py` (`expected_bill_total`, `reconcile_bills`) |
 
 ## Active candidates
 
@@ -1351,3 +1352,55 @@ Challenges:
   exists in the console summary and `--json`. The work is choosing what a
   short text message omits, and keeping the wording honest about partial
   periods and projections.
+
+### 33. Tariff-checked bills from the published rate history
+
+SHIPPED on 2026-10-21. A new `[paths] tariff_history_file` key
+(`pcss/config.py`'s `TARIFF_HISTORY_FILE`, unset by default) points at the
+`historical_t_re.csv` that a scraper of every archive.org capture of
+coopesantos.com/tarifas writes (on the author's machine, the sibling
+`coopesantos_history` project's `extract_rates.py`). `load_config()` reads it
+with `_load_tariff_history_csv`, which keeps rows with status OK and both
+con-CVG rates, collapses captures of one alcance into a single tariff (the
+latest capture wins, with a warning when captures disagree), and dates each
+tariff with `tariff_effective_from`: the first day of its trimestre, moved to
+the next year when the quarter had ended before the alcance was published,
+and never earlier than the publication date. `_merge_tariff_history` merges
+the result into `TARIFF_HISTORY`, where a `[[tariff.history]]` entry with the
+same date wins and a repeated `load_config()` call does not add the CSV
+tariffs twice; `TariffPeriod.source` carries the alcance, and
+`tariff_source_for` names it. Every existing consumer of item 17's
+`tariff_rates_for` picks the rates up unchanged. A new `[bill_charges]`
+section (`BILL_*` constants, parsed by `_parse_bill_charges`) turns on
+`pcss/stats.py`'s `expected_bill_total`, which rebuilds a bill total from the
+tariff in force plus IVA (exempt at 280 kWh or less, Ley del IVA artículo 8
+inciso 11), bomberos, alumbrado publico, capital social, and Cruz Roja,
+rounded to the nearest 5 colones. With it on, item 29's `reconcile_bills`
+adds `expected_amount_crc`, `expected_unrounded_crc`, `amount_diff_crc`,
+`tariff_check` (match or differs), and `tariff_source`, and keeps a bill
+whose period has no UPS data as a tariff-check-only row with NaN UPS fields
+instead of excluding it. The console, the dashboard's Bill Reconciliation
+table (Expected and Check columns, Spanish strings in `_STRINGS_ES`), and the
+`--json` `bills` rows (null for NaN) show the result; with the section absent
+the output matches item 29. The defaults were read from the real September
+2026 bill, and all seven bills from March to September 2026 rebuild to the
+colón. `tests/test_tariff_history.py` (with `tests/fixtures/historical_t_re.csv`,
+eight real capture rows), `tests/test_bills.py`, `tests/test_locale.py`.
+
+Item 29 compared each bill's blended rate (total divided by kWh, taxes
+included) with the marginal energy rates, two numbers that cannot be
+compared, so it never said whether a bill matched the published tariff. The
+tariff itself was one hand-copied `[[tariff.history]]` entry.
+
+Challenges:
+
+- The tariffs page lags the regulator by months and archive.org captures it
+  irregularly (the 2026-03-14 capture still showed the 2025 table), so a
+  capture date is never an effective date, and quarters with no capture
+  inherit the previous tariff. The bill check is what reveals a tariff that
+  reached the bills before it reached the page.
+- Older pages print the CVG difference without its sign, so the rates come
+  from the con-CVG column and the difference column is never read.
+- A billing period that spans the change of year is priced with the tariff
+  in force on its start date; whether Coopesantos splits such a period is
+  unknown until the first 2027 bill.

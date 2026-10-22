@@ -253,6 +253,11 @@ _STRINGS_ES = {
     "Share": "Proporción",
     "Billed kWh": "Facturado kWh",
     "Billed ₡": "Facturado ₡",
+    "Expected ₡": "Esperado ₡",
+    "Check": "Verificación",
+    "match": "coincide",
+    "differs": "difiere",
+    "tariff check only": "solo verificación de tarifa",
     "day deviates from the recorded baseline":
         "día se desvía de la referencia registrada",
     "days deviate from the recorded baseline":
@@ -1188,32 +1193,56 @@ def _bills_table_html(reconciled: pd.DataFrame | None) -> str:
     (config.tariff_rates_for, reused rather than duplicated). Only
     rendered once at least one bill reconciles (build_dashboard gates the
     whole block on that), so the page is unchanged for anyone who never
-    uses bills.csv."""
+    uses bills.csv. With the bill-total check on, an Expected and a Check
+    column follow the billed amount, and a bill with no UPS data for its
+    period shows an em dash in the UPS columns. The Notes cell names the
+    tariff that priced the period (tariff_source, falling back to
+    rate_tag)."""
     if reconciled is None or reconciled.empty:
         return f'<div class="chart-empty">{_esc(_L("no data in the analyzed window"))}</div>'
+    check_on = ("tariff_check" in reconciled.columns
+                and bool(reconciled["tariff_check"].fillna("").astype(bool).any()))
     head_cols = [_L("Period"), "UPS kWh", _L("Billed kWh"), f"{_L('Share')} %",
-                 f"{_L('Tiered')} ₡", _L("Billed ₡"), "₡/kWh", _L("Notes")]
+                 f"{_L('Tiered')} ₡", _L("Billed ₡")]
+    if check_on:
+        head_cols += [_L("Expected ₡"), _L("Check")]
+    head_cols += ["₡/kWh", _L("Notes")]
     head = "".join(f'<th class="{"tl" if i == 0 else "tr"}">{_esc(c)}</th>' for i, c in enumerate(head_cols))
+
+    def num(v, fmt: str) -> str:
+        return "—" if pd.isna(v) else format(v, fmt)
+
     rows = []
-    cols = ["period", "ups_kwh", "billed_kwh", "share_pct", "ups_cost_tiered",
-            "billed_amount_crc", "implied_rate_crc_per_kwh", "tariff_low", "tariff_high",
-            "rate_tag", "partial"]
-    for (period, ups_kwh, billed_kwh, share_pct, ups_cost_tiered, billed_amount_crc,
-         implied_rate, tariff_low, tariff_high, rate_tag, partial) in reconciled[
-             cols].itertuples(index=False, name=None):
-        notes = [_L("partial")] if partial else []
-        notes.append(f"{_rate_tag_label(rate_tag)} (₡{tariff_low:g}/{tariff_high:g})")
-        cells = "".join([
-            f'<td class="tl hi">{_esc(period)}</td>',
-            f'<td class="tr">{ups_kwh:.4f}</td>',
-            f'<td class="tr">{billed_kwh:.4f}</td>',
-            f'<td class="tr">{share_pct:.1f}</td>',
-            f'<td class="tr">{ups_cost_tiered:,.2f}</td>',
-            f'<td class="tr">{billed_amount_crc:,.2f}</td>',
-            f'<td class="tr">{implied_rate:,.2f}</td>',
+    for rec in reconciled.to_dict("records"):
+        has_ups = not pd.isna(rec["ups_kwh"])
+        notes = [_L("partial")] if rec["partial"] else []
+        if not has_ups:
+            notes.append(_L("tariff check only"))
+        source = rec.get("tariff_source") or rec["rate_tag"]
+        notes.append(f"{_rate_tag_label(source)} (₡{rec['tariff_low']:g}/{rec['tariff_high']:g})")
+        cells = [
+            f'<td class="tl hi">{_esc(rec["period"])}</td>',
+            f'<td class="tr">{num(rec["ups_kwh"], ".4f")}</td>',
+            f'<td class="tr">{rec["billed_kwh"]:.4f}</td>',
+            f'<td class="tr">{num(rec["share_pct"], ".1f")}</td>',
+            f'<td class="tr">{num(rec["ups_cost_tiered"], ",.2f")}</td>',
+            f'<td class="tr">{rec["billed_amount_crc"]:,.2f}</td>',
+        ]
+        if check_on:
+            verdict = rec.get("tariff_check") or ""
+            if verdict == "differs":
+                verdict_text = f'{_L("differs")} ({rec["amount_diff_crc"]:+,.2f})'
+            else:
+                verdict_text = _L(verdict) if verdict else "—"
+            cells += [
+                f'<td class="tr">{num(rec.get("expected_amount_crc"), ",.2f")}</td>',
+                f'<td class="tr">{_esc(verdict_text)}</td>',
+            ]
+        cells += [
+            f'<td class="tr">{rec["implied_rate_crc_per_kwh"]:,.2f}</td>',
             f'<td class="tr">{_esc(" · ".join(notes))}</td>',
-        ])
-        rows.append(f"<tr>{cells}</tr>")
+        ]
+        rows.append(f"<tr>{''.join(cells)}</tr>")
     return (f'<table class="stats-table"><thead><tr>{head}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table>')
 

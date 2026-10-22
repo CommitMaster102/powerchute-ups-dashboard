@@ -28,6 +28,19 @@ bills_file = 'bills.csv'
 # only ever reads this file; it is personal data, like credentials.txt and
 # bills.csv, and is gitignored.
 annotations_file = 'annotations.csv'
+# Path to a Coopesantos tariff history CSV (historical_t_re.csv), as written
+# by a scraper of every archive.org capture of
+# https://www.coopesantos.com/tarifas/ plus the live page. Columns: date
+# (capture date), source, status, alcance (such as "161 del 16-12-2025"),
+# trimestre (I, II, III, IV), first200_a and addl_a (structural rates),
+# first200_b and addl_b (con CVG rates), first200_c and addl_c, url, and
+# snippet. Each published table becomes one [[tariff.history]] entry priced
+# at its con CVG rates, effective from the first day of its trimestre (the
+# next year's for a December alcance labeled I, and never before the alcance
+# date). An entry written below with the same effective_from wins. Unset by
+# default; a missing file disables the feature without a warning, and the
+# analyzer only reads the file.
+# tariff_history_file = 'C:\path\to\historical_t_re.csv'
 
 [tariff]                 # CRC per kWh; Coopesantos T-RE Residencial.
 # These are the real 2026 net (con CVG) rates. Coopesantos bills energy as
@@ -78,6 +91,31 @@ forecast_min_days = 5
 # coopesantos_high = 122.20
 # tier_limit_kwh   = 200.0
 # pcss_flat        = 126.51
+
+# Bill-total check for bills.csv. With this section present, each bill gets
+# an expected total rebuilt from the tariff in force for its period plus the
+# charges below, and the reconciliation (console, dashboard, --json) reports
+# match or differs next to the billed amount. A bill whose period has no UPS
+# data is still checked, as a tariff-check-only row. Without the section the
+# check is off and the reconciliation is unchanged. The values below are the
+# defaults, read from a real September 2026 Coopesantos bill: IVA and
+# bomberos are percentages of the energy charge (importe plus CVG), and IVA
+# does not apply to a month of 280 kWh or less (Ley del IVA, artículo 8,
+# inciso 11); alumbrado publico (T-AP 3.51 less its 0.16 CVG credit) and
+# capital social are colones per kWh; Cruz Roja is fixed; the total is
+# rounded to the nearest round_to_crc, and a bill within tolerance_crc of the
+# expected total is a match. Set enabled = false to keep the values but turn
+# the check off.
+#
+# [bill_charges]
+# iva_pct                    = 13.0
+# iva_exempt_max_kwh         = 280
+# bomberos_pct               = 1.75
+# alumbrado_crc_per_kwh      = 3.35
+# capital_social_crc_per_kwh = 2.00
+# fixed_crc                  = 200.0
+# round_to_crc               = 5.0
+# tolerance_crc              = 5.0
 
 [grid]
 co2_kg_per_kwh = 0.098    # Costa Rica grid intensity (Low Carbon Power 2024)
